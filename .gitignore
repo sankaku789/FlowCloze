@@ -1,6 +1,7 @@
 .venv/
 target/
 .env
+generated/*.pdf
 __pycache__/
 .pytest_cache/
 *.py[cod]

@@ -1,10 +1,11 @@
 use std::env;
 use std::fs;
+use std::path::PathBuf;
 use std::process;
 
 use flowcloze::{
-    build_generation_prompt, parse_markdown, to_intermediate_yaml, validate_generated_yaml,
-    GeminiClient, IntermediateDocument,
+    build_generation_prompt, compile_pdf, default_pdf_output_path, parse_markdown,
+    to_intermediate_yaml, validate_generated_yaml, GeminiClient, IntermediateDocument, PdfOptions,
 };
 
 fn main() {
@@ -18,6 +19,7 @@ fn main() {
             eprintln!("  flowcloze [--yaml] [-o output.yaml] <markdown-file>");
             eprintln!("  flowcloze generate [-o output.yaml] [--model model] <markdown-file>");
             eprintln!("  flowcloze validate <intermediate.yaml> <generated.yaml>");
+            eprintln!("  flowcloze pdf [-o output.pdf] [--template template.typ] <generated.yaml>");
             process::exit(2);
         }
     };
@@ -36,6 +38,10 @@ fn main() {
                 args.output_path.as_deref(),
                 model.as_deref(),
             );
+            return;
+        }
+        Command::Pdf { template_path } => {
+            compile_pdf_file(&args.input_path, args.output_path.as_deref(), template_path);
             return;
         }
         Command::Parse => {}
@@ -94,6 +100,9 @@ enum Command {
     Generate {
         model: Option<String>,
     },
+    Pdf {
+        template_path: String,
+    },
     Validate {
         intermediate_path: String,
         generated_path: String,
@@ -112,6 +121,11 @@ impl Args {
             match arg.as_str() {
                 "generate" if input_path.is_none() && matches!(command, Command::Parse) => {
                     command = Command::Generate { model: None };
+                }
+                "pdf" if input_path.is_none() && matches!(command, Command::Parse) => {
+                    command = Command::Pdf {
+                        template_path: "templates/cloze.typ".to_string(),
+                    };
                 }
                 "validate" if input_path.is_none() => {
                     let Some(intermediate_path) = args.next() else {
@@ -145,12 +159,20 @@ impl Args {
                         _ => return Err("--model はgenerateコマンドでのみ使えます".to_string()),
                     }
                 }
+                "--template" => {
+                    let Some(path) = args.next() else {
+                        return Err("--template にはTypstテンプレートのパスが必要です".to_string());
+                    };
+                    match &mut command {
+                        Command::Pdf { template_path } => *template_path = path,
+                        _ => return Err("--template はpdfコマンドでのみ使えます".to_string()),
+                    }
+                }
                 "-o" | "--output" => {
                     let Some(path) = args.next() else {
                         return Err(format!("{arg} には出力先パスが必要です"));
                     };
                     output_path = Some(path);
-                    yaml = true;
                 }
                 _ if arg.starts_with('-') => return Err(format!("未知のオプションです: {arg}")),
                 _ => {
@@ -166,6 +188,10 @@ impl Args {
             return Err("入力Markdownファイルを指定してください".to_string());
         };
 
+        if output_path.is_some() && matches!(command, Command::Parse) {
+            yaml = true;
+        }
+
         Ok(Self {
             command,
             input_path,
@@ -173,6 +199,24 @@ impl Args {
             yaml,
         })
     }
+}
+
+fn compile_pdf_file(generated_yaml_path: &str, output_path: Option<&str>, template_path: &str) {
+    let output_pdf_path = output_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_pdf_output_path(generated_yaml_path));
+    let options = PdfOptions {
+        generated_yaml_path: PathBuf::from(generated_yaml_path),
+        output_pdf_path: output_pdf_path.clone(),
+        template_path: PathBuf::from(template_path),
+    };
+
+    if let Err(error) = compile_pdf(&options) {
+        eprintln!("{error}");
+        process::exit(1);
+    }
+
+    println!("{}", output_pdf_path.display());
 }
 
 fn generate_with_gemini(input_path: &str, output_path: Option<&str>, model: Option<&str>) {
