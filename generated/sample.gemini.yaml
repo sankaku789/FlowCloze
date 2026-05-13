@@ -1,0 +1,36 @@
+questions:
+  - id: sem-001
+    type: context-cloze
+    title: セマフォ
+    targets:
+      - answer: セマフォ
+        type: term-name
+      - answer: プロセス間同期機能
+        type: meaning
+      - answer: P命令
+        type: term-name
+      - answer: 獲得
+        type: process
+      - answer: 待ち状態
+        type: state
+      - answer: V命令
+        type: term-name
+      - answer: 解放
+        type: process
+    question: |-
+      OSが提供する＿＿＿の一つに＿＿＿がある。これは、リソースの＿＿＿を要求する＿＿＿と、リソースを＿＿＿する＿＿＿から構成される。P命令でリソースが許可されない場合、プロセスは＿＿＿へ移行する。
+    answers:
+      - プロセス間同期機能
+      - セマフォ
+      - 獲得
+      - P命令
+      - 解放
+      - V命令
+      - 待ち状態
+    source_text: |-
+      セマフォはOSが提供するプロセス間同期機能の一つである。
+      P命令はリソースの獲得を要求し，許可されない場合は待ち状態へ移行する。
+      V命令はリソースを解放する。
+    explanation: ""
+    tags: []
+    warnings: []

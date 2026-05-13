@@ -1,0 +1,19 @@
+questions:
+  - id: sem-001
+    type: context-cloze
+    question: |
+      ＿＿＿
+      ＿＿＿
+      ＿＿＿
+      ＿＿＿
+      ＿＿＿
+      ＿＿＿
+      ＿＿＿
+    answers:
+      - セマフォ
+      - プロセス間同期機能
+      - P命令
+      - 獲得
+      - 待ち状態
+      - V命令
+      - ミューテックス
