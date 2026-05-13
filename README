@@ -494,148 +494,289 @@ LLMが生成した問題文を確認し，必要であれば編集する。
 
 ---
 
-## 想定ディレクトリ構成
+## 現在の実装状況
 
-```text
-study-system/
-├─ notes/
-│  └─ os-2nd.md
-├─ generated/
-│  └─ os-2nd.questions.yaml
-├─ src/
-│  └─ mdcloze/
-│     ├─ __init__.py
-│     ├─ parser.py
-│     ├─ models.py
-│     ├─ generator.py
-│     └─ cli.py
-├─ dist/
-├─ pyproject.toml
-└─ README.md
-```
+現在の実装はRust版で進めている。
+
+実装済みの範囲は以下である。
+
+| Phase | 状態 | 内容 |
+|---|---|---|
+| Phase 1 | 実装済み | `[答え]{タイプ}` と `qblock` の仕様をRustのモデルに反映 |
+| Phase 2 | 実装済み | Markdownからqblock，source_text，targetsを抽出 |
+| Phase 3 | 実装済み | 抽出した中間データをYAMLとして出力 |
+| Phase 4 | 実装済み | Gemini APIで文章補完問題YAMLを生成 |
+| Phase 5 | 実装済み | 生成YAMLを中間データと照合して検証 |
+| Phase 6 | 未実装 | TypstやWeb UIなどの出力機能 |
+| Phase 7 | 未実装 | 復習ログ，苦手分野，復習間隔管理 |
+
+現時点では，Markdownを入力として，Geminiに問題を生成させ，生成結果を検証してYAMLとして保存できる。
 
 ---
 
-## コア処理の流れ
+## 現在のディレクトリ構成
 
-Typst出力は後回しにし，まずはコア部分を作る。
+```text
+FlowCloze/
+├─ notes/
+│  └─ sample.md
+├─ generated/
+│  ├─ sample.questions.yaml
+│  ├─ sample.generated.yaml
+│  └─ sample.gemini.yaml
+├─ src/
+│  ├─ lib.rs
+│  ├─ main.rs
+│  ├─ models.rs
+│  ├─ parser.rs
+│  ├─ yaml.rs
+│  ├─ prompt.rs
+│  ├─ gemini.rs
+│  └─ validation.rs
+├─ tests/
+│  ├─ fixtures/
+│  ├─ parser.rs
+│  ├─ yaml.rs
+│  ├─ prompt.rs
+│  ├─ gemini.rs
+│  └─ validation.rs
+├─ Cargo.toml
+├─ Cargo.lock
+├─ .env.example
+└─ README
+```
+
+各Rustモジュールの役割は以下である。
+
+| ファイル | 役割 |
+|---|---|
+| `src/models.rs` | qblockとtargetのドメインモデル |
+| `src/parser.rs` | Markdownからqblockとtargetsを抽出 |
+| `src/yaml.rs` | 中間データをYAMLへ変換 |
+| `src/prompt.rs` | Geminiに渡す生成プロンプトを構築 |
+| `src/gemini.rs` | Gemini APIのRESTクライアント |
+| `src/validation.rs` | 生成結果YAMLの検証 |
+| `src/main.rs` | CLI |
+
+---
+
+## 環境構築
+
+### 1. Rustをインストールする
+
+Rustが入っていない場合は，以下のどちらかでインストールする。
+
+#### rustupを使う場合
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+```
+
+#### Ubuntu / WSLでaptを使う場合
+
+```bash
+sudo apt update
+sudo apt install -y cargo rustc
+```
+
+確認する。
+
+```bash
+cargo --version
+rustc --version
+```
+
+### 2. リポジトリをビルドする
+
+```bash
+cargo build
+```
+
+### 3. テストを実行する
+
+```bash
+cargo test
+```
+
+現在のテストは以下を確認している。
+
+- qblockの抽出
+- targetsの抽出
+- source_textの生成
+- コードフェンス内qblockの無視
+- 不正なqblockのエラー
+- 中間YAML出力
+- Gemini用プロンプト生成
+- Geminiレスポンス整形
+- 生成YAMLの検証
+
+### 4. Gemini APIキーを設定する
+
+`.env.example` を参考に `.env` を作る。
+
+```bash
+cp .env.example .env
+```
+
+`.env` にAPIキーを設定する。
+
+```env
+GEMINI_API_KEY=your_api_key_here
+GEMINI_MODEL=gemini-2.5-flash
+```
+
+`.env` は秘密情報を含むためGit管理しない。
+
+---
+
+## CLIの使い方
+
+### Markdownを解析してtargetsを表示する
+
+```bash
+cargo run -- notes/sample.md
+```
+
+出力例：
+
+```text
+sem-001: セマフォ
+  - セマフォ (term-name)
+  - プロセス間同期機能 (meaning)
+  - P命令 (term-name)
+  - 獲得 (process)
+  - 待ち状態 (state)
+  - V命令 (term-name)
+  - 解放 (process)
+```
+
+### 中間YAMLを標準出力する
+
+```bash
+cargo run -- --yaml notes/sample.md
+```
+
+### 中間YAMLをファイルに保存する
+
+```bash
+cargo run -- --yaml -o generated/sample.questions.yaml notes/sample.md
+```
+
+生成される中間YAMLは，LLMに渡すためのデータである。
+
+```yaml
+meta:
+  source: notes/sample.md
+qblocks:
+- id: sem-001
+  mode: context
+  title: セマフォ
+  source_text: |-
+    セマフォはOSが提供するプロセス間同期機能の一つである。
+    P命令はリソースの獲得を要求し，許可されない場合は待ち状態へ移行する。
+    V命令はリソースを解放する。
+  targets:
+  - answer: セマフォ
+    type: term-name
+```
+
+### Geminiで問題を生成する
+
+```bash
+cargo run -- generate notes/sample.md
+```
+
+ファイルに保存する場合：
+
+```bash
+cargo run -- generate -o generated/sample.gemini.yaml notes/sample.md
+```
+
+モデルを明示する場合：
+
+```bash
+cargo run -- generate --model gemini-2.5-flash -o generated/sample.gemini.yaml notes/sample.md
+```
+
+`generate` は内部で以下を行う。
 
 ```text
 Markdown
   ↓
 Parser
   ↓
-targets / source_text 抽出
+中間データ
   ↓
-LLMによる文章補完問題生成
+Gemini API
   ↓
-YAML保存
+生成YAML
+  ↓
+Phase 5検証
+  ↓
+保存または標準出力
 ```
 
-最初の実装では，以下を目標にする。
+生成結果が検証に失敗した場合，ファイルには保存しない。
+
+### 生成YAMLを検証する
+
+```bash
+cargo run -- validate generated/sample.questions.yaml generated/sample.gemini.yaml
+```
+
+成功時：
 
 ```text
-1. Markdownからqblockを検出する
-2. qblock内の [答え]{type} を抽出する
-3. source_textとtargetsを作る
-4. LLMに渡すための中間データを作る
-5. LLMの出力をYAMLとして保存する
+validation ok
 ```
 
 ---
 
-## MVP
+## YAML形式
 
-最初のMVPでは，以下ができればよい。
+### 中間YAML
 
-### 入力
-
-```md
-:::qblock{id="sem-001" title="セマフォ"}
-[セマフォ]{term-name}はOSが提供する[プロセス間同期機能]{meaning}の一つである。
-[P命令]{term-name}はリソースの[獲得]{process}を要求する。
-:::
-```
-
-### 中間データ
+中間YAMLは，Parserが抽出した人間の出題意図を保存する。
 
 ```yaml
-id: sem-001
-title: セマフォ
-source_text: |
-  セマフォはOSが提供するプロセス間同期機能の一つである。
-  P命令はリソースの獲得を要求する。
-targets:
+meta:
+  source: notes/sample.md
+qblocks:
+- id: sem-001
+  mode: context
+  title: セマフォ
+  source_text: |-
+    セマフォはOSが提供するプロセス間同期機能の一つである。
+  targets:
   - answer: セマフォ
     type: term-name
-  - answer: プロセス間同期機能
-    type: meaning
-  - answer: P命令
-    type: term-name
-  - answer: 獲得
-    type: process
 ```
 
-### 生成結果
+### 生成YAML
+
+生成YAMLは，LLMが生成した文章補完問題である。
 
 ```yaml
 questions:
   - id: sem-001
     type: context-cloze
     title: セマフォ
-
+    targets:
+      - answer: セマフォ
+        type: term-name
     question: |
-      ＿＿＿は，OSが提供する＿＿＿の一つである。
-      この仕組みでは，＿＿＿によってリソースの＿＿＿を要求する。
-
+      ＿＿＿は，OSが提供する同期機能の一つである。
     answers:
       - セマフォ
-      - プロセス間同期機能
-      - P命令
-      - 獲得
+    source_text: |
+      セマフォはOSが提供するプロセス間同期機能の一つである。
+    explanation: |
+      セマフォは共有資源を扱う際の同期機構である。
+    tags:
+      - OS
+    warnings: []
 ```
-
----
-
-## 開発フェーズ
-
-### Phase 1：Markdown記法の確定
-
-`[答え]{タイプ}` と `qblock` の仕様を確定する。
-
-### Phase 2：Parser実装
-
-Markdownからqblockとtargetsを抽出する。
-
-### Phase 3：YAML出力
-
-抽出した中間データや生成結果をYAMLとして保存できるようにする。
-
-### Phase 4：LLM生成
-
-LLMに，targetsを固定した文章補完問題を生成させる。
-
-### Phase 5：検証処理
-
-LLM出力について，以下を検証する。
-
-- 空欄数とanswers数が一致しているか
-- answersがtargetsと対応しているか
-- 指定されていない答えが追加されていないか
-- YAMLとして正しく読めるか
-
-### Phase 6：出力機能
-
-将来的にTypstやWeb UIに出力する。
-
-### Phase 7：復習支援
-
-将来的に以下を追加する。
-
-- 間違えた問題の記録
-- 苦手分野の抽出
-- 復習間隔の管理
-- 難易度調整
 
 ---
 
@@ -643,16 +784,67 @@ LLM出力について，以下を検証する。
 
 LLM出力後，プログラム側で必ず検証を行う。
 
+現在の実装では以下を確認する。
+
 ```text
+- 生成YAMLとして読めるか
+- 中間YAMLとして読めるか
+- questionが空でないか
 - question内の空欄数 == answers数
-- answersの各要素がtargetsに含まれている
-- targetsにないanswerが存在しない
-- questionが空でない
-- idが重複していない
+- answersの各要素が元のtargetsに含まれているか
+- 元のtargetsのanswerがanswersに欠けていないか
+- question idが重複していないか
+- question idが中間データに存在するか
 ```
+
+空欄は `＿＿＿` という文字列で数える。
 
 LLMは便利だが，出力の正しさを完全には信用しない。  
 そのため，生成後のバリデーションを必須とする。
+
+---
+
+## 開発フェーズ
+
+### Phase 1：Markdown記法の確定
+
+実装済み。  
+`[答え]{タイプ}` と `qblock` の仕様を `models.rs` と `parser.rs` に反映している。
+
+### Phase 2：Parser実装
+
+実装済み。  
+Markdownからqblock，targets，source_textを抽出する。
+
+### Phase 3：YAML出力
+
+実装済み。  
+抽出した中間データをYAMLとして保存できる。
+
+### Phase 4：LLM生成
+
+実装済み。  
+Gemini APIを使い，targetsを固定した文章補完問題を生成する。
+
+### Phase 5：検証処理
+
+実装済み。  
+LLM出力について，空欄数，answers，targets，id重複などを検証する。
+
+### Phase 6：出力機能
+
+未実装。  
+将来的にTypstやWeb UIに出力する。
+
+### Phase 7：復習支援
+
+未実装。  
+将来的に以下を追加する。
+
+- 間違えた問題の記録
+- 苦手分野の抽出
+- 復習間隔の管理
+- 難易度調整
 
 ---
 
