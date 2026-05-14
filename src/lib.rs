@@ -1,5 +1,6 @@
 //! FlowClozeのコアライブラリ。
 
+pub mod ankilot;
 pub mod gemini;
 pub mod json;
 pub mod models;
@@ -8,6 +9,7 @@ pub mod pdf;
 pub mod prompt;
 pub mod validation;
 
+pub use ankilot::to_ankilot_csv;
 pub use gemini::{GeminiClient, GeminiError};
 pub use json::{to_intermediate_json, IntermediateDocument, IntermediateMeta, IntermediateQBlock};
 pub use models::{QBlock, Target, ALLOWED_TARGET_TYPES};

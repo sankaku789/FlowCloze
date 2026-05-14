@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process;
 
 use flowcloze::{
-    build_generation_prompt, compile_pdf, default_pdf_output_path, parse_markdown,
+    build_generation_prompt, compile_pdf, default_pdf_output_path, parse_markdown, to_ankilot_csv,
     to_intermediate_json, validate_generated_document, validate_generated_json, GeminiClient,
     GeneratedDocument, IntermediateDocument, PdfOptions,
 };
@@ -46,6 +46,14 @@ fn main() {
         }
         Command::View { generated_path } => {
             view_generated_json(generated_path);
+            return;
+        }
+        Command::Csv => {
+            let generated_path = args
+                .input_path
+                .as_deref()
+                .expect("csvには生成結果JSONパスが必要です");
+            export_ankilot_csv(generated_path, args.output_path.as_deref());
             return;
         }
         Command::Validate {
@@ -143,6 +151,7 @@ enum Command {
     View {
         generated_path: String,
     },
+    Csv,
     Parse,
     Generate {
         model: Option<String>,
@@ -200,6 +209,9 @@ impl Args {
                 }
                 "generate" if input_path.is_none() && matches!(command, Command::Parse) => {
                     command = Command::Generate { model: None };
+                }
+                "csv" if input_path.is_none() && matches!(command, Command::Parse) => {
+                    command = Command::Csv;
                 }
                 "pdf" if input_path.is_none() && matches!(command, Command::Parse) => {
                     command = Command::Pdf {
@@ -264,19 +276,30 @@ impl Args {
                         return Err("help/version には追加引数を指定できません".to_string());
                     }
                     if input_path.is_some() {
-                        return Err("入力Markdownファイルは1つだけ指定してください".to_string());
+                        return Err(duplicate_input_error(&command));
                     }
                     input_path = Some(arg);
                 }
             }
         }
 
-        if matches!(
-            command,
-            Command::Parse | Command::Generate { .. } | Command::Pdf { .. }
-        ) && input_path.is_none()
-        {
-            return Err("入力Markdownファイルを指定してください".to_string());
+        if input_path.is_none() {
+            match command {
+                Command::Parse | Command::Generate { .. } => {
+                    return Err("入力Markdownファイルを指定してください".to_string());
+                }
+                Command::Csv => {
+                    return Err("csvには生成結果JSONパスが必要です".to_string());
+                }
+                Command::Pdf { .. } => {
+                    return Err("pdfには生成結果JSONパスが必要です".to_string());
+                }
+                Command::Help
+                | Command::Version
+                | Command::ApiSet { .. }
+                | Command::View { .. }
+                | Command::Validate { .. } => {}
+            }
         }
 
         if output_path.is_some() && matches!(command, Command::Parse) {
@@ -290,6 +313,14 @@ impl Args {
             json,
             skip_constraints,
         })
+    }
+}
+
+fn duplicate_input_error(command: &Command) -> String {
+    match command {
+        Command::Csv => "生成結果JSONファイルは1つだけ指定してください".to_string(),
+        Command::Pdf { .. } => "生成結果JSONファイルは1つだけ指定してください".to_string(),
+        _ => "入力Markdownファイルは1つだけ指定してください".to_string(),
     }
 }
 
@@ -340,6 +371,7 @@ fn print_usage() {
     eprintln!("  flowcloze generate [-o output.json] [--model model] <markdown-file>");
     eprintln!("  flowcloze validate <intermediate.json> <generated.json>");
     eprintln!("  flowcloze view <generated.json>");
+    eprintln!("  flowcloze csv [-o output.csv] <generated.json>");
     eprintln!("  flowcloze pdf [-o output.pdf] [--template template.typ] <generated.json>");
     eprintln!("  flowcloze api set --key <api_key> [--model model]");
 }
@@ -353,6 +385,7 @@ fn print_help() {
     eprintln!("  generate               Geminiで問題文JSONを生成します / Generate questions JSON");
     eprintln!("  validate               中間JSONと生成JSONを検証します / Validate JSON pairs");
     eprintln!("  view                   生成JSONをTUIで表示します / View generated JSON in TUI");
+    eprintln!("  csv                    生成JSONからAnkilot用CSVを作成します / Export Ankilot CSV");
     eprintln!("  pdf                    生成JSONからPDFを作成します / Build PDF from JSON");
     eprintln!("  api set                APIキーを.envに保存します / Save API key to .env");
     eprintln!("\nオプション / Options:");
@@ -391,6 +424,32 @@ fn view_generated_json(generated_path: &str) {
     if let Err(error) = view::run_viewer(document) {
         eprintln!("TUIの表示に失敗しました: {error}");
         process::exit(1);
+    }
+}
+
+fn export_ankilot_csv(generated_path: &str, output_path: Option<&str>) {
+    let generated_json = match fs::read_to_string(generated_path) {
+        Ok(json) => json,
+        Err(error) => {
+            eprintln!("{generated_path} を読めませんでした: {error}");
+            process::exit(1);
+        }
+    };
+    let document = match serde_json::from_str::<GeneratedDocument>(&generated_json) {
+        Ok(document) => document,
+        Err(error) => {
+            eprintln!("生成結果JSONを読めません: {error}");
+            process::exit(1);
+        }
+    };
+    let csv = to_ankilot_csv(&document);
+    if let Some(output_path) = output_path {
+        if let Err(error) = fs::write(output_path, csv) {
+            eprintln!("{output_path} へ書き込めませんでした: {error}");
+            process::exit(1);
+        }
+    } else {
+        print!("{csv}");
     }
 }
 

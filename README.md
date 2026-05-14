@@ -177,6 +177,19 @@ cargo run -- validate generated/sample.questions.json generated/sample.gemini.js
 cargo run -- view generated/sample.gemini.json
 ```
 
+### Export Ankilot CSV
+
+生成JSONからAnkilot取り込み用CSVを作ります。CSVはUTF-8のヘッダーなし2列形式です。
+
+1. 表: question
+2. 裏: answers
+
+```bash
+cargo run -- csv -o generated/sample.csv generated/sample.gemini.json
+```
+
+`-o` を省略すると標準出力へ出します。
+
 
 ### Build PDF
 
