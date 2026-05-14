@@ -1,14 +1,14 @@
 //! LLMに渡すプロンプトを組み立てる処理。
 
-use crate::yaml::IntermediateDocument;
+use crate::json::IntermediateDocument;
 
 /// 中間データから文章補完問題生成用のプロンプトを作る。
 pub fn build_generation_prompt(
     intermediate: &IntermediateDocument,
-) -> Result<String, serde_yaml::Error> {
-    let intermediate_yaml = serde_yaml::to_string(intermediate)?;
+) -> Result<String, serde_json::Error> {
+    let intermediate_json = serde_json::to_string_pretty(intermediate)?;
     Ok(format!(
-        r#"次のMarkdown qblock由来の中間データから，文章補完問題を生成してください。
+        r#"次のMarkdown qblock由来の中間データから，文章補完問題データを生成してください。
 
 制約:
 - [答え]{{type}} で指定された語句のみを答えにする
@@ -24,15 +24,17 @@ pub fn build_generation_prompt(
 - 不明な点や不自然な点があればwarningsに書く
 
 出力:
-- YAMLのみを出力する
+- JSONのみを出力する
 - Markdownのコードフェンスは付けない
 - ルートキーは questions にする
 - 各questionには id, type, title, targets, question, answers, source_text, explanation, tags, warnings を含める
 - type は context-cloze にする
 - targets は入力のtargetsをそのまま含める
+- answers は文字列だけの配列にする。入れ子配列は使わない
+- tags と warnings が空の場合は空配列にする
 - question内の空欄は必ず ＿＿＿ を使う
 
 中間データ:
-{intermediate_yaml}"#
+{intermediate_json}"#
     ))
 }

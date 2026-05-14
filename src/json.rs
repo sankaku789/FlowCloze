@@ -1,4 +1,4 @@
-//! 抽出した中間データをYAMLへ変換する処理。
+//! 抽出した中間データをJSONへ変換する処理。
 
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +17,7 @@ pub struct IntermediateMeta {
     pub source: String,
 }
 
-/// YAML保存用のqblock。
+/// JSON保存用のqblock。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct IntermediateQBlock {
     pub id: String,
@@ -31,7 +31,7 @@ pub struct IntermediateQBlock {
     pub warnings: Vec<String>,
 }
 
-/// YAMLではREADMEの仕様に合わせて `type` というキーで出力する。
+/// READMEの仕様に合わせて `type` というキーで出力する。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct IntermediateTarget {
     pub answer: String,
@@ -76,7 +76,7 @@ impl From<&Target> for IntermediateTarget {
     }
 }
 
-/// qblock抽出結果をPhase3用YAML文字列に変換する。
-pub fn to_intermediate_yaml(source: &str, qblocks: &[QBlock]) -> Result<String, serde_yaml::Error> {
-    serde_yaml::to_string(&IntermediateDocument::from_qblocks(source, qblocks))
+/// qblock抽出結果をPhase3用JSON文字列に変換する。
+pub fn to_intermediate_json(source: &str, qblocks: &[QBlock]) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(&IntermediateDocument::from_qblocks(source, qblocks))
 }

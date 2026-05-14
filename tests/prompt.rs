@@ -9,9 +9,9 @@ fn プロンプトに中間データと制約を含める() {
 
     let prompt = build_generation_prompt(&document).unwrap();
 
-    assert!(prompt.contains("YAMLのみを出力する"));
+    assert!(prompt.contains("JSONのみを出力する"));
     assert!(prompt.contains("targetsにないanswerを追加しない"));
-    assert!(prompt.contains("id: sem-001"));
-    assert!(prompt.contains("answer: セマフォ"));
-    assert!(prompt.contains("type: term-name"));
+    assert!(prompt.contains(r#""id": "sem-001""#));
+    assert!(prompt.contains(r#""answer": "セマフォ""#));
+    assert!(prompt.contains(r#""type": "term-name""#));
 }

@@ -1,7 +1,7 @@
 //! PDF出力用の薄いアダプタ。
 //!
 //! レイアウトはTypstテンプレートに閉じ込め，このモジュールは
-//! 生成YAMLをTypstへ渡してコンパイルする責務だけを持つ。
+//! 生成JSONをTypstへ渡してコンパイルする責務だけを持つ。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,14 +9,14 @@ use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PdfOptions {
-    pub generated_yaml_path: PathBuf,
+    pub generated_json_path: PathBuf,
     pub output_pdf_path: PathBuf,
     pub template_path: PathBuf,
 }
 
 #[derive(Debug)]
 pub enum PdfError {
-    MissingGeneratedYaml {
+    MissingGeneratedJson {
         path: PathBuf,
         source: std::io::Error,
     },
@@ -45,7 +45,7 @@ pub enum PdfError {
 impl std::fmt::Display for PdfError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MissingGeneratedYaml { path, source } => {
+            Self::MissingGeneratedJson { path, source } => {
                 write!(f, "{} を読めませんでした: {source}", path.display())
             }
             Self::MissingTemplate { path, source } => {
@@ -84,14 +84,14 @@ impl std::fmt::Display for PdfError {
 
 impl std::error::Error for PdfError {}
 
-pub fn default_pdf_output_path(generated_yaml_path: impl AsRef<Path>) -> PathBuf {
-    generated_yaml_path.as_ref().with_extension("pdf")
+pub fn default_pdf_output_path(generated_json_path: impl AsRef<Path>) -> PathBuf {
+    generated_json_path.as_ref().with_extension("pdf")
 }
 
 pub fn compile_pdf(options: &PdfOptions) -> Result<(), PdfError> {
-    let generated_yaml_path = canonicalize(&options.generated_yaml_path).map_err(|source| {
-        PdfError::MissingGeneratedYaml {
-            path: options.generated_yaml_path.clone(),
+    let generated_json_path = canonicalize(&options.generated_json_path).map_err(|source| {
+        PdfError::MissingGeneratedJson {
+            path: options.generated_json_path.clone(),
             source,
         }
     })?;
@@ -114,7 +114,7 @@ pub fn compile_pdf(options: &PdfOptions) -> Result<(), PdfError> {
 
     let output = command
         .arg("--input")
-        .arg(format!("data={}", generated_yaml_path.display()))
+        .arg(format!("data={}", generated_json_path.display()))
         .output()
         .map_err(PdfError::TypstNotFound)?;
 

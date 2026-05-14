@@ -1,0 +1,12 @@
+{
+  "questions": [
+    {
+      "id": "sem-001",
+      "type": "context-cloze",
+      "question": "＿＿＿はOSの＿＿＿である。",
+      "answers": [
+        "セマフォ"
+      ]
+    }
+  ]
+}

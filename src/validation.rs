@@ -1,19 +1,19 @@
-//! LLM生成後YAMLの検証処理。
+//! LLM生成後JSONの検証処理。
 
 use std::collections::{HashMap, HashSet};
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::yaml::IntermediateDocument;
+use crate::json::IntermediateDocument;
 
-/// 生成結果YAML全体。
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// 生成結果JSON全体。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GeneratedDocument {
     pub questions: Vec<GeneratedQuestion>,
 }
 
 /// LLMが生成した文章補完問題。
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GeneratedQuestion {
     pub id: String,
     #[serde(rename = "type")]
@@ -21,17 +21,18 @@ pub struct GeneratedQuestion {
     pub title: Option<String>,
     pub targets: Option<Vec<GeneratedTarget>>,
     pub question: String,
+    #[serde(default, deserialize_with = "flatten_answers")]
     pub answers: Vec<String>,
     pub source_text: Option<String>,
     pub explanation: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub tags: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub warnings: Vec<String>,
 }
 
 /// 生成結果内に残されたtargets。
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GeneratedTarget {
     pub answer: String,
     #[serde(rename = "type")]
@@ -53,8 +54,8 @@ impl ValidationReport {
 /// READMEの検証ルールに対応するエラー。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
-    InvalidIntermediateYaml(String),
-    InvalidGeneratedYaml(String),
+    InvalidIntermediateJson(String),
+    InvalidGeneratedJson(String),
     EmptyQuestion {
         id: String,
     },
@@ -82,11 +83,11 @@ pub enum ValidationError {
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidIntermediateYaml(message) => {
-                write!(f, "中間YAMLを読めません: {message}")
+            Self::InvalidIntermediateJson(message) => {
+                write!(f, "中間JSONを読めません: {message}")
             }
-            Self::InvalidGeneratedYaml(message) => {
-                write!(f, "生成結果YAMLを読めません: {message}")
+            Self::InvalidGeneratedJson(message) => {
+                write!(f, "生成結果JSONを読めません: {message}")
             }
             Self::EmptyQuestion { id } => write!(f, "{id}: questionが空です"),
             Self::DuplicateQuestionId { id } => write!(f, "{id}: idが重複しています"),
@@ -109,26 +110,43 @@ impl std::fmt::Display for ValidationError {
     }
 }
 
-/// 中間YAMLと生成結果YAMLを照合して検証する。
-pub fn validate_generated_yaml(intermediate_yaml: &str, generated_yaml: &str) -> ValidationReport {
-    let intermediate = match serde_yaml::from_str::<IntermediateDocument>(intermediate_yaml) {
+/// 中間JSONと生成結果JSONを照合して検証する。
+pub fn validate_generated_json(intermediate_json: &str, generated_json: &str) -> ValidationReport {
+    let intermediate = match serde_json::from_str::<IntermediateDocument>(intermediate_json) {
         Ok(document) => document,
         Err(error) => {
             return ValidationReport {
-                errors: vec![ValidationError::InvalidIntermediateYaml(error.to_string())],
+                errors: vec![ValidationError::InvalidIntermediateJson(error.to_string())],
             };
         }
     };
-    let generated = match serde_yaml::from_str::<GeneratedDocument>(generated_yaml) {
+    let generated = match serde_json::from_str::<GeneratedDocument>(generated_json) {
         Ok(document) => document,
         Err(error) => {
             return ValidationReport {
-                errors: vec![ValidationError::InvalidGeneratedYaml(error.to_string())],
+                errors: vec![ValidationError::InvalidGeneratedJson(error.to_string())],
             };
         }
     };
 
     validate_documents(&intermediate, &generated)
+}
+
+/// 中間JSONとパース済み生成結果を照合して検証する。
+pub fn validate_generated_document(
+    intermediate_json: &str,
+    generated: &GeneratedDocument,
+) -> ValidationReport {
+    let intermediate = match serde_json::from_str::<IntermediateDocument>(intermediate_json) {
+        Ok(document) => document,
+        Err(error) => {
+            return ValidationReport {
+                errors: vec![ValidationError::InvalidIntermediateJson(error.to_string())],
+            };
+        }
+    };
+
+    validate_documents(&intermediate, generated)
 }
 
 fn validate_documents(
@@ -217,4 +235,44 @@ fn validate_documents(
 
 fn count_blanks(question: &str) -> usize {
     question.matches("＿＿＿").count()
+}
+
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn flatten_answers<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Option::<Vec<AnswerValue>>::deserialize(deserializer)?.unwrap_or_default();
+    let mut answers = Vec::new();
+    for value in values {
+        value.flatten_into(&mut answers);
+    }
+    Ok(answers)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+enum AnswerValue {
+    Text(String),
+    Many(Vec<AnswerValue>),
+}
+
+impl AnswerValue {
+    fn flatten_into(self, answers: &mut Vec<String>) {
+        match self {
+            Self::Text(answer) => answers.push(answer),
+            Self::Many(values) => {
+                for value in values {
+                    value.flatten_into(answers);
+                }
+            }
+        }
+    }
 }

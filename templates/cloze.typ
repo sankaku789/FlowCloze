@@ -1,10 +1,10 @@
 #let data-path = sys.inputs.at("data", default: "")
-#assert(data-path != "", message: "Pass generated YAML with --input data=<path>")
+#assert(data-path != "", message: "Pass generated JSON with --input data=<path>")
 
 // TODO: 添付イメージに近づけるため，複数qblockの段組み調整，
-//       問題文セルの高さ制御，解答欄の余白，ページ分割を改善する。
+//       問題文セルの高さ制御，解答欄の余白を改善する。
 
-#let data = yaml(data-path)
+#let data = json(data-path)
 #let questions = data.at("questions", default: ())
 
 #set page(paper: "a4", flipped: true, margin: 7mm)
@@ -12,6 +12,8 @@
 #set par(leading: 0.58em, justify: false)
 
 #let answer-color = rgb("#e11d1d")
+#let answer-text-size = 9.4pt
+#let answer-slot-height = 16pt
 #let cell-stroke = 0.45pt + black
 #let slot-stroke = 0.35pt + black
 
@@ -22,29 +24,8 @@
   }
 }
 
-#let sheet-title(label) = {
-  let title = none
-  for question in questions {
-    let candidate = question.at("title", default: none)
-    if candidate != none and str(candidate).trim() != "" and title == none {
-      title = candidate
-    }
-  }
-
-  if title == none {
-    label
-  } else {
-    [#title（#label）]
-  }
-}
-
 #let question-cell(question) = {
-  let title = question.at("title", default: none)
   [
-    #if title != none and str(title).trim() != "" {
-      strong(str(title))
-      linebreak()
-    }
     #write-lines(question.at("question", default: ""))
   ]
 }
@@ -54,25 +35,25 @@
     table(
       columns: (1fr,),
       stroke: slot-stroke,
-      inset: 2pt,
-      [#v(13pt)],
+      inset: 3pt,
+      [#v(answer-slot-height)],
     )
   } else {
     table(
       columns: (1fr,),
       stroke: slot-stroke,
-      inset: 2pt,
+      inset: 3pt,
       ..answers.map(answer => if show-answers {
-        [#text(fill: answer-color)[#str(answer)]]
+        [#text(fill: answer-color, size: answer-text-size)[#str(answer)]]
       } else {
-        [#v(13pt)]
+        [#v(answer-slot-height)]
       }),
     )
   }
 }
 
 #let sheet(label, show-answers: true) = {
-  heading(level: 2, sheet-title(label))
+  heading(level: 2, label)
 
   let cells = ()
   for chunk in questions.chunks(3) {
@@ -97,7 +78,5 @@
 }
 
 #sheet("解答入り", show-answers: true)
-#v(5mm)
-#line(length: 100%, stroke: (paint: blue, thickness: 0.7pt, dash: "dashed"))
-#v(4mm)
+#pagebreak()
 #sheet("演習用", show-answers: false)

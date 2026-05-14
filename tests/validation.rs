@@ -1,32 +1,92 @@
-use flowcloze::{parse_markdown, to_intermediate_yaml, validate_generated_yaml, ValidationError};
+use flowcloze::{parse_markdown, to_intermediate_json, validate_generated_json, ValidationError};
 use std::fs;
 
 fn fixture(path: &str) -> String {
     fs::read_to_string(format!("tests/fixtures/{path}")).unwrap()
 }
 
-fn intermediate_yaml() -> String {
+fn intermediate_json() -> String {
     let markdown = fixture("mvp-context.md");
     let qblocks = parse_markdown(&markdown).unwrap();
-    to_intermediate_yaml("tests/fixtures/mvp-context.md", &qblocks).unwrap()
+    to_intermediate_json("tests/fixtures/mvp-context.md", &qblocks).unwrap()
 }
 
 #[test]
-fn 正しい生成結果yamlを検証できる() {
-    let intermediate_yaml = intermediate_yaml();
-    let generated_yaml = fixture("generated-valid.yaml");
+fn 正しい生成結果jsonを検証できる() {
+    let intermediate_json = intermediate_json();
+    let generated_json = fixture("generated-valid.json");
 
-    let report = validate_generated_yaml(&intermediate_yaml, &generated_yaml);
+    let report = validate_generated_json(&intermediate_json, &generated_json);
+
+    assert!(report.is_valid());
+}
+
+#[test]
+fn tagsとwarningsが空値でも空配列として扱う() {
+    let intermediate_json = intermediate_json();
+    let generated_json = r#"
+{
+  "questions": [
+    {
+      "id": "sem-001",
+      "type": "context-cloze",
+      "title": "セマフォ",
+      "question": "＿＿＿はOSの＿＿＿である。\n＿＿＿で＿＿＿し，だめなら＿＿＿になる。\n＿＿＿で＿＿＿する。",
+      "answers": [
+        "セマフォ",
+        "プロセス間同期機能",
+        "P命令",
+        "獲得",
+        "待ち状態",
+        "V命令",
+        "解放"
+      ],
+      "tags": null,
+      "warnings": null
+    }
+  ]
+}
+"#;
+
+    let report = validate_generated_json(&intermediate_json, generated_json);
+
+    assert!(report.is_valid());
+}
+
+#[test]
+fn answersが入れ子配列でも平坦化して検証する() {
+    let intermediate_json = intermediate_json();
+    let generated_json = r#"
+{
+  "questions": [
+    {
+      "id": "sem-001",
+      "type": "context-cloze",
+      "title": "セマフォ",
+      "question": "＿＿＿はOSの＿＿＿である。\n＿＿＿で＿＿＿し，だめなら＿＿＿になる。\n＿＿＿で＿＿＿する。",
+      "answers": [
+        ["セマフォ", "プロセス間同期機能"],
+        "P命令",
+        "獲得",
+        "待ち状態",
+        ["V命令", "解放"]
+      ]
+    }
+  ]
+}
+"#;
+
+    let report = validate_generated_json(&intermediate_json, generated_json);
 
     assert!(report.is_valid());
 }
 
 #[test]
 fn 空欄数とanswers数の不一致を検出する() {
-    let intermediate_yaml = intermediate_yaml();
-    let generated_yaml = fixture("generated-blank-mismatch.yaml");
+    let intermediate_json = intermediate_json();
+    let generated_json = fixture("generated-blank-mismatch.json");
 
-    let report = validate_generated_yaml(&intermediate_yaml, &generated_yaml);
+    let report = validate_generated_json(&intermediate_json, &generated_json);
 
     assert!(report
         .errors
@@ -39,10 +99,10 @@ fn 空欄数とanswers数の不一致を検出する() {
 
 #[test]
 fn targetsにないanswerを検出する() {
-    let intermediate_yaml = intermediate_yaml();
-    let generated_yaml = fixture("generated-unknown-answer.yaml");
+    let intermediate_json = intermediate_json();
+    let generated_json = fixture("generated-unknown-answer.json");
 
-    let report = validate_generated_yaml(&intermediate_yaml, &generated_yaml);
+    let report = validate_generated_json(&intermediate_json, &generated_json);
 
     assert!(report
         .errors
