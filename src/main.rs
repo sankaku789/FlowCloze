@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process;
 
@@ -9,7 +10,10 @@ use flowcloze::{
     GeneratedDocument, IntermediateDocument, PdfOptions,
 };
 
+mod view;
+
 const MAX_GENERATION_ATTEMPTS: u32 = 3;
+const DEFAULT_MODEL: &str = "gemini-2.5-flash";
 
 fn main() {
     let _ = dotenvy::dotenv();
@@ -18,16 +22,32 @@ fn main() {
         Ok(args) => args,
         Err(message) => {
             eprintln!("{message}");
-            eprintln!("使い方:");
-            eprintln!("  flowcloze [--json] [-o output.json] <markdown-file>");
-            eprintln!("  flowcloze generate [-o output.json] [--model model] <markdown-file>");
-            eprintln!("  flowcloze validate <intermediate.json> <generated.json>");
-            eprintln!("  flowcloze pdf [-o output.pdf] [--template template.typ] <generated.json>");
+            print_usage();
             process::exit(2);
         }
     };
 
     match &args.command {
+        Command::Help => {
+            print_help();
+            return;
+        }
+        Command::Version => {
+            print_version();
+            return;
+        }
+        Command::ApiSet { api_key, model } => {
+            if let Err(error) = save_api_settings(api_key, model.as_deref()) {
+                eprintln!("{error}");
+                process::exit(1);
+            }
+            println!(".env を更新しました。");
+            return;
+        }
+        Command::View { generated_path } => {
+            view_generated_json(generated_path);
+            return;
+        }
         Command::Validate {
             intermediate_path,
             generated_path,
@@ -36,24 +56,38 @@ fn main() {
             return;
         }
         Command::Generate { model } => {
+            let input_path = args
+                .input_path
+                .as_deref()
+                .expect("generateには入力パスが必要です");
             generate_with_gemini(
-                &args.input_path,
+                input_path,
                 args.output_path.as_deref(),
                 model.as_deref(),
+                args.skip_constraints,
             );
             return;
         }
         Command::Pdf { template_path } => {
-            compile_pdf_file(&args.input_path, args.output_path.as_deref(), template_path);
+            let input_path = args
+                .input_path
+                .as_deref()
+                .expect("pdfには入力パスが必要です");
+            compile_pdf_file(input_path, args.output_path.as_deref(), template_path);
             return;
         }
         Command::Parse => {}
     }
 
-    let markdown = match fs::read_to_string(&args.input_path) {
+    let input_path = args
+        .input_path
+        .as_deref()
+        .expect("parseには入力パスが必要です");
+
+    let markdown = match fs::read_to_string(input_path) {
         Ok(markdown) => markdown,
         Err(error) => {
-            eprintln!("{} を読めませんでした: {error}", args.input_path);
+            eprintln!("{input_path} を読めませんでした: {error}");
             process::exit(1);
         }
     };
@@ -67,7 +101,7 @@ fn main() {
     };
 
     if args.json {
-        let json = match to_intermediate_json(&args.input_path, &qblocks) {
+        let json = match to_intermediate_json(input_path, &qblocks) {
             Ok(json) => json,
             Err(error) => {
                 eprintln!("JSONへの変換に失敗しました: {error}");
@@ -92,13 +126,23 @@ fn main() {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Args {
     command: Command,
-    input_path: String,
+    input_path: Option<String>,
     output_path: Option<String>,
     json: bool,
+    skip_constraints: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
+    Help,
+    Version,
+    ApiSet {
+        api_key: String,
+        model: Option<String>,
+    },
+    View {
+        generated_path: String,
+    },
     Parse,
     Generate {
         model: Option<String>,
@@ -117,11 +161,43 @@ impl Args {
         let mut input_path = None;
         let mut output_path = None;
         let mut json = false;
+        let mut skip_constraints = false;
         let mut command = Command::Parse;
         let mut args = args.into_iter();
 
         while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--help" | "-h" => command = Command::Help,
+                "--version" | "-V" => command = Command::Version,
+                "help" => return Err("help はオプションで指定してください (--help)".to_string()),
+                "version" => {
+                    return Err("version はオプションで指定してください (--version)".to_string())
+                }
+                "view" if input_path.is_none() && matches!(command, Command::Parse) => {
+                    let Some(generated_path) = args.next() else {
+                        return Err("viewには生成結果JSONパスが必要です".to_string());
+                    };
+                    if args.next().is_some() {
+                        return Err("viewの引数が多すぎます".to_string());
+                    }
+                    return Ok(Self {
+                        command: Command::View { generated_path },
+                        input_path: None,
+                        output_path: None,
+                        json: false,
+                        skip_constraints,
+                    });
+                }
+                "api" if input_path.is_none() && matches!(command, Command::Parse) => {
+                    let api_command = parse_api_command(&mut args)?;
+                    return Ok(Self {
+                        command: api_command,
+                        input_path: None,
+                        output_path: None,
+                        json: false,
+                        skip_constraints,
+                    });
+                }
                 "generate" if input_path.is_none() && matches!(command, Command::Parse) => {
                     command = Command::Generate { model: None };
                 }
@@ -145,12 +221,14 @@ impl Args {
                             intermediate_path,
                             generated_path,
                         },
-                        input_path: String::new(),
+                        input_path: None,
                         output_path: None,
                         json: false,
+                        skip_constraints,
                     });
                 }
                 "--json" => json = true,
+                "-s" | "--skip-constraints" => skip_constraints = true,
                 "--model" => {
                     let Some(model) = args.next() else {
                         return Err("--model にはモデル名が必要です".to_string());
@@ -177,8 +255,14 @@ impl Args {
                     };
                     output_path = Some(path);
                 }
+                _ if arg.starts_with("-s") => {
+                    return Err("-s は単独で指定してください".to_string());
+                }
                 _ if arg.starts_with('-') => return Err(format!("未知のオプションです: {arg}")),
                 _ => {
+                    if matches!(command, Command::Help | Command::Version) {
+                        return Err("help/version には追加引数を指定できません".to_string());
+                    }
                     if input_path.is_some() {
                         return Err("入力Markdownファイルは1つだけ指定してください".to_string());
                     }
@@ -187,9 +271,13 @@ impl Args {
             }
         }
 
-        let Some(input_path) = input_path else {
+        if matches!(
+            command,
+            Command::Parse | Command::Generate { .. } | Command::Pdf { .. }
+        ) && input_path.is_none()
+        {
             return Err("入力Markdownファイルを指定してください".to_string());
-        };
+        }
 
         if output_path.is_some() && matches!(command, Command::Parse) {
             json = true;
@@ -200,8 +288,152 @@ impl Args {
             input_path,
             output_path,
             json,
+            skip_constraints,
         })
     }
+}
+
+fn parse_api_command(args: &mut impl Iterator<Item = String>) -> Result<Command, String> {
+    let Some(subcommand) = args.next() else {
+        return Err("api にはサブコマンドが必要です (set)".to_string());
+    };
+
+    match subcommand.as_str() {
+        "set" => {
+            let mut api_key = None;
+            let mut model = None;
+
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--key" => {
+                        let Some(value) = args.next() else {
+                            return Err("--key にはAPIキーが必要です".to_string());
+                        };
+                        api_key = Some(value);
+                    }
+                    "--model" => {
+                        let Some(value) = args.next() else {
+                            return Err("--model にはモデル名が必要です".to_string());
+                        };
+                        model = Some(value);
+                    }
+                    _ if arg.starts_with('-') => {
+                        return Err(format!("未知のオプションです: {arg}"))
+                    }
+                    _ => return Err("api set はオプションのみ指定できます".to_string()),
+                }
+            }
+
+            let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) else {
+                return Err("api set には --key が必要です".to_string());
+            };
+
+            Ok(Command::ApiSet { api_key, model })
+        }
+        _ => Err("api のサブコマンドは set のみです".to_string()),
+    }
+}
+
+fn print_usage() {
+    eprintln!("使い方 / Usage:");
+    eprintln!("  flowcloze [--json] [-o output.json] <markdown-file>");
+    eprintln!("  flowcloze generate [-o output.json] [--model model] <markdown-file>");
+    eprintln!("  flowcloze validate <intermediate.json> <generated.json>");
+    eprintln!("  flowcloze view <generated.json>");
+    eprintln!("  flowcloze pdf [-o output.pdf] [--template template.typ] <generated.json>");
+    eprintln!("  flowcloze api set --key <api_key> [--model model]");
+}
+
+fn print_help() {
+    print_usage();
+    eprintln!("\nコマンド / Commands:");
+    eprintln!(
+        "  (default)              Markdownを解析して概要を表示します / Parse markdown summary"
+    );
+    eprintln!("  generate               Geminiで問題文JSONを生成します / Generate questions JSON");
+    eprintln!("  validate               中間JSONと生成JSONを検証します / Validate JSON pairs");
+    eprintln!("  view                   生成JSONをTUIで表示します / View generated JSON in TUI");
+    eprintln!("  pdf                    生成JSONからPDFを作成します / Build PDF from JSON");
+    eprintln!("  api set                APIキーを.envに保存します / Save API key to .env");
+    eprintln!("\nオプション / Options:");
+    eprintln!("  --json                 中間JSONを出力します / Output intermediate JSON");
+    eprintln!("  -s                     追加制約の入力をスキップします / Skip extra constraints");
+    eprintln!("  -o, --output <path>     出力先を指定します / Set output path");
+    eprintln!(
+        "  --model <model>         generateで使うGeminiモデルを指定します / Model for generate"
+    );
+    eprintln!(
+        "  --template <path>       pdfのTypstテンプレートを指定します / Typst template for pdf"
+    );
+    eprintln!("  -h, --help              ヘルプを表示します / Show help");
+    eprintln!("  -V, --version           バージョンを表示します / Show version");
+}
+
+fn print_version() {
+    println!("flowcloze {}", env!("CARGO_PKG_VERSION"));
+}
+
+fn view_generated_json(generated_path: &str) {
+    let generated_json = match fs::read_to_string(generated_path) {
+        Ok(json) => json,
+        Err(error) => {
+            eprintln!("{generated_path} を読めませんでした: {error}");
+            process::exit(1);
+        }
+    };
+    let document = match serde_json::from_str::<GeneratedDocument>(&generated_json) {
+        Ok(document) => document,
+        Err(error) => {
+            eprintln!("生成結果JSONを読めません: {error}");
+            process::exit(1);
+        }
+    };
+    if let Err(error) = view::run_viewer(document) {
+        eprintln!("TUIの表示に失敗しました: {error}");
+        process::exit(1);
+    }
+}
+
+fn save_api_settings(api_key: &str, model: Option<&str>) -> Result<(), String> {
+    let path = ".env";
+    let existing = fs::read_to_string(path).unwrap_or_default();
+    let mut lines = Vec::new();
+    let mut has_key = false;
+    let mut has_model = false;
+
+    for line in existing.lines() {
+        if line.trim_start().starts_with("GEMINI_API_KEY=") {
+            lines.push(format!("GEMINI_API_KEY={api_key}"));
+            has_key = true;
+            continue;
+        }
+        if line.trim_start().starts_with("GEMINI_MODEL=") {
+            if let Some(model) = model {
+                lines.push(format!("GEMINI_MODEL={model}"));
+            } else {
+                lines.push(line.to_string());
+            }
+            has_model = true;
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+
+    if !has_key {
+        lines.push(format!("GEMINI_API_KEY={api_key}"));
+    }
+    if let Some(model) = model {
+        if !has_model {
+            lines.push(format!("GEMINI_MODEL={model}"));
+        }
+    }
+
+    let mut contents = lines.join("\n");
+    if !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+
+    fs::write(path, contents).map_err(|error| format!("{path} を書き込めませんでした: {error}"))
 }
 
 fn compile_pdf_file(generated_json_path: &str, output_path: Option<&str>, template_path: &str) {
@@ -222,7 +454,12 @@ fn compile_pdf_file(generated_json_path: &str, output_path: Option<&str>, templa
     println!("{}", output_pdf_path.display());
 }
 
-fn generate_with_gemini(input_path: &str, output_path: Option<&str>, model: Option<&str>) {
+fn generate_with_gemini(
+    input_path: &str,
+    output_path: Option<&str>,
+    model: Option<&str>,
+    skip_constraints: bool,
+) {
     let markdown = match fs::read_to_string(input_path) {
         Ok(markdown) => markdown,
         Err(error) => {
@@ -245,13 +482,26 @@ fn generate_with_gemini(input_path: &str, output_path: Option<&str>, model: Opti
             process::exit(1);
         }
     };
-    let prompt = match build_generation_prompt(&intermediate) {
+    let mut prompt = match build_generation_prompt(&intermediate) {
         Ok(prompt) => prompt,
         Err(error) => {
             eprintln!("プロンプト生成に失敗しました: {error}");
             process::exit(1);
         }
     };
+    let extra_constraints = if skip_constraints {
+        Vec::new()
+    } else {
+        read_additional_constraints()
+    };
+    if !extra_constraints.is_empty() {
+        prompt.push_str("\n\n追加制約:\n");
+        for constraint in extra_constraints {
+            prompt.push_str("- ");
+            prompt.push_str(&constraint);
+            prompt.push('\n');
+        }
+    }
     let api_key = match env::var("GEMINI_API_KEY") {
         Ok(api_key) if !api_key.trim().is_empty() => api_key,
         _ => {
@@ -263,8 +513,10 @@ fn generate_with_gemini(input_path: &str, output_path: Option<&str>, model: Opti
         .map(str::to_string)
         .or_else(|| env::var("GEMINI_MODEL").ok())
         .filter(|model| !model.trim().is_empty())
-        .unwrap_or_else(|| "gemini-2.5-flash".to_string());
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
     let client = GeminiClient::new(api_key, model);
+    eprintln!("問題文を生成中です。しばらくお待ち下さい....");
+    let _ = io::stderr().flush();
     let mut generated_json = None;
     let mut last_validation_errors = Vec::new();
     for attempt in 1..=MAX_GENERATION_ATTEMPTS {
@@ -283,7 +535,7 @@ fn generate_with_gemini(input_path: &str, output_path: Option<&str>, model: Opti
                 process::exit(1);
             }
         };
-        let generated_document = match serde_json::from_str::<GeneratedDocument>(&candidate_json) {
+        let parsed_document = match serde_json::from_str::<GeneratedDocument>(&candidate_json) {
             Ok(document) => document,
             Err(error) => {
                 last_validation_errors = vec![format!("生成結果JSONを読めません: {error}")];
@@ -293,9 +545,9 @@ fn generate_with_gemini(input_path: &str, output_path: Option<&str>, model: Opti
                 continue;
             }
         };
-        let report = validate_generated_document(&intermediate_json, &generated_document);
+        let report = validate_generated_document(&intermediate_json, &parsed_document);
         if report.is_valid() {
-            let json = match serde_json::to_string_pretty(&generated_document) {
+            let json = match serde_json::to_string_pretty(&parsed_document) {
                 Ok(json) => json,
                 Err(error) => {
                     eprintln!("生成結果JSONへの変換に失敗しました: {error}");
@@ -330,6 +582,30 @@ fn generate_with_gemini(input_path: &str, output_path: Option<&str>, model: Opti
     } else {
         print!("{generated_json}");
     }
+}
+
+fn read_additional_constraints() -> Vec<String> {
+    let mut constraints = Vec::new();
+    let mut input = String::new();
+    eprintln!("追加制約を入力してください。空行で終了します。");
+    let _ = io::stderr().flush();
+
+    loop {
+        input.clear();
+        match io::stdin().read_line(&mut input) {
+            Ok(0) => break,
+            Ok(_) => {
+                let line = input.trim_end();
+                if line.is_empty() {
+                    break;
+                }
+                constraints.push(line.to_string());
+            }
+            Err(_) => break,
+        }
+    }
+
+    constraints
 }
 
 fn validate_files(intermediate_path: &str, generated_path: &str) {

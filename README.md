@@ -145,6 +145,14 @@ Geminiで文章補完問題を生成します。生成後，FlowClozeは中間JS
 cargo run -- generate -o generated/sample.gemini.json notes/sample.md
 ```
 
+`generate` 実行時に追加制約を入力できます。空行で終了します。
+
+追加制約の入力をスキップする場合:
+
+```bash
+cargo run -- generate -s -o generated/sample.gemini.json notes/sample.md
+```
+
 モデルを明示する場合:
 
 ```bash
@@ -161,6 +169,15 @@ cargo run -- validate generated/sample.questions.json generated/sample.gemini.js
 
 成功時は `validation ok` を出力します。失敗時は検証エラーを表示して終了コード `1` で終了します。
 
+### View Generated JSON
+
+生成JSONをTUIで確認します。
+
+```bash
+cargo run -- view generated/sample.gemini.json
+```
+
+
 ### Build PDF
 
 生成JSONからPDFを作ります。デフォルトでは `templates/cloze.typ` を使い，入力JSONと同じ場所に `.pdf` を出力します。
@@ -176,6 +193,30 @@ cargo run -- pdf -o generated/sample.pdf --template templates/cloze.typ generate
 ```
 
 PDFは各ページを「解答」「問題」の順に出力します。解答ページには答えを赤字で表示し，問題ページでは同じ位置を空欄にします。
+
+### Help / Version
+
+ヘルプとバージョンを表示します。
+
+```bash
+cargo run -- --help
+cargo run -- --version
+```
+
+
+### API Settings
+
+Gemini APIキーを `.env` に保存します。モデル指定は省略できます。
+
+```bash
+cargo run -- api set --key your_api_key_here
+```
+
+モデルを更新する場合:
+
+```bash
+cargo run -- api set --key your_api_key_here --model gemini-2.5-flash
+```
 
 ## JSON Shapes
 
