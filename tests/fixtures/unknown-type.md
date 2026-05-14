@@ -1,3 +1,3 @@
-:::qblock{id="x"}
+#qblock{
 [答え]{custom-type}
-:::
+}

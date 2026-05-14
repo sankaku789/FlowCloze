@@ -22,9 +22,7 @@ pub struct IntermediateMeta {
 pub struct IntermediateQBlock {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
+    pub section: Option<String>,
     pub source_text: String,
     pub targets: Vec<IntermediateTarget>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -54,8 +52,7 @@ impl From<&QBlock> for IntermediateQBlock {
     fn from(qblock: &QBlock) -> Self {
         Self {
             id: qblock.id.clone(),
-            mode: qblock.mode.clone(),
-            title: qblock.title.clone(),
+            section: qblock.section.clone(),
             source_text: qblock.source_text.clone(),
             targets: qblock
                 .targets

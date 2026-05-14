@@ -16,9 +16,8 @@ fn qblock抽出結果をjsonに変換できる() {
     let qblock = &document.qblocks[0];
 
     assert_eq!(document.meta.source, "notes/os.md");
-    assert_eq!(qblock.id, "sem-001");
-    assert_eq!(qblock.mode.as_deref(), Some("context"));
-    assert_eq!(qblock.title.as_deref(), Some("セマフォ"));
+    assert_eq!(qblock.id, "qblock-001");
+    assert_eq!(qblock.section.as_deref(), Some("セマフォ"));
     assert!(qblock
         .source_text
         .contains("セマフォはOSが提供するプロセス間同期機能の一つである。"));

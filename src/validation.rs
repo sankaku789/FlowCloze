@@ -16,9 +16,10 @@ pub struct GeneratedDocument {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GeneratedQuestion {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
     #[serde(rename = "type")]
     pub question_type: String,
-    pub title: Option<String>,
     pub targets: Option<Vec<GeneratedTarget>>,
     pub question: String,
     #[serde(default, deserialize_with = "flatten_answers")]

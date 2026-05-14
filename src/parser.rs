@@ -1,6 +1,5 @@
 //! FlowCloze用Markdown記法のParser。
 
-use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 
@@ -31,13 +30,13 @@ impl Error for MarkdownParseError {}
 /// Markdown文書からすべてのqblockを抽出する。
 pub fn parse_markdown(markdown: &str) -> Result<Vec<QBlock>, MarkdownParseError> {
     let sections = iter_qblock_sections(markdown)?;
-    let mut qblocks = sections
+    sections
         .into_iter()
-        .map(|section| parse_qblock(&section.attrs_text, &section.body, section.start_line))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    warn_duplicate_ids(&mut qblocks);
-    Ok(qblocks)
+        .enumerate()
+        .map(|(index, section)| {
+            parse_qblock_with_default_id(&section.body, &auto_qblock_id(index), section.section)
+        })
+        .collect::<Result<Vec<_>, _>>()
 }
 
 /// CLIやテストから意図が見えるように用意した `parse_markdown` の別名。
@@ -45,23 +44,16 @@ pub fn parse_qblocks(markdown: &str) -> Result<Vec<QBlock>, MarkdownParseError> 
     parse_markdown(markdown)
 }
 
-/// 1つのqblock本文と属性を解析する。
-pub fn parse_qblock(
-    attrs_text: &str,
-    body: &str,
-    start_line: usize,
-) -> Result<QBlock, MarkdownParseError> {
-    let attrs = parse_attrs(attrs_text, start_line)?;
-    let id = attr_value(&attrs, "id")
-        .ok_or_else(|| {
-            MarkdownParseError::new(format!(
-                "line {start_line} から始まるqblockに必須属性 id がありません"
-            ))
-        })?
-        .to_string();
-    let title = attr_value(&attrs, "title").map(str::to_string);
-    let mode = attr_value(&attrs, "mode").map(str::to_string);
+/// 1つのqblock本文を解析する。
+pub fn parse_qblock(body: &str) -> Result<QBlock, MarkdownParseError> {
+    parse_qblock_with_default_id(body, "qblock-001", None)
+}
 
+fn parse_qblock_with_default_id(
+    body: &str,
+    default_id: &str,
+    section: Option<String>,
+) -> Result<QBlock, MarkdownParseError> {
     let targets = extract_targets(body);
     let mut warnings = Vec::new();
     for target in &targets {
@@ -74,21 +66,22 @@ pub fn parse_qblock(
     }
 
     Ok(QBlock {
-        id,
-        title,
+        id: default_id.to_string(),
+        section,
         source_text: strip_target_markup(body).trim().to_string(),
         targets,
-        mode,
-        attrs,
         warnings,
     })
 }
 
+fn auto_qblock_id(index: usize) -> String {
+    format!("qblock-{:03}", index + 1)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct QBlockSection {
-    attrs_text: String,
     body: String,
-    start_line: usize,
+    section: Option<String>,
 }
 
 fn iter_qblock_sections(markdown: &str) -> Result<Vec<QBlockSection>, MarkdownParseError> {
@@ -96,6 +89,7 @@ fn iter_qblock_sections(markdown: &str) -> Result<Vec<QBlockSection>, MarkdownPa
     let mut sections = Vec::new();
     let mut index = 0;
     let mut in_fence = false;
+    let mut current_heading = None;
 
     while index < lines.len() {
         let line = lines[index];
@@ -110,10 +104,16 @@ fn iter_qblock_sections(markdown: &str) -> Result<Vec<QBlockSection>, MarkdownPa
             continue;
         }
 
-        let Some(attrs_text) = parse_qblock_open(line) else {
+        if let Some(heading) = parse_markdown_heading(line) {
+            current_heading = Some(heading);
             index += 1;
             continue;
-        };
+        }
+
+        if !is_qblock_open(line) {
+            index += 1;
+            continue;
+        }
 
         let start_line = index + 1;
         let mut body_lines = Vec::new();
@@ -131,9 +131,8 @@ fn iter_qblock_sections(markdown: &str) -> Result<Vec<QBlockSection>, MarkdownPa
         }
 
         sections.push(QBlockSection {
-            attrs_text,
             body: body_lines.join("\n"),
-            start_line,
+            section: current_heading.clone(),
         });
         index += 1;
     }
@@ -141,106 +140,31 @@ fn iter_qblock_sections(markdown: &str) -> Result<Vec<QBlockSection>, MarkdownPa
     Ok(sections)
 }
 
-fn parse_qblock_open(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    let rest = trimmed.strip_prefix(":::")?.trim_start();
-    let rest = rest.strip_prefix("qblock")?;
-    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) && !rest.starts_with('{') {
+fn parse_markdown_heading(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let level = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if level != 1 {
         return None;
     }
-    let rest = rest.trim();
-
-    if rest.is_empty() {
-        return Some(String::new());
+    let rest = trimmed.get(level..)?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
     }
-
-    if let Some(inner) = rest
-        .strip_prefix('{')
-        .and_then(|value| value.strip_suffix('}'))
-    {
-        return Some(inner.trim().to_string());
-    }
-
-    Some(rest.to_string())
+    let heading = rest.trim().trim_matches('#').trim();
+    (!heading.is_empty()).then(|| heading.to_string())
 }
 
-fn attr_value<'a>(attrs: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    attrs
-        .iter()
-        .find_map(|(attr_key, value)| (attr_key == key).then_some(value.as_str()))
+fn is_qblock_open(line: &str) -> bool {
+    matches!(line.trim(), "#qblock{" | "#qblock {")
 }
 
 fn is_qblock_close(line: &str) -> bool {
-    line.trim() == ":::"
+    line.trim() == "}"
 }
 
 fn is_fence_line(line: &str) -> bool {
     let trimmed = line.trim_start();
     trimmed.starts_with("```") || trimmed.starts_with("~~~")
-}
-
-fn parse_attrs(
-    attrs_text: &str,
-    start_line: usize,
-) -> Result<Vec<(String, String)>, MarkdownParseError> {
-    let mut attrs = Vec::new();
-    for token in split_attr_tokens(attrs_text, start_line)? {
-        let Some((key, value)) = token.split_once('=') else {
-            return Err(MarkdownParseError::new(format!(
-                "line {start_line} のqblock属性 '{token}' が key=value 形式ではありません"
-            )));
-        };
-        if key.is_empty() {
-            return Err(MarkdownParseError::new(format!(
-                "line {start_line} のqblock属性名が空です"
-            )));
-        }
-        attrs.push((key.to_string(), value.to_string()));
-    }
-    Ok(attrs)
-}
-
-fn split_attr_tokens(
-    attrs_text: &str,
-    start_line: usize,
-) -> Result<Vec<String>, MarkdownParseError> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    let mut chars = attrs_text.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        match (quote, ch) {
-            (Some(active_quote), value) if value == active_quote => {
-                quote = None;
-            }
-            (Some(_), '\\') => {
-                if let Some(next) = chars.next() {
-                    current.push(next);
-                }
-            }
-            (Some(_), value) => current.push(value),
-            (None, '"' | '\'') => quote = Some(ch),
-            (None, value) if value.is_whitespace() => {
-                if !current.is_empty() {
-                    tokens.push(current);
-                    current = String::new();
-                }
-            }
-            (None, value) => current.push(value),
-        }
-    }
-
-    if quote.is_some() {
-        return Err(MarkdownParseError::new(format!(
-            "line {start_line} のqblock属性で引用符が閉じられていません"
-        )));
-    }
-
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-    Ok(tokens)
 }
 
 fn extract_targets(body: &str) -> Vec<Target> {
@@ -304,22 +228,4 @@ fn strip_target_markup(body: &str) -> String {
 
     output.push_str(rest);
     output
-}
-
-fn warn_duplicate_ids(qblocks: &mut [QBlock]) {
-    let mut seen = HashSet::new();
-    let mut duplicates = HashSet::new();
-    for qblock in qblocks.iter() {
-        if !seen.insert(qblock.id.clone()) {
-            duplicates.insert(qblock.id.clone());
-        }
-    }
-
-    for qblock in qblocks {
-        if duplicates.contains(&qblock.id) {
-            qblock
-                .warnings
-                .push(format!("qblock id '{}' が重複しています", qblock.id));
-        }
-    }
 }

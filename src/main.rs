@@ -361,10 +361,7 @@ fn validate_files(intermediate_path: &str, generated_path: &str) {
 
 fn print_text_summary(qblocks: Vec<flowcloze::QBlock>) {
     for qblock in qblocks {
-        match &qblock.title {
-            Some(title) => println!("{}: {}", qblock.id, title),
-            None => println!("{}", qblock.id),
-        }
+        println!("{}", qblock.id);
 
         for target in qblock.targets {
             println!("  - {} ({})", target.answer, target.target_type);

@@ -1,6 +1,6 @@
-:::qblock{id="dup"}
+#qblock{
 [A]{term-name}
-:::
-:::qblock{id="dup"}
+}
+#qblock{
 [B]{term-name}
-:::
+}

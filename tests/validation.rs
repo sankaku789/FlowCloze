@@ -28,9 +28,8 @@ fn tagsとwarningsが空値でも空配列として扱う() {
 {
   "questions": [
     {
-      "id": "sem-001",
+      "id": "qblock-001",
       "type": "context-cloze",
-      "title": "セマフォ",
       "question": "＿＿＿はOSの＿＿＿である。\n＿＿＿で＿＿＿し，だめなら＿＿＿になる。\n＿＿＿で＿＿＿する。",
       "answers": [
         "セマフォ",
@@ -60,9 +59,8 @@ fn answersが入れ子配列でも平坦化して検証する() {
 {
   "questions": [
     {
-      "id": "sem-001",
+      "id": "qblock-001",
       "type": "context-cloze",
-      "title": "セマフォ",
       "question": "＿＿＿はOSの＿＿＿である。\n＿＿＿で＿＿＿し，だめなら＿＿＿になる。\n＿＿＿で＿＿＿する。",
       "answers": [
         ["セマフォ", "プロセス間同期機能"],
@@ -91,7 +89,7 @@ fn 空欄数とanswers数の不一致を検出する() {
     assert!(report
         .errors
         .contains(&ValidationError::BlankAnswerCountMismatch {
-            id: "sem-001".to_string(),
+            id: "qblock-001".to_string(),
             blank_count: 2,
             answer_count: 1,
         }));
@@ -107,13 +105,13 @@ fn targetsにないanswerを検出する() {
     assert!(report
         .errors
         .contains(&ValidationError::AnswerNotInTargets {
-            id: "sem-001".to_string(),
+            id: "qblock-001".to_string(),
             answer: "ミューテックス".to_string(),
         }));
     assert!(report
         .errors
         .contains(&ValidationError::MissingTargetAnswer {
-            id: "sem-001".to_string(),
+            id: "qblock-001".to_string(),
             answer: "解放".to_string(),
         }));
 }

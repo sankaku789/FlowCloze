@@ -1,0 +1,102 @@
+{
+  "scopeName": "flowcloze.markdown.injection",
+  "injectionSelector": "L:text.html.markdown",
+  "patterns": [
+    {
+      "include": "#qblock"
+    },
+    {
+      "include": "#target"
+    }
+  ],
+  "repository": {
+    "qblock": {
+      "name": "meta.block.flowcloze.qblock.markdown",
+      "begin": "(^\\s*)(#qblock)\\b\\s*(?:(\\()([^)]*)(\\)))?\\s*(\\{)\\s*$",
+      "beginCaptures": {
+        "2": {
+          "name": "keyword.control.flowcloze.qblock.markdown"
+        },
+        "3": {
+          "name": "punctuation.definition.parameters.begin.flowcloze.markdown"
+        },
+        "4": {
+          "patterns": [
+            {
+              "include": "#attribute"
+            },
+            {
+              "include": "#string"
+            }
+          ]
+        },
+        "5": {
+          "name": "punctuation.definition.parameters.end.flowcloze.markdown"
+        },
+        "6": {
+          "name": "punctuation.section.block.begin.flowcloze.markdown"
+        }
+      },
+      "end": "^\\s*(\\})\\s*$",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.section.block.end.flowcloze.markdown"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#target"
+        }
+      ]
+    },
+    "target": {
+      "name": "meta.target.flowcloze.markdown",
+      "match": "(\\[)([^\\]\\n]+)(\\])(\\{)([^}\\s]+)(\\})",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.target.answer.begin.flowcloze.markdown"
+        },
+        "2": {
+          "name": "entity.name.tag.flowcloze.answer.markdown"
+        },
+        "3": {
+          "name": "punctuation.definition.target.answer.end.flowcloze.markdown"
+        },
+        "4": {
+          "name": "punctuation.definition.target.type.begin.flowcloze.markdown"
+        },
+        "5": {
+          "name": "support.type.flowcloze.target.markdown"
+        },
+        "6": {
+          "name": "punctuation.definition.target.type.end.flowcloze.markdown"
+        }
+      }
+    },
+    "attribute": {
+      "name": "variable.parameter.flowcloze.attribute.markdown",
+      "match": "\\b[a-zA-Z_][a-zA-Z0-9_-]*(?=\\s*:)"
+    },
+    "string": {
+      "name": "string.quoted.double.flowcloze.markdown",
+      "begin": "\"",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.flowcloze.markdown"
+        }
+      },
+      "end": "\"",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.flowcloze.markdown"
+        }
+      },
+      "patterns": [
+        {
+          "name": "constant.character.escape.flowcloze.markdown",
+          "match": "\\\\."
+        }
+      ]
+    }
+  }
+}

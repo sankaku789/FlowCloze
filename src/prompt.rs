@@ -27,7 +27,8 @@ pub fn build_generation_prompt(
 - JSONのみを出力する
 - Markdownのコードフェンスは付けない
 - ルートキーは questions にする
-- 各questionには id, type, title, targets, question, answers, source_text, explanation, tags, warnings を含める
+- 各questionには id, section, type, targets, question, answers, source_text, explanation, tags, warnings を含める
+- section は入力qblockのsectionをそのまま含める。入力にない場合は空文字列にする
 - type は context-cloze にする
 - targets は入力のtargetsをそのまま含める
 - answers は文字列だけの配列にする。入れ子配列は使わない

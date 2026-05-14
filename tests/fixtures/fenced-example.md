@@ -1,9 +1,9 @@
 ```md
-:::qblock{id="example"}
+#qblock{
 [例]{term-name}
-:::
+}
 ```
 
-:::qblock{id="real"}
+#qblock{
 [実体]{term-name}
-:::
+}

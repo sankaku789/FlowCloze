@@ -11,7 +11,7 @@ fn プロンプトに中間データと制約を含める() {
 
     assert!(prompt.contains("JSONのみを出力する"));
     assert!(prompt.contains("targetsにないanswerを追加しない"));
-    assert!(prompt.contains(r#""id": "sem-001""#));
+    assert!(prompt.contains(r#""id": "qblock-001""#));
     assert!(prompt.contains(r#""answer": "セマフォ""#));
     assert!(prompt.contains(r#""type": "term-name""#));
 }

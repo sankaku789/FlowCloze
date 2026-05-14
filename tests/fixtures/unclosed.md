@@ -1,2 +1,2 @@
-:::qblock{id="broken"}
+#qblock{
 [セマフォ]{term-name}

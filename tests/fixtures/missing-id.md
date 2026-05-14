@@ -1,3 +1,3 @@
-:::qblock{title="No ID"}
+#qblock{
 [A]{term-name}
-:::
+}

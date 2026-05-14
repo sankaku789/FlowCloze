@@ -244,13 +244,13 @@ fn generated_document_schema() -> Value {
                             "type": "string",
                             "description": "Input qblock id."
                         },
+                        "section": {
+                            "type": "string",
+                            "description": "Input qblock section heading. Use an empty string if missing."
+                        },
                         "type": {
                             "type": "string",
                             "description": "Always context-cloze."
-                        },
-                        "title": {
-                            "type": "string",
-                            "description": "Question title. Use an empty string if there is no title."
                         },
                         "targets": {
                             "type": "array",
@@ -303,8 +303,8 @@ fn generated_document_schema() -> Value {
                     },
                     "required": [
                         "id",
+                        "section",
                         "type",
-                        "title",
                         "targets",
                         "question",
                         "answers",
