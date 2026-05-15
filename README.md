@@ -39,6 +39,16 @@ cargo build
 cargo test
 ```
 
+普段のシェルから `flowcloze` として実行したい場合は、releaseビルドしたバイナリにシンボリックリンクを張ります。
+
+```bash
+cargo build --release
+mkdir -p ~/.local/bin
+ln -sfn "$PWD/target/release/flowcloze" ~/.local/bin/flowcloze
+```
+
+`~/.local/bin` が `PATH` に入っていない場合は、シェル設定に追加してください。
+
 Geminiを使う場合は `.env` を用意します。
 
 ```bash

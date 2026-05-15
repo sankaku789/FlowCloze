@@ -41,7 +41,7 @@ impl GeminiClient {
                 parts: vec![Part { text: prompt }],
             }],
             generation_config: GenerationConfig {
-                temperature: 0.2,
+                temperature: 0.0,
                 response_mime_type: "application/json",
                 response_json_schema: generated_document_schema(),
             },

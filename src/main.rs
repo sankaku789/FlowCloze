@@ -7,7 +7,7 @@ use std::process;
 use flowcloze::{
     build_generation_prompt, compile_pdf, default_pdf_output_path, parse_markdown, to_ankilot_csv,
     to_intermediate_json, validate_generated_document, validate_generated_json, GeminiClient,
-    GeneratedDocument, IntermediateDocument, PdfOptions,
+    GeneratedDocument, IntermediateDocument, PdfOptions, ValidationError,
 };
 
 mod view;
@@ -577,14 +577,14 @@ fn generate_with_gemini(
     eprintln!("問題文を生成中です。しばらくお待ち下さい....");
     let _ = io::stderr().flush();
     let mut generated_json = None;
-    let mut last_validation_errors = Vec::new();
+    let mut last_validation_feedback = Vec::new();
     for attempt in 1..=MAX_GENERATION_ATTEMPTS {
         let attempt_prompt = if attempt == 1 {
             prompt.clone()
         } else {
             format!(
                 "{prompt}\n\n前回の出力は検証に失敗しました。次のエラーを修正し，JSONのみを再出力してください。\n- {}\n",
-                last_validation_errors.join("\n- ")
+                last_validation_feedback.join("\n- ")
             )
         };
         let candidate_json = match client.generate_text(&attempt_prompt) {
@@ -597,8 +597,8 @@ fn generate_with_gemini(
         let parsed_document = match serde_json::from_str::<GeneratedDocument>(&candidate_json) {
             Ok(document) => document,
             Err(error) => {
-                last_validation_errors = vec![format!("生成結果JSONを読めません: {error}")];
-                for error in &last_validation_errors {
+                last_validation_feedback = vec![format!("生成結果JSONを読めません: {error}")];
+                for error in &last_validation_feedback {
                     eprintln!("validation error ({attempt}/{MAX_GENERATION_ATTEMPTS}): {error}");
                 }
                 continue;
@@ -617,14 +617,12 @@ fn generate_with_gemini(
             break;
         }
 
-        last_validation_errors = report
-            .errors
-            .into_iter()
-            .map(|error| error.to_string())
-            .collect();
-        for error in &last_validation_errors {
+        let validation_errors = report.errors;
+        for error in &validation_errors {
             eprintln!("validation error ({attempt}/{MAX_GENERATION_ATTEMPTS}): {error}");
         }
+        last_validation_feedback =
+            build_validation_retry_feedback(&intermediate, &validation_errors);
     }
     let Some(generated_json) = generated_json else {
         eprintln!(
@@ -640,6 +638,53 @@ fn generate_with_gemini(
         }
     } else {
         print!("{generated_json}");
+    }
+}
+
+fn build_validation_retry_feedback(
+    intermediate: &IntermediateDocument,
+    errors: &[ValidationError],
+) -> Vec<String> {
+    let mut feedback = errors.iter().map(ToString::to_string).collect::<Vec<_>>();
+    let mut described_ids = Vec::new();
+
+    for error in errors {
+        let Some(id) = validation_error_id(error) else {
+            continue;
+        };
+        if described_ids.iter().any(|described_id| described_id == id) {
+            continue;
+        }
+        let Some(qblock) = intermediate.qblocks.iter().find(|qblock| qblock.id == id) else {
+            continue;
+        };
+        let answers = qblock
+            .targets
+            .iter()
+            .map(|target| format!("\"{}\"", target.answer))
+            .collect::<Vec<_>>()
+            .join(", ");
+        feedback.push(format!(
+            "{id}: question内の ＿＿＿ は{}個にし，answersはこの順序の配列 [{answers}] にしてください。各answerを文中に残さず，必ず独立した空欄にしてください。",
+            qblock.targets.len()
+        ));
+        described_ids.push(id.to_string());
+    }
+
+    feedback
+}
+
+fn validation_error_id(error: &ValidationError) -> Option<&str> {
+    match error {
+        ValidationError::EmptyQuestion { id }
+        | ValidationError::DuplicateQuestionId { id }
+        | ValidationError::UnknownQuestionId { id }
+        | ValidationError::BlankAnswerCountMismatch { id, .. }
+        | ValidationError::AnswerNotInTargets { id, .. }
+        | ValidationError::MissingTargetAnswer { id, .. } => Some(id),
+        ValidationError::InvalidIntermediateJson(_) | ValidationError::InvalidGeneratedJson(_) => {
+            None
+        }
     }
 }
 
