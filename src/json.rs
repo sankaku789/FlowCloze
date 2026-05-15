@@ -1,10 +1,10 @@
-//! 抽出した中間データをJSONへ変換する処理。
+//! 抽出したqblockを生成処理へ渡す中間JSONへ変換する。
 
 use serde::{Deserialize, Serialize};
 
 use crate::models::{QBlock, Target};
 
-/// Phase3で保存する中間データ全体。
+/// Markdown解析後に保存・生成入力として使う中間データ全体。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct IntermediateDocument {
     pub meta: IntermediateMeta,
@@ -17,7 +17,7 @@ pub struct IntermediateMeta {
     pub source: String,
 }
 
-/// JSON保存用のqblock。
+/// JSONへ保存するqblockのスナップショット。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct IntermediateQBlock {
     pub id: String,
@@ -29,7 +29,7 @@ pub struct IntermediateQBlock {
     pub warnings: Vec<String>,
 }
 
-/// READMEの仕様に合わせて `type` というキーで出力する。
+/// JSON上では仕様に合わせて `type` キーで表す出題対象。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct IntermediateTarget {
     pub answer: String,
@@ -73,7 +73,7 @@ impl From<&Target> for IntermediateTarget {
     }
 }
 
-/// qblock抽出結果をPhase3用JSON文字列に変換する。
+/// qblock抽出結果を整形済みの中間JSON文字列に変換する。
 pub fn to_intermediate_json(source: &str, qblocks: &[QBlock]) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(&IntermediateDocument::from_qblocks(source, qblocks))
 }

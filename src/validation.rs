@@ -1,4 +1,4 @@
-//! LLM生成後JSONの検証処理。
+//! LLMが生成した問題JSONを中間JSONと照合して検証する。
 
 use std::collections::{HashMap, HashSet};
 
@@ -6,13 +6,13 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::json::IntermediateDocument;
 
-/// 生成結果JSON全体。
+/// 生成結果JSONのルート構造。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GeneratedDocument {
     pub questions: Vec<GeneratedQuestion>,
 }
 
-/// LLMが生成した文章補完問題。
+/// LLMが1つのqblockから生成した文章補完問題。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GeneratedQuestion {
     pub id: String,
@@ -32,7 +32,7 @@ pub struct GeneratedQuestion {
     pub warnings: Vec<String>,
 }
 
-/// 生成結果内に残されたtargets。
+/// 生成結果に含める入力targetsの写し。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GeneratedTarget {
     pub answer: String,
@@ -40,7 +40,7 @@ pub struct GeneratedTarget {
     pub target_type: String,
 }
 
-/// Phase5の検証結果。
+/// 生成結果の検証結果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationReport {
     pub errors: Vec<ValidationError>,
@@ -52,7 +52,7 @@ impl ValidationReport {
     }
 }
 
-/// READMEの検証ルールに対応するエラー。
+/// READMEで定義した生成JSONの検証ルールに対応するエラー。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
     InvalidIntermediateJson(String),

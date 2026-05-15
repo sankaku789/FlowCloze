@@ -1,8 +1,8 @@
-//! LLMに渡すプロンプトを組み立てる処理。
+//! 中間データから問題生成用のLLMプロンプトを組み立てる。
 
 use crate::json::IntermediateDocument;
 
-/// 中間データから文章補完問題生成用のプロンプトを作る。
+/// 中間データと生成前チェックリストを含むプロンプトを作る。
 pub fn build_generation_prompt(
     intermediate: &IntermediateDocument,
 ) -> Result<String, serde_json::Error> {

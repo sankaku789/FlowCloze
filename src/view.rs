@@ -1,3 +1,5 @@
+//! 生成済み問題JSONを端末上で検索・閲覧するTUIビューア。
+
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};

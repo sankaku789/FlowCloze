@@ -1,3 +1,5 @@
+//! FlowCloze CLIの引数解析と各サブコマンドの実行入口。
+
 use std::env;
 use std::fs;
 use std::io::{self, Write};

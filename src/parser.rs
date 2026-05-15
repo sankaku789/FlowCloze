@@ -1,11 +1,11 @@
-//! FlowCloze用Markdown記法のParser。
+//! FlowCloze記法を含むMarkdownからqblockと出題対象を抽出する。
 
 use std::error::Error;
 use std::fmt;
 
 use crate::models::{QBlock, Target, ALLOWED_TARGET_TYPES};
 
-/// Markdownのqblock記法が壊れている場合に送出するエラー。
+/// qblockの閉じ忘れなど，FlowCloze記法を解析できない場合のエラー。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkdownParseError {
     message: String,
@@ -27,7 +27,7 @@ impl fmt::Display for MarkdownParseError {
 
 impl Error for MarkdownParseError {}
 
-/// Markdown文書からすべてのqblockを抽出する。
+/// Markdown文書からコードフェンス外のqblockをすべて抽出する。
 pub fn parse_markdown(markdown: &str) -> Result<Vec<QBlock>, MarkdownParseError> {
     let sections = iter_qblock_sections(markdown)?;
     sections
@@ -39,12 +39,12 @@ pub fn parse_markdown(markdown: &str) -> Result<Vec<QBlock>, MarkdownParseError>
         .collect::<Result<Vec<_>, _>>()
 }
 
-/// CLIやテストから意図が見えるように用意した `parse_markdown` の別名。
+/// qblock抽出を明示したい呼び出し箇所向けの `parse_markdown` の別名。
 pub fn parse_qblocks(markdown: &str) -> Result<Vec<QBlock>, MarkdownParseError> {
     parse_markdown(markdown)
 }
 
-/// 1つのqblock本文を解析する。
+/// 単体のqblock本文を既定ID付きで解析する。
 pub fn parse_qblock(body: &str) -> Result<QBlock, MarkdownParseError> {
     parse_qblock_with_default_id(body, "qblock-001", None)
 }
