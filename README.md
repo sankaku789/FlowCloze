@@ -12,6 +12,37 @@ Markdown note
   -> generated JSON validation
   -> Typst PDF
 ```
+## Background
+
+試験などの勉強をするとき，ノートにまとめたり暗記シートを作成したりすると思います．もれなく私もその一人なのですが，今まで次のような手法で勉強してました．
+
+1. Markdown式ノート
+2. お手製暗記シート(EXCEL-PDF)
+
+1については，表記の通りで資料をみつつ，自分の言葉でまとめていくスタイルです．この方法は後から見返しやすいですが，抽象的に覚えてしまうところもあり，具体的な単語や定義を聞かれた際に対応できなくなることが多いです．
+
+2については，資料を読みながら要点を整理し，覚えたい語句を空欄にした**文章補完問題**を自分で作る方法です．作成した問題はEXCELに入力して暗記シートの形に整え，PDFとして出力したあと，ノートアプリに取り込んで使っていました．1問1答ではなく文章補完問題にしていたのは，前後の文脈から語句の定義や意味を思い出せるため，単語だけを切り出して覚えるよりも印象に残りやすかったからです．しかし，この方法では問題文を考える作業に加えて，EXCELへ転記し，PDFとして使える形に整える作業も必要になります．そのため，実際に暗記を始める前の準備段階でかなりのリソースを使ってしまっていました．
+
+そのため，私は，1と2の方法の良いところどりをできないか考えました．その結果がこのプログラムというわけです．
+
+## Systems
+前述した通り，このプログラムはノート本文から問題範囲を抽出し，LLMによって問題文を生成し，検証します．また，Typstを用いてPDFに出力したり，Ankilotに組み込む用のCSVを出力することができます．以下，システム構成を示します．
+
+```mermaid
+flowchart LR
+    note[Markdown note<br/>#qblock / targets] --> parser[Parser<br/>qblock extraction]
+    parser --> intermediate[Intermediate JSON]
+    intermediate --> prompt[Prompt builder]
+    prompt --> gemini[Gemini API<br/>question generation]
+    gemini --> validator[Validator<br/>target / blank checks]
+    validator --> generated[Generated JSON]
+    generated --> tui[TUI viewer]
+    generated --> typst[Typst template]
+    generated --> csv[Ankilot CSV exporter]
+    typst --> pdf[Answer / question PDF]
+    csv --> ankilot[Ankilot import]
+```
+
 
 ## Features
 
