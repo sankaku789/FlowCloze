@@ -1,7 +1,7 @@
-//! Typstテンプレートを使って生成済み問題JSONからPDFを作成する。
+//! Typstテンプレートを使って生成済み問題JSONからPDFを作成する．
 //!
 //! レイアウトはTypstテンプレートに寄せ，このモジュールは入力パスの解決と
-//! `typst compile` の実行，出力ファイルの確認だけを担当する。
+//! `typst compile` の実行，出力ファイルの確認だけを担当する．
 
 use std::fs;
 use std::path::{Path, PathBuf};

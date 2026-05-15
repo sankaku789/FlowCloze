@@ -1,15 +1,15 @@
-//! 中間データから問題生成用のLLMプロンプトを組み立てる。
+//! 中間データから問題生成用のLLMプロンプトを組み立てる．
 
 use crate::json::IntermediateDocument;
 
-/// 中間データと生成前チェックリストを含むプロンプトを作る。
+/// 中間データと生成前チェックリストを含むプロンプトを作る．
 pub fn build_generation_prompt(
     intermediate: &IntermediateDocument,
 ) -> Result<String, serde_json::Error> {
     let intermediate_json = serde_json::to_string_pretty(intermediate)?;
     let checklist = build_generation_checklist(intermediate)?;
     Ok(format!(
-        r#"次のMarkdown qblock由来の中間データから，文章補完問題データを生成してください。
+        r#"次のMarkdown qblock由来の中間データから，文章補完問題データを生成してください．
 
 制約:
 - [答え]{{type}} で指定された語句のみを答えにする
@@ -33,10 +33,10 @@ pub fn build_generation_prompt(
 - Markdownのコードフェンスは付けない
 - ルートキーは questions にする
 - 各questionには id, section, type, targets, question, answers, source_text, explanation, tags, warnings を含める
-- section は入力qblockのsectionをそのまま含める。入力にない場合は空文字列にする
+- section は入力qblockのsectionをそのまま含める．入力にない場合は空文字列にする
 - type は context-cloze にする
 - targets は入力のtargetsをそのまま含める
-- answers は文字列だけの配列にする。入れ子配列は使わない
+- answers は文字列だけの配列にする．入れ子配列は使わない
 - tags と warnings が空の場合は空配列にする
 - question内の空欄は必ず ＿＿＿ を使う
 

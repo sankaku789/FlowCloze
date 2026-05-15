@@ -1,4 +1,4 @@
-//! 生成済み問題JSONをAnkilotへ取り込める2列CSVへ変換する。
+//! 生成済み問題JSONをAnkilotへ取り込める2列CSVへ変換する．
 
 use crate::validation::{GeneratedDocument, GeneratedQuestion};
 

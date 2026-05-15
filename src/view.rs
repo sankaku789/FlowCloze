@@ -1,4 +1,4 @@
-//! 生成済み問題JSONを端末上で検索・閲覧するTUIビューア。
+//! 生成済み問題JSONを端末上で検索・閲覧するTUIビューア．
 
 use std::time::Duration;
 

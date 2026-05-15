@@ -16,7 +16,7 @@ fn mvp_qblockを解析できる() {
     assert_eq!(qblock.id, "qblock-001");
     assert_eq!(
         qblock.source_text,
-        "セマフォはOSが提供するプロセス間同期機能の一つである。\nP命令はリソースの獲得を要求する。"
+        "セマフォはOSが提供するプロセス間同期機能の一つである．\nP命令はリソースの獲得を要求する．"
     );
     assert_eq!(
         qblock.targets,
@@ -45,8 +45,8 @@ fn mvp_qblockを解析できる() {
 fn qblockを解析できる() {
     let markdown = r#"
 #qblock{
-[セマフォ]{term-name}はOSが提供する[プロセス間同期機能]{meaning}の一つである。
-[P命令]{term-name}はリソースの[獲得]{process}を要求する。
+[セマフォ]{term-name}はOSが提供する[プロセス間同期機能]{meaning}の一つである．
+[P命令]{term-name}はリソースの[獲得]{process}を要求する．
 }
 "#;
     let qblocks = parse_markdown(markdown).unwrap();
@@ -56,7 +56,7 @@ fn qblockを解析できる() {
     assert_eq!(qblock.id, "qblock-001");
     assert_eq!(
         qblock.source_text,
-        "セマフォはOSが提供するプロセス間同期機能の一つである。\nP命令はリソースの獲得を要求する。"
+        "セマフォはOSが提供するプロセス間同期機能の一つである．\nP命令はリソースの獲得を要求する．"
     );
     assert_eq!(
         qblock.targets,
@@ -87,13 +87,13 @@ fn 見出し1だけをqblockのsectionにする() {
 # ソフトウェア工学の概論
 
 #qblock{
-[情報システム]{term-name}は目的を達成する仕組みである。
+[情報システム]{term-name}は目的を達成する仕組みである．
 }
 
 ## ソフトウェア工学とは
 
 #qblock{
-[ソフトウェア工学]{term-name}は開発の問題を改善する。
+[ソフトウェア工学]{term-name}は開発の問題を改善する．
 }
 "#;
     let qblocks = parse_markdown(markdown).unwrap();

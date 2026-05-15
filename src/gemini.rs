@@ -1,4 +1,4 @@
-//! Gemini APIへプロンプトを送り，文章補完問題JSONを取得する。
+//! Gemini APIへプロンプトを送り，文章補完問題JSONを取得する．
 
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ const MAX_API_ATTEMPTS: u32 = 4;
 const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(2);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(20);
 
-/// Gemini generateContent APIを呼び出す同期クライアント。
+/// Gemini generateContent APIを呼び出す同期クライアント．
 #[derive(Debug, Clone)]
 pub struct GeminiClient {
     api_key: String,
@@ -33,7 +33,7 @@ impl GeminiClient {
         self
     }
 
-    /// プロンプトをGeminiへ送り，候補レスポンスのテキスト部分を取り出す。
+    /// プロンプトをGeminiへ送り，候補レスポンスのテキスト部分を取り出す．
     pub fn generate_text(&self, prompt: &str) -> Result<String, GeminiError> {
         let request = GenerateContentRequest {
             contents: vec![Content {
@@ -146,7 +146,7 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
         .map(|duration| duration.min(MAX_RETRY_DELAY))
 }
 
-/// GeminiがJSONをMarkdownコードフェンスで包んだ場合に中身だけ取り出す。
+/// GeminiがJSONをMarkdownコードフェンスで包んだ場合に中身だけ取り出す．
 pub fn strip_markdown_code_fence(text: &str) -> String {
     let trimmed = text.trim();
     if !trimmed.starts_with("```") {

@@ -20,7 +20,7 @@ fn qblock抽出結果をjsonに変換できる() {
     assert_eq!(qblock.section.as_deref(), Some("セマフォ"));
     assert!(qblock
         .source_text
-        .contains("セマフォはOSが提供するプロセス間同期機能の一つである。"));
+        .contains("セマフォはOSが提供するプロセス間同期機能の一つである．"));
     assert!(qblock
         .targets
         .iter()

@@ -1,4 +1,4 @@
-//! FlowCloze CLIが使う解析・生成支援・検証・出力のコア機能。
+//! FlowCloze CLIが使う解析・生成支援・検証・出力のコア機能．
 
 pub mod ankilot;
 pub mod gemini;

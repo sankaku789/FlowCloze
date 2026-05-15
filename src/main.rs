@@ -1,4 +1,4 @@
-//! FlowCloze CLIの引数解析と各サブコマンドの実行入口。
+//! FlowCloze CLIの引数解析と各サブコマンドの実行入口．
 
 use std::env;
 use std::fs;
@@ -43,7 +43,7 @@ fn main() {
                 eprintln!("{error}");
                 process::exit(1);
             }
-            println!(".env を更新しました。");
+            println!(".env を更新しました．");
             return;
         }
         Command::View { generated_path } => {
@@ -566,7 +566,7 @@ fn generate_with_gemini(
     let api_key = match env::var("GEMINI_API_KEY") {
         Ok(api_key) if !api_key.trim().is_empty() => api_key,
         _ => {
-            eprintln!("GEMINI_API_KEY が未設定です。.env または環境変数に設定してください。");
+            eprintln!("GEMINI_API_KEY が未設定です．.env または環境変数に設定してください．");
             process::exit(1);
         }
     };
@@ -576,7 +576,7 @@ fn generate_with_gemini(
         .filter(|model| !model.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_MODEL.to_string());
     let client = GeminiClient::new(api_key, model);
-    eprintln!("問題文を生成中です。しばらくお待ち下さい....");
+    eprintln!("問題文を生成中です．しばらくお待ち下さい....");
     let _ = io::stderr().flush();
     let mut generated_json = None;
     let mut last_validation_feedback = Vec::new();
@@ -585,7 +585,7 @@ fn generate_with_gemini(
             prompt.clone()
         } else {
             format!(
-                "{prompt}\n\n前回の出力は検証に失敗しました。次のエラーを修正し，JSONのみを再出力してください。\n- {}\n",
+                "{prompt}\n\n前回の出力は検証に失敗しました．次のエラーを修正し，JSONのみを再出力してください．\n- {}\n",
                 last_validation_feedback.join("\n- ")
             )
         };
@@ -628,7 +628,7 @@ fn generate_with_gemini(
     }
     let Some(generated_json) = generated_json else {
         eprintln!(
-            "Geminiの生成結果が{MAX_GENERATION_ATTEMPTS}回連続で検証に失敗したため保存しませんでした。"
+            "Geminiの生成結果が{MAX_GENERATION_ATTEMPTS}回連続で検証に失敗したため保存しませんでした．"
         );
         process::exit(1);
     };
@@ -667,7 +667,7 @@ fn build_validation_retry_feedback(
             .collect::<Vec<_>>()
             .join(", ");
         feedback.push(format!(
-            "{id}: question内の ＿＿＿ は{}個にし，answersはこの順序の配列 [{answers}] にしてください。各answerを文中に残さず，必ず独立した空欄にしてください。",
+            "{id}: question内の ＿＿＿ は{}個にし，answersはこの順序の配列 [{answers}] にしてください．各answerを文中に残さず，必ず独立した空欄にしてください．",
             qblock.targets.len()
         ));
         described_ids.push(id.to_string());
@@ -693,7 +693,7 @@ fn validation_error_id(error: &ValidationError) -> Option<&str> {
 fn read_additional_constraints() -> Vec<String> {
     let mut constraints = Vec::new();
     let mut input = String::new();
-    eprintln!("追加制約を入力してください。空行で終了します。");
+    eprintln!("追加制約を入力してください．空行で終了します．");
     let _ = io::stderr().flush();
 
     loop {

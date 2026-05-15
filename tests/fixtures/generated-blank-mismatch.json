@@ -3,7 +3,7 @@
     {
       "id": "qblock-001",
       "type": "context-cloze",
-      "question": "＿＿＿はOSの＿＿＿である。",
+      "question": "＿＿＿はOSの＿＿＿である．",
       "answers": [
         "セマフォ"
       ]
