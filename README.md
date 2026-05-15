@@ -363,6 +363,7 @@ src/json.rs        intermediate JSON conversion
 src/prompt.rs      Gemini prompt builder
 src/gemini.rs      Gemini API client
 src/validation.rs  generated JSON validator
+src/csv.rs         Ankilot CSV exporter
 src/pdf.rs         Typst PDF adapter
 templates/         Typst templates
 sample/            sample note and outputs
