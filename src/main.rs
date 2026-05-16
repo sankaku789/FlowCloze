@@ -667,7 +667,7 @@ fn build_validation_retry_feedback(
             .collect::<Vec<_>>()
             .join(", ");
         feedback.push(format!(
-            "{id}: question内の ＿＿＿ は{}個にし，answersはこの順序の配列 [{answers}] にしてください．各answerを文中に残さず，必ず独立した空欄にしてください．",
+            "{id}: source_textをそのまま抜き出すのではなく，文脈を保った文章補完問題として自然な本文に再構成してください．target以外の説明は省略せず通常文として残してください．question内の ＿＿＿ は{}個にし，answersはこの順序の配列 [{answers}] にしてください．各answerを文中に残さず，必ず独立した空欄にしてください．",
             qblock.targets.len()
         ));
         described_ids.push(id.to_string());
