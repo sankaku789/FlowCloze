@@ -2,9 +2,9 @@
 
 [日本語](README.md) | English
 
-FlowCloze is a local CLI tool that generates context cloze questions from study notes written in Markdown.
+FlowCloze is a CLI tool that generates context cloze questions from study notes written in Markdown.
 
-You can keep your notes readable as normal Markdown, then wrap only the ranges you want to turn into questions with `#qblock{ ... }`. Terms that should become answers are marked as `[answer]{type}`. FlowCloze converts those annotations into intermediate JSON, generates questions with Gemini, validates the generated output, and can render the result as a Typst PDF.
+You keep your notes readable as normal Markdown and wrap only the ranges you want to turn into questions with `#qblock{ ... }`. Terms to be used as answers are explicitly marked as `[answer]{type}`. FlowCloze converts those annotations into an intermediate JSON, generates question text with Gemini, validates the generation results, and can produce a PDF using Typst.
 
 ```text
 Markdown note
@@ -17,22 +17,22 @@ Markdown note
 
 ## Background
 
-When studying for exams, I often used two approaches:
+When studying for exams, people often use two main approaches:
 
 1. Markdown notes
-2. Handmade memorization sheets (Excel to PDF)
+2. Handmade memorization sheets (Excel → PDF)
 
-Markdown notes are easy to write while reading source material, and they are convenient to review later. However, I sometimes ended up remembering ideas only at a high level, which made it harder to answer questions that asked for specific terms or definitions.
+The first approach is convenient for summarizing materials in your own words while reading; it's easy to review later but can lead to remembering concepts only at a high level, which makes recalling exact terms or definitions harder.
 
-The second approach was to create my own **context cloze questions** by turning important terms into blanks. I entered those questions into Excel, formatted them as memorization sheets, exported them as PDFs, and imported them into a note-taking app. I preferred context cloze questions over simple flashcards because the surrounding sentence helps recall the meaning and definition of each term.
+The second approach is to create **context cloze questions** by turning key terms into blanks. Those questions were entered into Excel, formatted into memorization sheets, exported as PDFs, and imported into a note-taking app. Context cloze questions are more memorable than simple flashcards because the surrounding sentence helps recall meanings and definitions.
 
-The problem was that this workflow required not only writing the questions, but also copying them into Excel and formatting the final PDF. A lot of effort was spent before the actual memorization work could even begin.
+However, that workflow required not only creating question text but also copying into Excel and formatting the final PDF, which consumed significant effort before studying could even start.
 
-FlowCloze was built to combine the writing comfort of Markdown notes with the memorization benefits of context cloze questions.
+FlowCloze was created to combine the ease of writing Markdown notes with the memorability of context cloze questions.
 
 ## System Overview
 
-FlowCloze extracts question ranges from Markdown notes, generates questions with an LLM, and validates the generated result. Generated questions can be saved as JSON, rendered as a PDF with Typst, or exported as CSV for Ankilot.
+FlowCloze extracts qblock ranges from Markdown notes, generates questions with an LLM, and validates the generated output. You can save generated questions as JSON, render them as a PDF with Typst, or export CSV for Ankilot import.
 
 ```mermaid
 flowchart LR
@@ -47,24 +47,24 @@ flowchart LR
 
 ## Features
 
-- Extracts `#qblock{ ... }` ranges from Markdown
-- Uses only terms marked as `[answer]{type}` as answer targets
-- Treats `# Heading 1` as the section title for generated JSON and PDF output
-- Assigns qblock IDs automatically in `qblock-001` order
-- Generates context cloze question JSON with the Gemini API
-- Validates generated JSON against the intermediate JSON
-- Lets you review generated questions in a TUI before output
-- Renders A4 landscape PDFs with Typst in answer-page then question-page order
-- Exports CSV that can be imported into Ankilot
-- Includes a small VS Code syntax highlighting extension
+- Extract `#qblock{ ... }` ranges from Markdown
+- Use only terms marked as `[answer]{type}` as answer targets
+- Treat `# Heading 1` as the section title for generated JSON and PDF output
+- Auto-assign qblock IDs in `qblock-001` order
+- Generate context cloze question JSON with the Gemini API
+- Compare intermediate JSON and generated JSON to detect extra answers or mismatched blank counts
+- Review generated questions in a TUI before output
+- Render A4 landscape PDFs with Typst in answer-page then question-page order
+- Export CSV suitable for Ankilot import
+- Bundled simple VS Code syntax highlighting extension
 
 ## Setup
 
 ### Requirements
 
 - Rust / Cargo
-- Typst CLI, when using PDF output
-- Gemini API key, when using the `generate` command
+- Typst CLI (required for PDF output)
+- Gemini API key (required for the `generate` command)
 
 ### Build and Install
 
@@ -74,43 +74,26 @@ mkdir -p ~/.local/bin
 ln -sfn "$PWD/target/release/flowcloze" ~/.local/bin/flowcloze
 ```
 
-If `~/.local/bin` is not in your `PATH`, add it in your shell configuration.
+If `~/.local/bin` is not in your `PATH`, add it to your shell configuration.
 
-Check the installation with:
+Verify the build and tests:
 
 ```bash
 flowcloze --version
 cargo test
 ```
 
-For a simple debug build, you can also run:
+For a debug build, you can run:
 
 ```bash
 cargo build
 ```
 
-The command examples below assume that you have created the symbolic link after a release build and can run FlowCloze as `flowcloze`. For a temporary local run, you can replace `flowcloze ...` with `cargo run -- ...`.
+Examples below assume you created the symbolic link after a release build and can run `flowcloze`. For a temporary local run, use `cargo run -- ...` instead of `flowcloze ...`.
 
 ```bash
 flowcloze sample/sample.md
 ```
-
-### Gemini Settings
-
-Create a `.env` file when generating questions with Gemini.
-
-```bash
-cp .env.example .env
-```
-
-```env
-GEMINI_API_KEY=your_api_key_here
-GEMINI_MODEL=gemini-2.5-flash
-```
-
-`GEMINI_MODEL` is optional. When omitted, FlowCloze uses `gemini-2.5-flash`.
-
-You can also set these values directly as environment variables instead of using `.env`.
 
 ## Markdown Format
 
@@ -126,7 +109,7 @@ Wrap the range you want to turn into questions with `#qblock{ ... }`.
 }
 ```
 
-Do not write qblock IDs manually. FlowCloze assigns IDs automatically in appearance order, such as `qblock-001` and `qblock-002`.
+Do not write qblock IDs manually. They are assigned automatically in appearance order (e.g. `qblock-001`).
 
 ```md
 #qblock{
@@ -142,7 +125,7 @@ Write answer targets as `[answer]{type}`.
 [Requirements definition]{term-name} consists of [elicitation]{process}, [analysis]{process}, [specification]{process}, and [validation]{process}.
 ```
 
-The text inside `[]` is the answer string, and the text inside `{}` is the question perspective. FlowCloze instructs Gemini not to use anything other than these targets as answers.
+The text inside `[]` is the answer string and the text inside `{}` is the question perspective. FlowCloze instructs Gemini not to use anything other than these targets as answers.
 
 ### Sections
 
@@ -152,11 +135,11 @@ Only Markdown level-1 headings are used as section titles in PDF output.
 # Requirements Definition
 ```
 
-`##` and `###` headings can still be used to structure your notes, but they are not used as PDF section titles.
+`##` and `###` headings may remain for note structure but are not used as PDF section titles.
 
 ### Target Types
 
-The following types can be used without warnings. A type describes the perspective from which the term should be questioned.
+The following types are safe to use without warnings. A type indicates the perspective from which the term will be questioned.
 
 | type | Description |
 |---|---|
@@ -165,9 +148,38 @@ The following types can be used without warnings. A type describes the perspecti
 | `process` | Ask for a procedure, step, action, or state change |
 | `relation` | Ask for a structure, comparison, classification, relation, or correspondence |
 
-Undefined types are still extracted, but they are reported in the intermediate JSON `warnings`.
+Undefined types are still extracted but will be listed in the intermediate JSON `warnings`.
 
 ## CLI Usage
+
+### API Settings
+
+To use the `generate` command you need to save a Gemini API key. You can set it in a `.env` file or use the CLI helper:
+
+```bash
+flowcloze api set --key your_api_key_here
+```
+
+To update the model setting:
+
+```bash
+flowcloze api set --key your_api_key_here --model gemini-2.5-flash
+```
+
+You can also create a `.env` from the example:
+
+```bash
+cp .env.example .env
+```
+
+And set values like:
+
+```env
+GEMINI_API_KEY=your_api_key_here
+GEMINI_MODEL=gemini-2.5-flash
+```
+
+`GEMINI_MODEL` is optional; when omitted the default `gemini-2.5-flash` is used.
 
 ### Parse Markdown
 
@@ -191,32 +203,24 @@ Omit `-o` to write to standard output.
 flowcloze --json sample/sample.md
 ```
 
-A normal parse with `-o` is treated as JSON output automatically.
-
-```bash
-flowcloze -o sample/sample.json sample/sample.md
-```
-
 ### Generate Questions
 
-Generate context cloze questions with Gemini. After generation, FlowCloze validates the generated JSON against the intermediate JSON and saves only valid output.
+Generate context cloze questions with Gemini. After generation, FlowCloze validates the generated JSON against the intermediate JSON and saves only valid output. If validation fails, FlowCloze sends the validation errors back to Gemini and regenerates the output up to 3 times.
 
 ```bash
-flowcloze generate -o sample/sample.gemini.json sample/sample.md
+flowcloze generate -o sample/sample.json sample/sample.md
 ```
 
-You can enter additional constraints during `generate`. Finish input with an empty line.
-
-Skip additional constraint input:
+Enter additional constraints during `generate` and finish input with an empty line. To skip additional constraints:
 
 ```bash
-flowcloze generate -s -o sample/sample.gemini.json sample/sample.md
+flowcloze generate -s -o sample/sample.json sample/sample.md
 ```
 
 Specify a model explicitly:
 
 ```bash
-flowcloze generate --model gemini-2.5-flash -o sample/sample.gemini.json sample/sample.md
+flowcloze generate --model gemini-2.5-flash -o sample/sample.json sample/sample.md
 ```
 
 ### Validate Generated JSON
@@ -224,7 +228,7 @@ flowcloze generate --model gemini-2.5-flash -o sample/sample.gemini.json sample/
 Validate intermediate JSON and generated JSON manually.
 
 ```bash
-flowcloze validate sample/sample.json sample/sample.gemini.json
+flowcloze validate sample/sample.json sample/sample.json
 ```
 
 On success, FlowCloze prints `validation ok`. On failure, it prints validation errors and exits with status code `1`.
@@ -234,18 +238,18 @@ On success, FlowCloze prints `validation ok`. On failure, it prints validation e
 Review generated JSON in the TUI.
 
 ```bash
-flowcloze view sample/sample.gemini.json
+flowcloze view sample/sample.json
 ```
 
 ### Export Ankilot CSV
 
-Export generated JSON as CSV for Ankilot import. The CSV is UTF-8, has no header, and contains two columns.
+Export generated JSON as CSV for Ankilot import. The CSV is UTF-8, has no header, and contains two columns:
 
 1. Front: question
 2. Back: answers
 
 ```bash
-flowcloze csv -o sample/sample.csv sample/sample.gemini.json
+flowcloze csv -o sample/sample.csv sample/sample.json
 ```
 
 Omit `-o` to write to standard output.
@@ -255,13 +259,13 @@ Omit `-o` to write to standard output.
 Create a PDF from generated JSON. By default, FlowCloze uses `templates/cloze.typ` and writes a `.pdf` next to the input JSON.
 
 ```bash
-flowcloze pdf sample/sample.gemini.json
+flowcloze pdf sample/sample.json
 ```
 
-You can specify an output path and template.
+You can specify an output path and template:
 
 ```bash
-flowcloze pdf -o sample/sample.pdf --template templates/cloze.typ sample/sample.gemini.json
+flowcloze pdf -o sample/sample.pdf --template templates/cloze.typ sample/sample.json
 ```
 
 The PDF outputs each page in answer then question order. Answer pages show answers in red, and question pages replace the same positions with blanks.
@@ -273,23 +277,9 @@ flowcloze --help
 flowcloze --version
 ```
 
-### API Settings
+## JSON Format
 
-Save a Gemini API key to `.env`. The model is optional.
-
-```bash
-flowcloze api set --key your_api_key_here
-```
-
-Update the model:
-
-```bash
-flowcloze api set --key your_api_key_here --model gemini-2.5-flash
-```
-
-## JSON Shapes
-
-Intermediate JSON contains only facts extracted from Markdown.
+The intermediate JSON contains only facts extracted from Markdown.
 
 ```json
 {
@@ -340,7 +330,7 @@ Generated JSON is the format read by the Typst template and validator.
 
 ### Local Install
 
-When using VS Code on WSL, create a symbolic link in the VS Code Server extension directory.
+When using VS Code on WSL, create a symbolic link in the VS Code Server extension directory:
 
 ```sh
 mkdir -p ~/.vscode-server/extensions
@@ -349,7 +339,7 @@ ln -sfn "$PWD/editors/vscode-flowcloze-syntax" ~/.vscode-server/extensions/flowc
 
 Then run `Developer: Reload Window` in VS Code and open a Markdown file such as `sample/sample.md`.
 
-For non-WSL Linux environments, use `~/.vscode/extensions` instead.
+For non-WSL Linux environments, use `~/.vscode/extensions` instead:
 
 ```sh
 mkdir -p ~/.vscode/extensions
@@ -373,8 +363,8 @@ tests/             parser / JSON / validation tests
 
 ## Development
 
-This program is developed with vibe coding. If you find a bug or serious issue while using it, please open an Issue. If you can fix it, create a branch, make the change, and send a Pull Request. Contributions are welcome.
+This project uses "vibe coding" during development. If you find a bug or a serious issue, please open an Issue. If you can fix it, create a branch, make the change, and send a Pull Request. Contributions are welcome.
 
 ## License
 
-Licensed under either of Apache License, Version 2.0 or MIT license at your option.
+Licensed under either Apache License, Version 2.0 or the MIT license, at your option.
