@@ -129,6 +129,149 @@ fn 未定義タイプは警告にする() {
 }
 
 #[test]
+fn type未指定targetは既定タイプとして解析する() {
+    let markdown = r#"
+#qblock{
+[セマフォ]はOSが提供する[プロセス間同期機能]の一つである．
+}
+"#;
+    let qblocks = parse_markdown(markdown).unwrap();
+
+    let qblock = &qblocks[0];
+    assert_eq!(
+        qblock.source_text,
+        "セマフォはOSが提供するプロセス間同期機能の一つである．"
+    );
+    assert_eq!(
+        qblock.targets,
+        vec![
+            Target {
+                answer: "セマフォ".to_string(),
+                target_type: "term-name".to_string(),
+            },
+            Target {
+                answer: "プロセス間同期機能".to_string(),
+                target_type: "term-name".to_string(),
+            },
+        ]
+    );
+    assert!(qblock.warnings.is_empty());
+}
+
+#[test]
+fn 空のtype指定は既定タイプとして解析する() {
+    let markdown = r#"
+#qblock{
+[セマフォ]{}はOSが提供する機能である．
+}
+"#;
+    let qblocks = parse_markdown(markdown).unwrap();
+
+    let qblock = &qblocks[0];
+    assert_eq!(qblock.source_text, "セマフォはOSが提供する機能である．");
+    assert_eq!(
+        qblock.targets,
+        vec![Target {
+            answer: "セマフォ".to_string(),
+            target_type: "term-name".to_string(),
+        }]
+    );
+    assert!(qblock.warnings.is_empty());
+}
+
+#[test]
+fn 空白を含むtype指定はtargetとして扱わず表記を保持する() {
+    let markdown = r#"
+#qblock{
+[壊れたtarget]{term name}はそのまま残し，[セマフォ]は抽出する．
+}
+"#;
+    let qblocks = parse_markdown(markdown).unwrap();
+
+    let qblock = &qblocks[0];
+    assert_eq!(
+        qblock.source_text,
+        "[壊れたtarget]{term name}はそのまま残し，セマフォは抽出する．"
+    );
+    assert_eq!(
+        qblock.targets,
+        vec![Target {
+            answer: "セマフォ".to_string(),
+            target_type: "term-name".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn markdownリンクはtype未指定targetとして扱わない() {
+    let markdown = r#"
+#qblock{
+[セマフォ]は[Wikipedia](https://example.com)に説明がある．
+}
+"#;
+    let qblocks = parse_markdown(markdown).unwrap();
+
+    let qblock = &qblocks[0];
+    assert_eq!(
+        qblock.source_text,
+        "セマフォは[Wikipedia](https://example.com)に説明がある．"
+    );
+    assert_eq!(
+        qblock.targets,
+        vec![Target {
+            answer: "セマフォ".to_string(),
+            target_type: "term-name".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn 参照形式markdownリンクはtype未指定targetとして扱わない() {
+    let markdown = r#"
+#qblock{
+[セマフォ]は[Wikipedia][wiki]や[解説][]に説明がある．
+}
+"#;
+    let qblocks = parse_markdown(markdown).unwrap();
+
+    let qblock = &qblocks[0];
+    assert_eq!(
+        qblock.source_text,
+        "セマフォは[Wikipedia][wiki]や[解説][]に説明がある．"
+    );
+    assert_eq!(
+        qblock.targets,
+        vec![Target {
+            answer: "セマフォ".to_string(),
+            target_type: "term-name".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn 閉じていないtype指定は無効なtargetとして後続解析を続ける() {
+    let markdown = r#"
+#qblock{
+[壊れたtarget]{term-name はそのまま残し，[セマフォ]は抽出する．
+}
+"#;
+    let qblocks = parse_markdown(markdown).unwrap();
+
+    let qblock = &qblocks[0];
+    assert_eq!(
+        qblock.source_text,
+        "[壊れたtarget]{term-name はそのまま残し，セマフォは抽出する．"
+    );
+    assert_eq!(
+        qblock.targets,
+        vec![Target {
+            answer: "セマフォ".to_string(),
+            target_type: "term-name".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn qblockには連番idを割り当てる() {
     let markdown = fixture("duplicate-id.md");
     let qblocks = parse_markdown(&markdown).unwrap();

@@ -4,7 +4,7 @@
 
 FlowCloze is a CLI tool that generates context cloze questions from study notes written in Markdown.
 
-You keep your notes readable as normal Markdown and wrap only the ranges you want to turn into questions with `#qblock{ ... }`. Terms to be used as answers are explicitly marked as `[answer]{type}`. FlowCloze converts those annotations into an intermediate JSON, generates question text with Gemini, validates the generation results, and can produce a PDF using Typst.
+You keep your notes readable as normal Markdown and wrap only the ranges you want to turn into questions with `#qblock{ ... }`. Terms to be used as answers are explicitly marked as `[answer]`. FlowCloze converts those annotations into an intermediate JSON, generates question text with Gemini, validates the generation results, and can produce a PDF using Typst.
 
 ```text
 Markdown note
@@ -48,7 +48,7 @@ flowchart LR
 ## Features
 
 - Extract `#qblock{ ... }` ranges from Markdown
-- Use only terms marked as `[answer]{type}` as answer targets
+- Use only terms marked as `[answer]` or `[answer]{type}` as answer targets
 - Treat `# Heading 1` as the section title for generated JSON and PDF output
 - Auto-assign qblock IDs in `qblock-001` order
 - Generate context cloze question JSON with the Gemini API
@@ -119,13 +119,13 @@ Do not write qblock IDs manually. They are assigned automatically in appearance 
 
 ### Targets
 
-Write answer targets as `[answer]{type}`.
+Write answer targets as `[answer]`. When needed, you can also write `[answer]{type}` to specify the question perspective.
 
 ```md
-[Requirements definition]{term-name} consists of [elicitation]{process}, [analysis]{process}, [specification]{process}, and [validation]{process}.
+[Requirements definition] consists of [elicitation], [analysis], [specification], and [validation].
 ```
 
-The text inside `[]` is the answer string and the text inside `{}` is the question perspective. FlowCloze instructs Gemini not to use anything other than these targets as answers.
+The text inside `[]` is the answer string. When `{}` is present, it is used as the question perspective. When the type is omitted, FlowCloze treats it as `term-name`. FlowCloze instructs Gemini not to use anything other than these targets as answers.
 
 ### Sections
 
@@ -139,7 +139,7 @@ Only Markdown level-1 headings are used as section titles in PDF output.
 
 ### Target Types
 
-The following types are safe to use without warnings. A type indicates the perspective from which the term will be questioned.
+Types are optional. When specifying a type, the following values are safe to use without warnings. A type indicates the perspective from which the term will be questioned.
 
 | type | Description |
 |---|---|
@@ -326,7 +326,7 @@ Generated JSON is the format read by the Typst template and validator.
 
 ## Editor Support
 
-`editors/vscode-flowcloze-syntax` contains a small VS Code extension that highlights `#qblock` and `[answer]{type}` syntax.
+`editors/vscode-flowcloze-syntax` contains a small VS Code extension that highlights `#qblock`, `[answer]`, and `[answer]{type}` syntax.
 
 ### Local Install
 

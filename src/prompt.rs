@@ -12,7 +12,7 @@ pub fn build_generation_prompt(
         r#"次のMarkdown qblock由来の中間データから，文章補完問題データを生成してください．
 
 制約:
-- [答え]{{type}} で指定された語句のみを答えにする
+- [答え] または [答え]{{type}} で指定された語句のみを答えにする
 - answerの内容は targets[].answer の文字列をそのまま使う
 - 文章は常体とすること
 - typeは targets[].type の文字列をそのまま使う

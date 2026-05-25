@@ -390,6 +390,10 @@ fn print_help() {
     eprintln!("  csv                    生成JSONからAnkilot用CSVを作成します / Export Ankilot CSV");
     eprintln!("  pdf                    生成JSONからPDFを作成します / Build PDF from JSON");
     eprintln!("  api set                APIキーを.envに保存します / Save API key to .env");
+    eprintln!("\nMarkdown記法 / Markdown Syntax:");
+    eprintln!("  #qblock{{ ... }}        問題化範囲を囲みます / Mark a question range");
+    eprintln!("  [答え]                 解答対象を指定します / Mark an answer target");
+    eprintln!("  [答え]{{type}}          任意で出題観点を指定します / Optional target type");
     eprintln!("\nオプション / Options:");
     eprintln!("  --json                 中間JSONを出力します / Output intermediate JSON");
     eprintln!("  -s                     追加制約の入力をスキップします / Skip extra constraints");

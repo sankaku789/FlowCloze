@@ -2,8 +2,9 @@
 
 /// READMEで定義している有効な出題タイプ．
 pub const ALLOWED_TARGET_TYPES: &[&str] = &["term-name", "meaning", "process", "relation"];
+pub const DEFAULT_TARGET_TYPE: &str = "term-name";
 
-/// `[答え]{タイプ}` で書かれた，人間指定の出題対象．
+/// `[答え]` または `[答え]{タイプ}` で書かれた，人間指定の出題対象．
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
     pub answer: String,
