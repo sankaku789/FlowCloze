@@ -182,6 +182,29 @@ fn markdownリンクはtype未指定targetとして扱わない() {
 }
 
 #[test]
+fn 閉じていないtype指定は無効なtargetとして後続解析を続ける() {
+    let markdown = r#"
+#qblock{
+[壊れたtarget]{term-name はそのまま残し，[セマフォ]は抽出する．
+}
+"#;
+    let qblocks = parse_markdown(markdown).unwrap();
+
+    let qblock = &qblocks[0];
+    assert_eq!(
+        qblock.source_text,
+        "[壊れたtarget]{term-name はそのまま残し，セマフォは抽出する．"
+    );
+    assert_eq!(
+        qblock.targets,
+        vec![Target {
+            answer: "セマフォ".to_string(),
+            target_type: "term-name".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn qblockには連番idを割り当てる() {
     let markdown = fixture("duplicate-id.md");
     let qblocks = parse_markdown(&markdown).unwrap();

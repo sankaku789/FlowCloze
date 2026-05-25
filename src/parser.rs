@@ -184,7 +184,8 @@ fn extract_targets(body: &str) -> Vec<Target> {
         }
         if let Some(after_open_brace) = after_answer.strip_prefix('{') {
             let Some(type_end) = after_open_brace.find('}') else {
-                break;
+                rest = after_answer;
+                continue;
             };
             let target_type = &after_open_brace[..type_end];
             if !target_type.chars().any(char::is_whitespace) {
@@ -225,8 +226,11 @@ fn strip_target_markup(body: &str) -> String {
         let after_answer = &after_open[answer_end + 1..];
         if let Some(after_open_brace) = after_answer.strip_prefix('{') {
             let Some(type_end) = after_open_brace.find('}') else {
-                output.push_str(&rest[start..]);
-                return output;
+                output.push('[');
+                output.push_str(answer);
+                output.push(']');
+                rest = after_answer;
+                continue;
             };
             output.push_str(answer);
             rest = &after_open_brace[type_end + 1..];
