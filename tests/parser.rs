@@ -159,6 +159,27 @@ fn type未指定targetは既定タイプとして解析する() {
 }
 
 #[test]
+fn 空のtype指定は既定タイプとして解析する() {
+    let markdown = r#"
+#qblock{
+[セマフォ]{}はOSが提供する機能である．
+}
+"#;
+    let qblocks = parse_markdown(markdown).unwrap();
+
+    let qblock = &qblocks[0];
+    assert_eq!(qblock.source_text, "セマフォはOSが提供する機能である．");
+    assert_eq!(
+        qblock.targets,
+        vec![Target {
+            answer: "セマフォ".to_string(),
+            target_type: "term-name".to_string(),
+        }]
+    );
+    assert!(qblock.warnings.is_empty());
+}
+
+#[test]
 fn markdownリンクはtype未指定targetとして扱わない() {
     let markdown = r#"
 #qblock{

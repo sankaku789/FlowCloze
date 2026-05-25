@@ -189,6 +189,11 @@ fn extract_targets(body: &str) -> Vec<Target> {
             };
             let target_type = &after_open_brace[..type_end];
             if !target_type.chars().any(char::is_whitespace) {
+                let target_type = if target_type.is_empty() {
+                    DEFAULT_TARGET_TYPE
+                } else {
+                    target_type
+                };
                 targets.push(Target {
                     answer: answer.to_string(),
                     target_type: target_type.to_string(),
