@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::models::{QBlock, Target, ALLOWED_TARGET_TYPES};
+use crate::models::{QBlock, Target, ALLOWED_TARGET_TYPES, DEFAULT_TARGET_TYPE};
 
 /// qblockの閉じ忘れなど，FlowCloze記法を解析できない場合のエラー．
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,21 +178,33 @@ fn extract_targets(body: &str) -> Vec<Target> {
         };
         let answer = &rest[..answer_end];
         let after_answer = &rest[answer_end + 1..];
-        let Some(after_open_brace) = after_answer.strip_prefix('{') else {
+        if answer.contains('\n') {
             rest = after_answer;
             continue;
-        };
-        let Some(type_end) = after_open_brace.find('}') else {
-            break;
-        };
-        let target_type = &after_open_brace[..type_end];
-        if !answer.contains('\n') && !target_type.chars().any(char::is_whitespace) {
+        }
+        if let Some(after_open_brace) = after_answer.strip_prefix('{') {
+            let Some(type_end) = after_open_brace.find('}') else {
+                break;
+            };
+            let target_type = &after_open_brace[..type_end];
+            if !target_type.chars().any(char::is_whitespace) {
+                targets.push(Target {
+                    answer: answer.to_string(),
+                    target_type: target_type.to_string(),
+                });
+            }
+            rest = &after_open_brace[type_end + 1..];
+        } else {
+            if after_answer.starts_with('(') {
+                rest = after_answer;
+                continue;
+            }
             targets.push(Target {
                 answer: answer.to_string(),
-                target_type: target_type.to_string(),
+                target_type: DEFAULT_TARGET_TYPE.to_string(),
             });
+            rest = after_answer;
         }
-        rest = &after_open_brace[type_end + 1..];
     }
 
     targets
@@ -211,19 +223,23 @@ fn strip_target_markup(body: &str) -> String {
         };
         let answer = &after_open[..answer_end];
         let after_answer = &after_open[answer_end + 1..];
-        let Some(after_open_brace) = after_answer.strip_prefix('{') else {
+        if let Some(after_open_brace) = after_answer.strip_prefix('{') {
+            let Some(type_end) = after_open_brace.find('}') else {
+                output.push_str(&rest[start..]);
+                return output;
+            };
+            output.push_str(answer);
+            rest = &after_open_brace[type_end + 1..];
+        } else {
             output.push('[');
             output.push_str(answer);
             output.push(']');
+            if !after_answer.starts_with('(') && !answer.contains('\n') {
+                output.truncate(output.len() - answer.len() - 2);
+                output.push_str(answer);
+            }
             rest = after_answer;
-            continue;
-        };
-        let Some(type_end) = after_open_brace.find('}') else {
-            output.push_str(&rest[start..]);
-            return output;
-        };
-        output.push_str(answer);
-        rest = &after_open_brace[type_end + 1..];
+        }
     }
 
     output.push_str(rest);
