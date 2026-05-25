@@ -1,6 +1,6 @@
 [package]
 name = "flowcloze"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2021"
 description = "Markdown qblock parser for context cloze question generation."
 readme = "README.md"
