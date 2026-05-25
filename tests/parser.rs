@@ -180,6 +180,29 @@ fn 空のtype指定は既定タイプとして解析する() {
 }
 
 #[test]
+fn 空白を含むtype指定はtargetとして扱わず表記を保持する() {
+    let markdown = r#"
+#qblock{
+[壊れたtarget]{term name}はそのまま残し，[セマフォ]は抽出する．
+}
+"#;
+    let qblocks = parse_markdown(markdown).unwrap();
+
+    let qblock = &qblocks[0];
+    assert_eq!(
+        qblock.source_text,
+        "[壊れたtarget]{term name}はそのまま残し，セマフォは抽出する．"
+    );
+    assert_eq!(
+        qblock.targets,
+        vec![Target {
+            answer: "セマフォ".to_string(),
+            target_type: "term-name".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn markdownリンクはtype未指定targetとして扱わない() {
     let markdown = r#"
 #qblock{

@@ -188,12 +188,7 @@ fn extract_targets(body: &str) -> Vec<Target> {
                 continue;
             };
             let target_type = &after_open_brace[..type_end];
-            if !target_type.chars().any(char::is_whitespace) {
-                let target_type = if target_type.is_empty() {
-                    DEFAULT_TARGET_TYPE
-                } else {
-                    target_type
-                };
+            if let Some(target_type) = normalize_target_type(target_type) {
                 targets.push(Target {
                     answer: answer.to_string(),
                     target_type: target_type.to_string(),
@@ -241,7 +236,17 @@ fn strip_target_markup(body: &str) -> String {
                 rest = after_answer;
                 continue;
             };
-            output.push_str(answer);
+            let target_type = &after_open_brace[..type_end];
+            if normalize_target_type(target_type).is_some() {
+                output.push_str(answer);
+            } else {
+                output.push('[');
+                output.push_str(answer);
+                output.push(']');
+                output.push('{');
+                output.push_str(target_type);
+                output.push('}');
+            }
             rest = &after_open_brace[type_end + 1..];
         } else {
             output.push('[');
@@ -262,6 +267,17 @@ fn strip_target_markup(body: &str) -> String {
 
     output.push_str(rest);
     output
+}
+
+fn normalize_target_type(target_type: &str) -> Option<&str> {
+    if target_type.chars().any(char::is_whitespace) {
+        return None;
+    }
+    if target_type.is_empty() {
+        Some(DEFAULT_TARGET_TYPE)
+    } else {
+        Some(target_type)
+    }
 }
 
 fn markdown_reference_label_len(text: &str) -> Option<usize> {
