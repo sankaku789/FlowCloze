@@ -182,6 +182,29 @@ fn markdownリンクはtype未指定targetとして扱わない() {
 }
 
 #[test]
+fn 参照形式markdownリンクはtype未指定targetとして扱わない() {
+    let markdown = r#"
+#qblock{
+[セマフォ]は[Wikipedia][wiki]や[解説][]に説明がある．
+}
+"#;
+    let qblocks = parse_markdown(markdown).unwrap();
+
+    let qblock = &qblocks[0];
+    assert_eq!(
+        qblock.source_text,
+        "セマフォは[Wikipedia][wiki]や[解説][]に説明がある．"
+    );
+    assert_eq!(
+        qblock.targets,
+        vec![Target {
+            answer: "セマフォ".to_string(),
+            target_type: "term-name".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn 閉じていないtype指定は無効なtargetとして後続解析を続ける() {
     let markdown = r#"
 #qblock{

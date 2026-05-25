@@ -200,6 +200,10 @@ fn extract_targets(body: &str) -> Vec<Target> {
                 rest = after_answer;
                 continue;
             }
+            if let Some(label_len) = markdown_reference_label_len(after_answer) {
+                rest = &after_answer[label_len..];
+                continue;
+            }
             targets.push(Target {
                 answer: answer.to_string(),
                 target_type: DEFAULT_TARGET_TYPE.to_string(),
@@ -238,6 +242,11 @@ fn strip_target_markup(body: &str) -> String {
             output.push('[');
             output.push_str(answer);
             output.push(']');
+            if let Some(label_len) = markdown_reference_label_len(after_answer) {
+                output.push_str(&after_answer[..label_len]);
+                rest = &after_answer[label_len..];
+                continue;
+            }
             if !after_answer.starts_with('(') && !answer.contains('\n') {
                 output.truncate(output.len() - answer.len() - 2);
                 output.push_str(answer);
@@ -248,4 +257,10 @@ fn strip_target_markup(body: &str) -> String {
 
     output.push_str(rest);
     output
+}
+
+fn markdown_reference_label_len(text: &str) -> Option<usize> {
+    let label = text.strip_prefix('[')?;
+    let label_end = label.find(']')?;
+    Some(label_end + 2)
 }
