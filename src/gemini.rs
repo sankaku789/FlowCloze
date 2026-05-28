@@ -244,75 +244,12 @@ fn generated_document_schema() -> Value {
                             "type": "string",
                             "description": "Input qblock id."
                         },
-                        "section": {
-                            "type": "string",
-                            "description": "Input qblock section heading. Use an empty string if missing."
-                        },
-                        "type": {
-                            "type": "string",
-                            "description": "Always context-cloze."
-                        },
-                        "targets": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "answer": {
-                                        "type": "string",
-                                        "description": "Exact target answer from the input."
-                                    },
-                                    "type": {
-                                        "type": "string",
-                                        "description": "Exact target type from the input."
-                                    }
-                                },
-                                "required": ["answer", "type"]
-                            }
-                        },
                         "question": {
                             "type": "string",
-                            "description": "Context cloze question using ＿＿＿ for every blank."
-                        },
-                        "answers": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            },
-                            "description": "Answers in the same order as blanks in question."
-                        },
-                        "source_text": {
-                            "type": "string",
-                            "description": "Source text from the qblock."
-                        },
-                        "explanation": {
-                            "type": "string",
-                            "description": "Short explanation. Use an empty string if unnecessary."
-                        },
-                        "tags": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            }
-                        },
-                        "warnings": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            }
+                            "description": "Edited context cloze question text using ＿＿＿ for every blank."
                         }
                     },
-                    "required": [
-                        "id",
-                        "section",
-                        "type",
-                        "targets",
-                        "question",
-                        "answers",
-                        "source_text",
-                        "explanation",
-                        "tags",
-                        "warnings"
-                    ]
+                    "required": ["id", "question"]
                 }
             }
         },

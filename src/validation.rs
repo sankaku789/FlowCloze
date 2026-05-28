@@ -18,7 +18,7 @@ pub struct GeneratedQuestion {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default = "default_question_type")]
     pub question_type: String,
     pub targets: Option<Vec<GeneratedTarget>>,
     pub question: String,
@@ -30,6 +30,10 @@ pub struct GeneratedQuestion {
     pub tags: Vec<String>,
     #[serde(default, deserialize_with = "null_as_default")]
     pub warnings: Vec<String>,
+}
+
+fn default_question_type() -> String {
+    "context-cloze".to_string()
 }
 
 /// 生成結果に含める入力targetsの写し．
@@ -66,10 +70,29 @@ pub enum ValidationError {
     UnknownQuestionId {
         id: String,
     },
+    MissingQuestion {
+        id: String,
+    },
     BlankAnswerCountMismatch {
         id: String,
         blank_count: usize,
         answer_count: usize,
+    },
+    NoBlanksForTargetedQuestion {
+        id: String,
+        target_count: usize,
+    },
+    EmptyGeneratedTargets {
+        id: String,
+        target_count: usize,
+    },
+    AnswerOrderMismatch {
+        id: String,
+    },
+    MissingParagraphBreak {
+        id: String,
+        expected_breaks: usize,
+        actual_breaks: usize,
     },
     AnswerNotInTargets {
         id: String,
@@ -93,6 +116,7 @@ impl std::fmt::Display for ValidationError {
             Self::EmptyQuestion { id } => write!(f, "{id}: questionが空です"),
             Self::DuplicateQuestionId { id } => write!(f, "{id}: idが重複しています"),
             Self::UnknownQuestionId { id } => write!(f, "{id}: 中間データに存在しないidです"),
+            Self::MissingQuestion { id } => write!(f, "{id}: 対応する出力questionがありません"),
             Self::BlankAnswerCountMismatch {
                 id,
                 blank_count,
@@ -100,6 +124,25 @@ impl std::fmt::Display for ValidationError {
             } => write!(
                 f,
                 "{id}: 空欄数({blank_count})とanswers数({answer_count})が一致しません"
+            ),
+            Self::NoBlanksForTargetedQuestion { id, target_count } => write!(
+                f,
+                "{id}: targetが{target_count}個ありますがquestionに空欄がありません"
+            ),
+            Self::EmptyGeneratedTargets { id, target_count } => write!(
+                f,
+                "{id}: 入力targetが{target_count}個ありますが生成結果のtargetsが空です"
+            ),
+            Self::AnswerOrderMismatch { id } => {
+                write!(f, "{id}: answersの順序が中間データと一致しません")
+            }
+            Self::MissingParagraphBreak {
+                id,
+                expected_breaks,
+                actual_breaks,
+            } => write!(
+                f,
+                "{id}: 段落改行数({actual_breaks})が不足しています。少なくとも{expected_breaks}個の空行改行が必要です"
             ),
             Self::AnswerNotInTargets { id, answer } => {
                 write!(f, "{id}: answer '{answer}' はtargetsに含まれていません")
@@ -154,19 +197,10 @@ fn validate_documents(
     intermediate: &IntermediateDocument,
     generated: &GeneratedDocument,
 ) -> ValidationReport {
-    let target_answers_by_id = intermediate
-        .qblocks
+    let tasks_by_id = intermediate
+        .tasks
         .iter()
-        .map(|qblock| {
-            (
-                qblock.id.as_str(),
-                qblock
-                    .targets
-                    .iter()
-                    .map(|target| target.answer.as_str())
-                    .collect::<HashSet<_>>(),
-            )
-        })
+        .map(|task| (task.id.as_str(), task))
         .collect::<HashMap<_, _>>();
     let mut seen_ids = HashSet::new();
     let mut duplicate_ids = HashSet::new();
@@ -182,6 +216,14 @@ fn validate_documents(
         errors.push(ValidationError::DuplicateQuestionId {
             id: duplicate_id.to_string(),
         });
+    }
+
+    for task in &intermediate.tasks {
+        if !seen_ids.contains(task.id.as_str()) {
+            errors.push(ValidationError::MissingQuestion {
+                id: task.id.clone(),
+            });
+        }
     }
 
     for question in &generated.questions {
@@ -200,13 +242,53 @@ fn validate_documents(
             });
         }
 
-        let Some(target_answers) = target_answers_by_id.get(question.id.as_str()) else {
+        let Some(task) = tasks_by_id.get(question.id.as_str()) else {
             errors.push(ValidationError::UnknownQuestionId {
                 id: question.id.clone(),
             });
             continue;
         };
 
+        if !task.answers.is_empty() && blank_count == 0 {
+            errors.push(ValidationError::NoBlanksForTargetedQuestion {
+                id: question.id.clone(),
+                target_count: task.answers.len(),
+            });
+        }
+
+        if question
+            .targets
+            .as_ref()
+            .is_some_and(|targets| targets.is_empty())
+            && !task.targets.is_empty()
+        {
+            errors.push(ValidationError::EmptyGeneratedTargets {
+                id: question.id.clone(),
+                target_count: task.targets.len(),
+            });
+        }
+
+        if question.answers != task.answers {
+            errors.push(ValidationError::AnswerOrderMismatch {
+                id: question.id.clone(),
+            });
+        }
+
+        let expected_paragraph_breaks = required_paragraph_break_count(task);
+        let actual_paragraph_breaks = count_paragraph_breaks(&question.question);
+        if actual_paragraph_breaks < expected_paragraph_breaks {
+            errors.push(ValidationError::MissingParagraphBreak {
+                id: question.id.clone(),
+                expected_breaks: expected_paragraph_breaks,
+                actual_breaks: actual_paragraph_breaks,
+            });
+        }
+
+        let target_answers = task
+            .answers
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
         for answer in &question.answers {
             if !target_answers.contains(answer.as_str()) {
                 errors.push(ValidationError::AnswerNotInTargets {
@@ -236,6 +318,18 @@ fn validate_documents(
 
 fn count_blanks(question: &str) -> usize {
     question.matches("＿＿＿").count()
+}
+
+fn required_paragraph_break_count(task: &crate::json::IntermediateTask) -> usize {
+    task.blocks
+        .iter()
+        .enumerate()
+        .filter(|(index, block)| *index > 0 && block.starts_new_paragraph)
+        .count()
+}
+
+fn count_paragraph_breaks(question: &str) -> usize {
+    question.matches("\n\n").count()
 }
 
 fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>

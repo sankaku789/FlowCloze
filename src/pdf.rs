@@ -7,6 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::validation::GeneratedDocument;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PdfOptions {
     pub generated_json_path: PathBuf,
@@ -23,6 +25,16 @@ pub enum PdfError {
     MissingTemplate {
         path: PathBuf,
         source: std::io::Error,
+    },
+    InvalidGeneratedJson {
+        path: PathBuf,
+        message: String,
+    },
+    EmptyQuestions {
+        path: PathBuf,
+    },
+    NonClozeQuestion {
+        id: String,
     },
     TypstNotFound(std::io::Error),
     InvalidOutputPath {
@@ -50,6 +62,19 @@ impl std::fmt::Display for PdfError {
             }
             Self::MissingTemplate { path, source } => {
                 write!(f, "{} を読めませんでした: {source}", path.display())
+            }
+            Self::InvalidGeneratedJson { path, message } => {
+                write!(
+                    f,
+                    "{} は生成JSONとして読めません: {message}",
+                    path.display()
+                )
+            }
+            Self::EmptyQuestions { path } => {
+                write!(f, "{} にquestionsがありません", path.display())
+            }
+            Self::NonClozeQuestion { id } => {
+                write!(f, "{id}: questionに空欄またはanswersがありません")
             }
             Self::TypstNotFound(error) => {
                 write!(f, "typstを実行できませんでした: {error}")
@@ -100,6 +125,7 @@ pub fn compile_pdf(options: &PdfOptions) -> Result<(), PdfError> {
             path: options.template_path.clone(),
             source,
         })?;
+    validate_generated_json_for_pdf(&generated_json_path)?;
 
     let (typst_output_arg, final_output_path, temporary_output_path) =
         typst_output_paths(&options.output_pdf_path)?;
@@ -151,6 +177,34 @@ pub fn compile_pdf(options: &PdfOptions) -> Result<(), PdfError> {
     Ok(())
 }
 
+fn validate_generated_json_for_pdf(generated_json_path: &Path) -> Result<(), PdfError> {
+    let contents = fs::read_to_string(generated_json_path).map_err(|source| {
+        PdfError::MissingGeneratedJson {
+            path: generated_json_path.to_path_buf(),
+            source,
+        }
+    })?;
+    let document = serde_json::from_str::<GeneratedDocument>(&contents).map_err(|error| {
+        PdfError::InvalidGeneratedJson {
+            path: generated_json_path.to_path_buf(),
+            message: error.to_string(),
+        }
+    })?;
+    if document.questions.is_empty() {
+        return Err(PdfError::EmptyQuestions {
+            path: generated_json_path.to_path_buf(),
+        });
+    }
+    for question in &document.questions {
+        if question.answers.is_empty() || !question.question.contains("＿＿＿") {
+            return Err(PdfError::NonClozeQuestion {
+                id: question.id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn canonicalize(path: &Path) -> Result<PathBuf, std::io::Error> {
     path.canonicalize()
 }
@@ -181,4 +235,36 @@ fn typst_output_paths(
         output_pdf_path.to_path_buf(),
         None,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pdf入力で空欄なし問題を検出する() {
+        let path = std::env::temp_dir().join("flowcloze-non-cloze.json");
+        fs::write(
+            &path,
+            r#"{
+  "questions": [
+    {
+      "id": "qblock-001",
+      "type": "context-cloze",
+      "question": "セマフォはOSの機能である。",
+      "answers": []
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let result = validate_generated_json_for_pdf(&path);
+
+        assert!(matches!(
+            result,
+            Err(PdfError::NonClozeQuestion { id }) if id == "qblock-001"
+        ));
+        let _ = fs::remove_file(path);
+    }
 }
