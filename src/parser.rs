@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::models::{QBlock, Target, ALLOWED_TARGET_TYPES, DEFAULT_TARGET_TYPE};
+use crate::models::{QBlock, Target, TargetOccurrence, ALLOWED_TARGET_TYPES, DEFAULT_TARGET_TYPE};
 
 /// qblockの閉じ忘れなど，FlowCloze記法を解析できない場合のエラー．
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +54,9 @@ fn parse_qblock_with_default_id(
     default_id: &str,
     section: Option<String>,
 ) -> Result<QBlock, MarkdownParseError> {
-    let targets = extract_targets(body);
+    let parsed_body = parse_target_markup(body);
+    let section = section.or_else(|| first_body_section(body));
+    let targets = parsed_body.targets;
     let mut warnings = Vec::new();
     for target in &targets {
         if !ALLOWED_TARGET_TYPES.contains(&target.target_type.as_str()) {
@@ -68,8 +70,10 @@ fn parse_qblock_with_default_id(
     Ok(QBlock {
         id: default_id.to_string(),
         section,
-        source_text: strip_target_markup(body).trim().to_string(),
+        raw_source_text: body.trim().to_string(),
+        source_text: parsed_body.plain_text,
         targets,
+        target_occurrences: parsed_body.target_occurrences,
         warnings,
     })
 }
@@ -143,7 +147,7 @@ fn iter_qblock_sections(markdown: &str) -> Result<Vec<QBlockSection>, MarkdownPa
 fn parse_markdown_heading(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
     let level = trimmed.chars().take_while(|ch| *ch == '#').count();
-    if level != 1 {
+    if !(1..=6).contains(&level) {
         return None;
     }
     let rest = trimmed.get(level..)?;
@@ -152,6 +156,17 @@ fn parse_markdown_heading(line: &str) -> Option<String> {
     }
     let heading = rest.trim().trim_matches('#').trim();
     (!heading.is_empty()).then(|| heading.to_string())
+}
+
+fn first_body_section(body: &str) -> Option<String> {
+    body.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        let level = trimmed.chars().take_while(|ch| *ch == '#').count();
+        if level != 1 {
+            return None;
+        }
+        parse_markdown_heading(line)
+    })
 }
 
 fn is_qblock_open(line: &str) -> bool {
@@ -167,106 +182,136 @@ fn is_fence_line(line: &str) -> bool {
     trimmed.starts_with("```") || trimmed.starts_with("~~~")
 }
 
-fn extract_targets(body: &str) -> Vec<Target> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedTargetMarkup {
+    plain_text: String,
+    targets: Vec<Target>,
+    target_occurrences: Vec<TargetOccurrence>,
+}
+
+fn parse_target_markup(body: &str) -> ParsedTargetMarkup {
+    let mut plain = String::new();
     let mut targets = Vec::new();
+    let mut target_occurrences = Vec::new();
     let mut rest = body;
 
     while let Some(start) = rest.find('[') {
+        plain.push_str(&rest[..start]);
         rest = &rest[start + 1..];
         let Some(answer_end) = rest.find(']') else {
+            plain.push('[');
+            plain.push_str(rest);
             break;
         };
         let answer = &rest[..answer_end];
         let after_answer = &rest[answer_end + 1..];
         if answer.contains('\n') {
+            plain.push('[');
+            plain.push_str(answer);
+            plain.push(']');
             rest = after_answer;
             continue;
         }
         if let Some(after_open_brace) = after_answer.strip_prefix('{') {
             let Some(type_end) = after_open_brace.find('}') else {
+                plain.push('[');
+                plain.push_str(answer);
+                plain.push(']');
                 rest = after_answer;
                 continue;
             };
             let target_type = &after_open_brace[..type_end];
             if let Some(target_type) = normalize_target_type(target_type) {
+                let target_index = targets.len();
+                let start = plain.len();
+                plain.push_str(answer);
+                let end = plain.len();
                 targets.push(Target {
                     answer: answer.to_string(),
                     target_type: target_type.to_string(),
                 });
+                target_occurrences.push(TargetOccurrence {
+                    target_index,
+                    start,
+                    end,
+                });
+            } else {
+                plain.push('[');
+                plain.push_str(answer);
+                plain.push(']');
+                plain.push('{');
+                plain.push_str(target_type);
+                plain.push('}');
             }
             rest = &after_open_brace[type_end + 1..];
         } else {
             if after_answer.starts_with('(') {
+                plain.push('[');
+                plain.push_str(answer);
+                plain.push(']');
                 rest = after_answer;
                 continue;
             }
             if let Some(label_len) = markdown_reference_label_len(after_answer) {
+                plain.push('[');
+                plain.push_str(answer);
+                plain.push(']');
+                plain.push_str(&after_answer[..label_len]);
                 rest = &after_answer[label_len..];
                 continue;
             }
+            let target_index = targets.len();
+            let start = plain.len();
+            plain.push_str(answer);
+            let end = plain.len();
             targets.push(Target {
                 answer: answer.to_string(),
                 target_type: DEFAULT_TARGET_TYPE.to_string(),
+            });
+            target_occurrences.push(TargetOccurrence {
+                target_index,
+                start,
+                end,
             });
             rest = after_answer;
         }
     }
 
-    targets
+    plain.push_str(rest);
+    trim_parsed_body(plain, targets, target_occurrences)
 }
 
-fn strip_target_markup(body: &str) -> String {
-    let mut output = String::new();
-    let mut rest = body;
+fn trim_parsed_body(
+    plain: String,
+    targets: Vec<Target>,
+    target_occurrences: Vec<TargetOccurrence>,
+) -> ParsedTargetMarkup {
+    let leading = plain.len() - plain.trim_start().len();
+    let trailing = plain.trim_end().len();
+    let plain_text = if leading <= trailing {
+        plain[leading..trailing].to_string()
+    } else {
+        String::new()
+    };
+    let target_occurrences = target_occurrences
+        .into_iter()
+        .filter_map(|occurrence| {
+            if occurrence.start < leading || occurrence.end > trailing {
+                return None;
+            }
+            Some(TargetOccurrence {
+                target_index: occurrence.target_index,
+                start: occurrence.start - leading,
+                end: occurrence.end - leading,
+            })
+        })
+        .collect();
 
-    while let Some(start) = rest.find('[') {
-        output.push_str(&rest[..start]);
-        let after_open = &rest[start + 1..];
-        let Some(answer_end) = after_open.find(']') else {
-            output.push_str(&rest[start..]);
-            return output;
-        };
-        let answer = &after_open[..answer_end];
-        let after_answer = &after_open[answer_end + 1..];
-        if let Some(after_open_brace) = after_answer.strip_prefix('{') {
-            let Some(type_end) = after_open_brace.find('}') else {
-                output.push('[');
-                output.push_str(answer);
-                output.push(']');
-                rest = after_answer;
-                continue;
-            };
-            let target_type = &after_open_brace[..type_end];
-            if normalize_target_type(target_type).is_some() {
-                output.push_str(answer);
-            } else {
-                output.push('[');
-                output.push_str(answer);
-                output.push(']');
-                output.push('{');
-                output.push_str(target_type);
-                output.push('}');
-            }
-            rest = &after_open_brace[type_end + 1..];
-        } else {
-            output.push('[');
-            output.push_str(answer);
-            output.push(']');
-            if let Some(label_len) = markdown_reference_label_len(after_answer) {
-                output.push_str(&after_answer[..label_len]);
-                rest = &after_answer[label_len..];
-                continue;
-            }
-            if !after_answer.starts_with('(') && !answer.contains('\n') {
-                output.truncate(output.len() - answer.len() - 2);
-                output.push_str(answer);
-            }
-            rest = after_answer;
-        }
+    ParsedTargetMarkup {
+        plain_text,
+        targets,
+        target_occurrences,
     }
-
-    output.push_str(rest);
-    output
 }
 
 fn normalize_target_type(target_type: &str) -> Option<&str> {

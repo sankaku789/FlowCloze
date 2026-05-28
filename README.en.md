@@ -125,17 +125,17 @@ Write answer targets as `[answer]`. When needed, you can also write `[answer]{ty
 [Requirements definition] consists of [elicitation], [analysis], [specification], and [validation].
 ```
 
-The text inside `[]` is the answer string. When `{}` is present, it is used as the question perspective. When the type is omitted, FlowCloze treats it as `term-name`. FlowCloze instructs Gemini not to use anything other than these targets as answers.
+The text inside `[]` is the answer string. When `{}` is present, it is used as the question perspective. When the type is omitted, FlowCloze treats it as `term-name`. Targets and answers are copied from the intermediate JSON into the generated JSON by Rust, so Gemini does not infer answer targets.
 
 ### Sections
 
-Only Markdown level-1 headings are used as section titles in PDF output.
+PDF section titles use the nearest Markdown heading before a qblock, or the first `# Heading 1` inside the qblock. Headings before a qblock may use any Markdown level.
 
 ```md
 # Requirements Definition
 ```
 
-`##` and `###` headings may remain for note structure but are not used as PDF section titles.
+Inside a qblock, `##` and `###` are treated as ordinary body text. They do not create paragraph breaks by themselves.
 
 ### Target Types
 
@@ -279,22 +279,45 @@ flowcloze --version
 
 ## JSON Format
 
-The intermediate JSON contains only facts extracted from Markdown.
+The intermediate JSON stores extracted qblocks as generation tasks for Gemini.
+Blank positions, answer order, and section titles are fixed by Rust.
 
 ```json
 {
+  "schema_version": 3,
   "meta": {
-    "source": "sample/sample.md"
+    "source": "sample/sample.md",
+    "format": {
+      "blank": "＿＿＿",
+      "block_separator": "\n\n",
+      "paragraph_indent": "　"
+    }
   },
-  "qblocks": [
+  "tasks": [
     {
       "id": "qblock-001",
+      "type": "context-cloze",
       "section": "Requirements Definition",
-      "source_text": "Requirements definition is the process of creating a requirements specification from what the customer wants.",
+      "source": {
+        "raw": "[Requirements definition]{term-name} is the process of creating a [requirements specification]{relation} from what the customer wants.",
+        "plain": "Requirements definition is the process of creating a requirements specification from what the customer wants."
+      },
+      "blocks": [
+        {
+          "id": "qblock-001-b001",
+          "kind": "paragraph",
+          "starts_new_paragraph": false,
+          "text": "Requirements definition is the process of creating a requirements specification from what the customer wants.",
+          "cloze_text": "　＿＿＿ is the process of creating a ＿＿＿ from what the customer wants.",
+          "target_refs": [0, 1]
+        }
+      ],
+      "cloze_template": "　＿＿＿ is the process of creating a ＿＿＿ from what the customer wants.",
       "targets": [
-        { "answer": "Requirements definition", "type": "term-name" },
-        { "answer": "requirements specification", "type": "relation" }
-      ]
+        { "index": 0, "answer": "Requirements definition", "type": "term-name", "block_id": "qblock-001-b001" },
+        { "index": 1, "answer": "requirements specification", "type": "relation", "block_id": "qblock-001-b001" }
+      ],
+      "answers": ["Requirements definition", "requirements specification"]
     }
   ]
 }

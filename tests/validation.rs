@@ -12,6 +12,26 @@ fn intermediate_json() -> String {
 }
 
 #[test]
+fn llmの最小出力jsonを読める() {
+    let generated_json = r#"
+{
+  "questions": [
+    {
+      "id": "qblock-001",
+      "question": "＿＿＿はOSの＿＿＿である．"
+    }
+  ]
+}
+"#;
+
+    let document: flowcloze::GeneratedDocument = serde_json::from_str(generated_json).unwrap();
+
+    assert_eq!(document.questions[0].question_type, "context-cloze");
+    assert_eq!(document.questions[0].targets, None);
+    assert!(document.questions[0].answers.is_empty());
+}
+
+#[test]
 fn 正しい生成結果jsonを検証できる() {
     let intermediate_json = intermediate_json();
     let generated_json = fixture("generated-valid.json");
@@ -92,6 +112,67 @@ fn 空欄数とanswers数の不一致を検出する() {
             id: "qblock-001".to_string(),
             blank_count: 2,
             answer_count: 1,
+        }));
+}
+
+#[test]
+fn targetがあるのに空欄がない生成結果を検出する() {
+    let intermediate_json = intermediate_json();
+    let generated_json = r#"
+{
+  "questions": [
+    {
+      "id": "qblock-001",
+      "type": "context-cloze",
+      "question": "セマフォはOSのプロセス間同期機能である。",
+      "answers": []
+    }
+  ]
+}
+"#;
+
+    let report = validate_generated_json(&intermediate_json, generated_json);
+
+    assert!(report
+        .errors
+        .contains(&ValidationError::NoBlanksForTargetedQuestion {
+            id: "qblock-001".to_string(),
+            target_count: 7,
+        }));
+}
+
+#[test]
+fn 入力targetがあるのに生成targetsが空なら検出する() {
+    let intermediate_json = intermediate_json();
+    let generated_json = r#"
+{
+  "questions": [
+    {
+      "id": "qblock-001",
+      "type": "context-cloze",
+      "targets": [],
+      "question": "＿＿＿はOSの＿＿＿である．\n＿＿＿で＿＿＿し，だめなら＿＿＿になる．\n＿＿＿で＿＿＿する．",
+      "answers": [
+        "セマフォ",
+        "プロセス間同期機能",
+        "P命令",
+        "獲得",
+        "待ち状態",
+        "V命令",
+        "解放"
+      ]
+    }
+  ]
+}
+"#;
+
+    let report = validate_generated_json(&intermediate_json, generated_json);
+
+    assert!(report
+        .errors
+        .contains(&ValidationError::EmptyGeneratedTargets {
+            id: "qblock-001".to_string(),
+            target_count: 7,
         }));
 }
 

@@ -22,6 +22,38 @@
 #let unit-gap = -0.5pt
 #let measured-height-safety = 1.12
 
+#let answer-length(answer) = str(answer).len()
+
+#let answer-size(answer) = {
+  let length = answer-length(answer)
+  if length > 120 {
+    5.8pt
+  } else if length > 80 {
+    6.4pt
+  } else if length > 48 {
+    7.2pt
+  } else if length > 28 {
+    8.2pt
+  } else {
+    answer-text-size
+  }
+}
+
+#let answer-height(answer) = {
+  let length = answer-length(answer)
+  if length > 120 {
+    54pt
+  } else if length > 80 {
+    42pt
+  } else if length > 48 {
+    32pt
+  } else if length > 28 {
+    24pt
+  } else {
+    answer-slot-height
+  }
+}
+
 #let write-lines(body) = {
   for line in str(body).split("\n") {
     [#line]
@@ -47,13 +79,13 @@
     table(
       columns: (1fr,),
       stroke: slot-stroke,
-      inset: 3pt,
+      inset: 2pt,
       ..answers.map(answer => if show-answers {
-        block(height: answer-slot-height)[
-          #text(fill: answer-color, size: answer-text-size)[#str(answer)]
+        block(height: answer-height(answer))[
+          #text(fill: answer-color, size: answer-size(answer))[#str(answer)]
         ]
       } else {
-        [#v(answer-slot-height)]
+        [#v(answer-height(answer))]
       }),
     )
   }

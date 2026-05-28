@@ -9,7 +9,8 @@ use std::process;
 use flowcloze::{
     build_generation_prompt, compile_pdf, default_pdf_output_path, parse_markdown, to_ankilot_csv,
     to_intermediate_json, validate_generated_document, validate_generated_json, GeminiClient,
-    GeneratedDocument, IntermediateDocument, PdfOptions, ValidationError,
+    GeneratedDocument, GeneratedQuestion, GeneratedTarget, IntermediateDocument, IntermediateTask,
+    PdfOptions, ValidationError,
 };
 
 mod view;
@@ -610,6 +611,7 @@ fn generate_with_gemini(
                 continue;
             }
         };
+        let parsed_document = normalize_generated_document(&intermediate, parsed_document);
         let report = validate_generated_document(&intermediate_json, &parsed_document);
         if report.is_valid() {
             let json = match serde_json::to_string_pretty(&parsed_document) {
@@ -647,6 +649,103 @@ fn generate_with_gemini(
     }
 }
 
+fn normalize_generated_document(
+    intermediate: &IntermediateDocument,
+    generated: GeneratedDocument,
+) -> GeneratedDocument {
+    let questions = intermediate
+        .tasks
+        .iter()
+        .map(|task| {
+            let generated_question = generated
+            .questions
+            .iter()
+            .find(|question| question.id == task.id)
+            .cloned();
+
+            GeneratedQuestion {
+                id: task.id.clone(),
+                section: Some(task.section.clone().unwrap_or_default()),
+                question_type: task.task_type.clone(),
+                targets: Some(
+                    task.targets
+                        .iter()
+                        .map(|target| GeneratedTarget {
+                            answer: target.answer.clone(),
+                            target_type: target.target_type.clone(),
+                        })
+                        .collect(),
+                ),
+                question: normalize_question_text(
+                    task,
+                    generated_question
+                    .as_ref()
+                    .map(|question| question.question.clone())
+                    .unwrap_or_default(),
+                ),
+                answers: task.answers.clone(),
+                source_text: Some(task.source.plain.clone()),
+                explanation: generated_question
+                    .as_ref()
+                    .and_then(|question| question.explanation.clone())
+                    .or_else(|| Some(String::new())),
+                tags: generated_question
+                    .as_ref()
+                    .map(|question| question.tags.clone())
+                    .unwrap_or_default(),
+                warnings: generated_question
+                    .map(|question| question.warnings)
+                    .unwrap_or_default(),
+            }
+        })
+        .collect();
+
+    GeneratedDocument { questions }
+}
+
+fn normalize_question_text(task: &IntermediateTask, question: String) -> String {
+    let mut question = question.trim().to_string();
+
+    for block in task
+        .blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| {
+            if index > 0 && block.starts_new_paragraph {
+                block.target_refs.first().copied()
+            } else {
+                None
+            }
+        })
+    {
+        let blank_index = block;
+        let Some(position) = nth_blank_position(&question, blank_index) else {
+            continue;
+        };
+        if has_paragraph_break_before(&question, position) {
+            continue;
+        }
+        question.insert_str(position, "\n\n");
+    }
+
+    question
+}
+
+fn nth_blank_position(text: &str, blank_index: usize) -> Option<usize> {
+    text.match_indices("＿＿＿")
+        .nth(blank_index)
+        .map(|(position, _)| position)
+}
+
+fn has_paragraph_break_before(text: &str, position: usize) -> bool {
+    text[..position]
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_whitespace())
+        .collect::<String>()
+        .contains("\n\n")
+}
+
 fn build_validation_retry_feedback(
     intermediate: &IntermediateDocument,
     errors: &[ValidationError],
@@ -661,18 +760,18 @@ fn build_validation_retry_feedback(
         if described_ids.iter().any(|described_id| described_id == id) {
             continue;
         }
-        let Some(qblock) = intermediate.qblocks.iter().find(|qblock| qblock.id == id) else {
+        let Some(task) = intermediate.tasks.iter().find(|task| task.id == id) else {
             continue;
         };
-        let answers = qblock
-            .targets
+        let answers = task
+            .answers
             .iter()
-            .map(|target| format!("\"{}\"", target.answer))
+            .map(|answer| format!("\"{}\"", answer))
             .collect::<Vec<_>>()
             .join(", ");
         feedback.push(format!(
-            "{id}: source_textをそのまま抜き出すのではなく，文脈を保った文章補完問題として自然な本文に再構成してください．target以外の説明は省略せず通常文として残してください．question内の ＿＿＿ は{}個にし，answersはこの順序の配列 [{answers}] にしてください．各answerを文中に残さず，必ず独立した空欄にしてください．",
-            qblock.targets.len()
+            "{id}: cloze_templateを土台にしつつ，文脈を保った自然な文章補完問題へ整えてください．question内の ＿＿＿ は{}個にし，answersはこの順序の配列 [{answers}] にしてください．各answerを文中に残さず，必ず独立した空欄にしてください．source.plain内の各文・各箇条書き項目は，targetを含まない文も前後の文と接続した自然な説明文としてquestion本文へ統合し，情報量を減らす要約はしないでください．先頭以外のblocksでstarts_new_paragraphがtrueなら，そのblockの前に必ず空行改行（\\n\\n）を入れてください．",
+            task.answers.len()
         ));
         described_ids.push(id.to_string());
     }
@@ -685,9 +784,14 @@ fn validation_error_id(error: &ValidationError) -> Option<&str> {
         ValidationError::EmptyQuestion { id }
         | ValidationError::DuplicateQuestionId { id }
         | ValidationError::UnknownQuestionId { id }
+        | ValidationError::MissingQuestion { id }
         | ValidationError::BlankAnswerCountMismatch { id, .. }
+        | ValidationError::NoBlanksForTargetedQuestion { id, .. }
+        | ValidationError::EmptyGeneratedTargets { id, .. }
+        | ValidationError::AnswerOrderMismatch { id }
         | ValidationError::AnswerNotInTargets { id, .. }
-        | ValidationError::MissingTargetAnswer { id, .. } => Some(id),
+        | ValidationError::MissingTargetAnswer { id, .. }
+        | ValidationError::MissingParagraphBreak { id, .. } => Some(id),
         ValidationError::InvalidIntermediateJson(_) | ValidationError::InvalidGeneratedJson(_) => {
             None
         }
