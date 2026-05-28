@@ -203,6 +203,7 @@ fn split_plain_text_blocks(text: &str) -> Vec<BlockRange> {
     let mut current_start = None;
     let mut current_end = 0;
     let mut current_starts_new_paragraph = false;
+    let mut next_starts_new_paragraph = false;
     let mut offset = 0;
 
     for line in text.split('\n') {
@@ -222,8 +223,23 @@ fn split_plain_text_blocks(text: &str) -> Vec<BlockRange> {
             continue;
         }
 
+        if is_inner_heading(line) {
+            push_current_block(
+                text,
+                &mut blocks,
+                &mut current_start,
+                current_end,
+                current_starts_new_paragraph,
+            );
+            current_starts_new_paragraph = false;
+            next_starts_new_paragraph = true;
+            continue;
+        }
+
         if current_start.is_none() {
             current_start = Some(line_start);
+            current_starts_new_paragraph = next_starts_new_paragraph;
+            next_starts_new_paragraph = false;
         }
         current_end = line_end;
     }
@@ -254,6 +270,17 @@ fn push_current_block(
             text: text[start..current_end].to_string(),
         });
     }
+}
+
+fn is_inner_heading(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let level = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if level < 2 {
+        return false;
+    }
+    trimmed
+        .get(level..)
+        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
 }
 
 fn cloze_text_for_range(qblock: &QBlock, range: &BlockRange) -> String {

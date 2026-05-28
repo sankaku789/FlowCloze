@@ -147,7 +147,7 @@ fn iter_qblock_sections(markdown: &str) -> Result<Vec<QBlockSection>, MarkdownPa
 fn parse_markdown_heading(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
     let level = trimmed.chars().take_while(|ch| *ch == '#').count();
-    if !(1..=6).contains(&level) {
+    if level != 1 {
         return None;
     }
     let rest = trimmed.get(level..)?;

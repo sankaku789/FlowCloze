@@ -82,7 +82,7 @@ fn qblockを解析できる() {
 }
 
 #[test]
-fn 直近の見出しをqblockのsectionにする() {
+fn 直近の見出し1をqblockのsectionにする() {
     let markdown = r#"
 # ソフトウェア工学の概論
 
@@ -105,7 +105,7 @@ fn 直近の見出しをqblockのsectionにする() {
             .collect::<Vec<_>>(),
         vec![
             Some("ソフトウェア工学の概論"),
-            Some("ソフトウェア工学とは")
+            Some("ソフトウェア工学の概論")
         ]
     );
 }

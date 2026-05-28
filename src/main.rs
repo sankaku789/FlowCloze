@@ -658,10 +658,10 @@ fn normalize_generated_document(
         .iter()
         .map(|task| {
             let generated_question = generated
-            .questions
-            .iter()
-            .find(|question| question.id == task.id)
-            .cloned();
+                .questions
+                .iter()
+                .find(|question| question.id == task.id)
+                .cloned();
 
             GeneratedQuestion {
                 id: task.id.clone(),
@@ -679,9 +679,9 @@ fn normalize_generated_document(
                 question: normalize_question_text(
                     task,
                     generated_question
-                    .as_ref()
-                    .map(|question| question.question.clone())
-                    .unwrap_or_default(),
+                        .as_ref()
+                        .map(|question| question.question.clone())
+                        .unwrap_or_default(),
                 ),
                 answers: task.answers.clone(),
                 source_text: Some(task.source.plain.clone()),
@@ -704,20 +704,15 @@ fn normalize_generated_document(
 }
 
 fn normalize_question_text(task: &IntermediateTask, question: String) -> String {
-    let mut question = question.trim().to_string();
+    let mut question = normalize_inline_paragraph_indents(question.trim());
 
-    for block in task
-        .blocks
-        .iter()
-        .enumerate()
-        .filter_map(|(index, block)| {
-            if index > 0 && block.starts_new_paragraph {
-                block.target_refs.first().copied()
-            } else {
-                None
-            }
-        })
-    {
+    for block in task.blocks.iter().enumerate().filter_map(|(index, block)| {
+        if index > 0 && block.starts_new_paragraph {
+            block.target_refs.first().copied()
+        } else {
+            None
+        }
+    }) {
         let blank_index = block;
         let Some(position) = nth_blank_position(&question, blank_index) else {
             continue;
@@ -728,7 +723,33 @@ fn normalize_question_text(task: &IntermediateTask, question: String) -> String 
         question.insert_str(position, "\n\n");
     }
 
-    question
+    indent_question_paragraphs(&question)
+}
+
+fn normalize_inline_paragraph_indents(question: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous = None;
+
+    for ch in question.chars() {
+        if ch == '　'
+            && !normalized.is_empty()
+            && previous.is_some_and(is_paragraph_boundary_before_indent)
+            && !normalized.ends_with("\n\n")
+        {
+            normalized.push_str("\n\n");
+        }
+        normalized.push(ch);
+        previous = Some(ch);
+    }
+
+    normalized
+}
+
+fn is_paragraph_boundary_before_indent(ch: char) -> bool {
+    matches!(
+        ch,
+        '。' | '．' | '.' | '！' | '!' | '？' | '?' | '）' | ')' | '」' | '』' | '】'
+    )
 }
 
 fn nth_blank_position(text: &str, blank_index: usize) -> Option<usize> {
@@ -744,6 +765,21 @@ fn has_paragraph_break_before(text: &str, position: usize) -> bool {
         .take_while(|ch| ch.is_whitespace())
         .collect::<String>()
         .contains("\n\n")
+}
+
+fn indent_question_paragraphs(question: &str) -> String {
+    question
+        .split("\n\n")
+        .map(|paragraph| {
+            let paragraph = paragraph.trim_start();
+            if paragraph.is_empty() || paragraph.starts_with('　') {
+                paragraph.to_string()
+            } else {
+                format!("　{paragraph}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn build_validation_retry_feedback(
@@ -770,7 +806,7 @@ fn build_validation_retry_feedback(
             .collect::<Vec<_>>()
             .join(", ");
         feedback.push(format!(
-            "{id}: cloze_templateを土台にしつつ，文脈を保った自然な文章補完問題へ整えてください．question内の ＿＿＿ は{}個にし，answersはこの順序の配列 [{answers}] にしてください．各answerを文中に残さず，必ず独立した空欄にしてください．source.plain内の各文・各箇条書き項目は，targetを含まない文も前後の文と接続した自然な説明文としてquestion本文へ統合し，情報量を減らす要約はしないでください．先頭以外のblocksでstarts_new_paragraphがtrueなら，そのblockの前に必ず空行改行（\\n\\n）を入れてください．",
+            "{id}: cloze_templateを土台にしつつ，文脈を保った自然な文章補完問題へ整えてください．question内の ＿＿＿ は{}個にし，answersはこの順序の配列 [{answers}] にしてください．各answerを文中に残さず，必ず独立した空欄にしてください．answerの一部だけを空欄の前後へ出すと，answerを戻したときに重複して文が壊れます．必要な助詞・語尾はcloze_templateの穴埋め下書きを参考にして残してください．source.plain内の各文・各箇条書き項目は，targetを含まない文も前後の文と接続した自然な説明文としてquestion本文へ統合し，情報量を減らす要約はしないでください．先頭以外のblocksでstarts_new_paragraphがtrueなら，そのblockの前に必ず空行改行（\\n\\n）を入れてください．",
             task.answers.len()
         ));
         described_ids.push(id.to_string());

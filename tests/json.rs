@@ -46,7 +46,7 @@ fn qblock抽出結果をjsonに変換できる() {
 }
 
 #[test]
-fn qblock内の見出しは本文として扱う() {
+fn qblock内の見出し2以降は段落境界として扱う() {
     let markdown = r#"
 # 単元
 
@@ -63,18 +63,24 @@ fn qblock内の見出しは本文として扱う() {
     let document: IntermediateDocument = serde_json::from_str(&json).unwrap();
     let task = &document.tasks[0];
 
-    assert_eq!(task.blocks.len(), 1);
+    assert_eq!(task.blocks.len(), 2);
     assert_eq!(
         task.blocks
             .iter()
             .map(|block| block.text.as_str())
             .collect::<Vec<_>>(),
-        vec!["## 見出しA\n- 情報システムは目的を達成する仕組みである．\n### 見出しB\n- ソフトウェアはプログラムである．"]
+        vec![
+            "- 情報システムは目的を達成する仕組みである．",
+            "- ソフトウェアはプログラムである．"
+        ]
     );
-    assert!(!task.blocks[0].starts_new_paragraph);
+    assert!(task.blocks[0].starts_new_paragraph);
+    assert!(task.blocks[1].starts_new_paragraph);
     assert!(task.cloze_template.contains("元の文章:\n## 見出しA"));
-    assert!(task.cloze_template.contains("### 見出しB"));
     assert!(task
         .cloze_template
-        .contains("穴埋め下書き:\n　## 見出しA\n- ＿＿＿は＿＿＿である．\n### 見出しB\n- ＿＿＿は＿＿＿である．"));
+        .contains("穴埋め下書き:\n　- ＿＿＿は＿＿＿である．"));
+    assert!(task
+        .cloze_template
+        .contains("\n\n　- ＿＿＿は＿＿＿である．"));
 }

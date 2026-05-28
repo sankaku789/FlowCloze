@@ -21,6 +21,7 @@
 #let sheet-label-height = 16pt
 #let unit-gap = -0.5pt
 #let measured-height-safety = 1.12
+#let paragraph-gap = 0pt
 
 #let answer-length(answer) = str(answer).len()
 
@@ -56,8 +57,10 @@
 
 #let write-lines(body) = {
   for line in str(body).split("\n") {
-    [#line]
-    linebreak()
+    if line != "" {
+      [#line]
+      linebreak()
+    }
   }
 }
 

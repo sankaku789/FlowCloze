@@ -196,3 +196,42 @@ fn targetsにないanswerを検出する() {
             answer: "解放".to_string(),
         }));
 }
+
+#[test]
+fn 段落改行不足を検出する() {
+    let markdown = r#"
+# 章
+
+#qblock{
+[OS]{term-name}は基本ソフトウェアである。
+
+## 機能
+
+[メモリ管理]{term-name}を行う。
+}
+"#;
+    let qblocks = parse_markdown(markdown).unwrap();
+    let intermediate_json = to_intermediate_json("inline.md", &qblocks).unwrap();
+    let generated_json = r#"
+{
+  "questions": [
+    {
+      "id": "qblock-001",
+      "type": "context-cloze",
+      "question": "＿＿＿は基本ソフトウェアであり、＿＿＿を行う。",
+      "answers": ["OS", "メモリ管理"]
+    }
+  ]
+}
+"#;
+
+    let report = validate_generated_json(&intermediate_json, generated_json);
+
+    assert!(report
+        .errors
+        .contains(&ValidationError::MissingParagraphBreak {
+            id: "qblock-001".to_string(),
+            expected_breaks: 1,
+            actual_breaks: 0,
+        }));
+}
