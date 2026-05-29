@@ -647,6 +647,139 @@ fn generate_with_gemini(
     }
 }
 
+fn normalize_generated_document(
+    intermediate: &IntermediateDocument,
+    generated: GeneratedDocument,
+) -> GeneratedDocument {
+    let questions = intermediate
+        .tasks
+        .iter()
+        .map(|task| {
+            let generated_question = generated
+                .questions
+                .iter()
+                .find(|question| question.id == task.id)
+                .cloned();
+
+            GeneratedQuestion {
+                id: task.id.clone(),
+                section: Some(task.section.clone().unwrap_or_default()),
+                question_type: task.task_type.clone(),
+                targets: Some(
+                    task.targets
+                        .iter()
+                        .map(|target| GeneratedTarget {
+                            answer: target.answer.clone(),
+                            target_type: target.target_type.clone(),
+                        })
+                        .collect(),
+                ),
+                question: normalize_question_text(
+                    task,
+                    generated_question
+                        .as_ref()
+                        .map(|question| question.question.clone())
+                        .unwrap_or_default(),
+                ),
+                answers: task.answers.clone(),
+                source_text: Some(task.source.plain.clone()),
+                explanation: generated_question
+                    .as_ref()
+                    .and_then(|question| question.explanation.clone())
+                    .or_else(|| Some(String::new())),
+                tags: generated_question
+                    .as_ref()
+                    .map(|question| question.tags.clone())
+                    .unwrap_or_default(),
+                warnings: generated_question
+                    .map(|question| question.warnings)
+                    .unwrap_or_default(),
+            }
+        })
+        .collect();
+
+    GeneratedDocument { questions }
+}
+
+fn normalize_question_text(task: &IntermediateTask, question: String) -> String {
+    let mut question = normalize_inline_paragraph_indents(question.trim());
+
+    for block in task.blocks.iter().enumerate().filter_map(|(index, block)| {
+        if index > 0 && block.starts_new_paragraph {
+            block.target_refs.first().copied()
+        } else {
+            None
+        }
+    }) {
+        let blank_index = block;
+        let Some(position) = nth_blank_position(&question, blank_index) else {
+            continue;
+        };
+        if has_paragraph_break_before(&question, position) {
+            continue;
+        }
+        question.insert_str(position, "\n\n");
+    }
+
+    indent_question_paragraphs(&question)
+}
+
+fn normalize_inline_paragraph_indents(question: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous = None;
+
+    for ch in question.chars() {
+        if ch == '　'
+            && !normalized.is_empty()
+            && previous.is_some_and(is_paragraph_boundary_before_indent)
+            && !normalized.ends_with("\n\n")
+        {
+            normalized.push_str("\n\n");
+        }
+        normalized.push(ch);
+        previous = Some(ch);
+    }
+
+    normalized
+}
+
+fn is_paragraph_boundary_before_indent(ch: char) -> bool {
+    matches!(
+        ch,
+        '。' | '．' | '.' | '！' | '!' | '？' | '?' | '）' | ')' | '」' | '』' | '】'
+    )
+}
+
+fn nth_blank_position(text: &str, blank_index: usize) -> Option<usize> {
+    text.match_indices("＿＿＿")
+        .nth(blank_index)
+        .map(|(position, _)| position)
+}
+
+fn has_paragraph_break_before(text: &str, position: usize) -> bool {
+    text[..position]
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_whitespace())
+        .collect::<String>()
+        .contains("\n\n")
+}
+
+fn indent_question_paragraphs(question: &str) -> String {
+    question
+        .split("\n\n")
+        .map(|paragraph| {
+            let paragraph = paragraph.trim_start();
+            if paragraph.is_empty() || paragraph.starts_with('　') {
+                paragraph.to_string()
+            } else {
+                format!("　{paragraph}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 fn build_validation_retry_feedback(
     intermediate: &IntermediateDocument,
     errors: &[ValidationError],
@@ -756,5 +889,31 @@ fn print_text_summary(qblocks: Vec<flowcloze::QBlock>) {
         for warning in qblock.warnings {
             println!("  warning: {warning}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::paragraph_break_insertion_position;
+
+    #[test]
+    fn 段落境界は空欄直前ではなく文頭に差し込む() {
+        let question = "認証を確認する。多要素認証では，パスワードだけに依存しないことで＿＿＿。";
+        let blank_position = question.find("＿＿＿").unwrap();
+        let insertion_position = paragraph_break_insertion_position(question, blank_position);
+
+        assert_eq!(
+            &question[insertion_position..],
+            "多要素認証では，パスワードだけに依存しないことで＿＿＿。"
+        );
+    }
+
+    #[test]
+    fn 文境界がなければ空欄直前に差し込む() {
+        let question = "多要素認証では＿＿＿。";
+        let blank_position = question.find("＿＿＿").unwrap();
+        let insertion_position = paragraph_break_insertion_position(question, blank_position);
+
+        assert_eq!(insertion_position, blank_position);
     }
 }
