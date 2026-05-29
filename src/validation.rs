@@ -1,6 +1,6 @@
 //! LLMが生成した問題JSONを中間JSONと照合して検証する．
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -18,7 +18,7 @@ pub struct GeneratedQuestion {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default = "default_question_type")]
     pub question_type: String,
     pub targets: Option<Vec<GeneratedTarget>>,
     pub question: String,
@@ -30,6 +30,10 @@ pub struct GeneratedQuestion {
     pub tags: Vec<String>,
     #[serde(default, deserialize_with = "null_as_default")]
     pub warnings: Vec<String>,
+}
+
+fn default_question_type() -> String {
+    "context-cloze".to_string()
 }
 
 /// 生成結果に含める入力targetsの写し．
@@ -52,7 +56,7 @@ impl ValidationReport {
     }
 }
 
-/// READMEで定義した生成JSONの検証ルールに対応するエラー．
+/// 生成結果として最低限成立しているかを確認するエラー．
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
     InvalidIntermediateJson(String),
@@ -66,18 +70,13 @@ pub enum ValidationError {
     UnknownQuestionId {
         id: String,
     },
+    MissingQuestion {
+        id: String,
+    },
     BlankAnswerCountMismatch {
         id: String,
         blank_count: usize,
         answer_count: usize,
-    },
-    AnswerNotInTargets {
-        id: String,
-        answer: String,
-    },
-    MissingTargetAnswer {
-        id: String,
-        answer: String,
     },
 }
 
@@ -93,6 +92,7 @@ impl std::fmt::Display for ValidationError {
             Self::EmptyQuestion { id } => write!(f, "{id}: questionが空です"),
             Self::DuplicateQuestionId { id } => write!(f, "{id}: idが重複しています"),
             Self::UnknownQuestionId { id } => write!(f, "{id}: 中間データに存在しないidです"),
+            Self::MissingQuestion { id } => write!(f, "{id}: 対応する出力questionがありません"),
             Self::BlankAnswerCountMismatch {
                 id,
                 blank_count,
@@ -101,12 +101,6 @@ impl std::fmt::Display for ValidationError {
                 f,
                 "{id}: 空欄数({blank_count})とanswers数({answer_count})が一致しません"
             ),
-            Self::AnswerNotInTargets { id, answer } => {
-                write!(f, "{id}: answer '{answer}' はtargetsに含まれていません")
-            }
-            Self::MissingTargetAnswer { id, answer } => {
-                write!(f, "{id}: target '{answer}' がanswersに含まれていません")
-            }
         }
     }
 }
@@ -154,20 +148,11 @@ fn validate_documents(
     intermediate: &IntermediateDocument,
     generated: &GeneratedDocument,
 ) -> ValidationReport {
-    let target_answers_by_id = intermediate
-        .qblocks
+    let known_ids = intermediate
+        .tasks
         .iter()
-        .map(|qblock| {
-            (
-                qblock.id.as_str(),
-                qblock
-                    .targets
-                    .iter()
-                    .map(|target| target.answer.as_str())
-                    .collect::<HashSet<_>>(),
-            )
-        })
-        .collect::<HashMap<_, _>>();
+        .map(|task| task.id.as_str())
+        .collect::<HashSet<_>>();
     let mut seen_ids = HashSet::new();
     let mut duplicate_ids = HashSet::new();
     let mut errors = Vec::new();
@@ -182,6 +167,14 @@ fn validate_documents(
         errors.push(ValidationError::DuplicateQuestionId {
             id: duplicate_id.to_string(),
         });
+    }
+
+    for task in &intermediate.tasks {
+        if !seen_ids.contains(task.id.as_str()) {
+            errors.push(ValidationError::MissingQuestion {
+                id: task.id.clone(),
+            });
+        }
     }
 
     for question in &generated.questions {
@@ -200,34 +193,11 @@ fn validate_documents(
             });
         }
 
-        let Some(target_answers) = target_answers_by_id.get(question.id.as_str()) else {
+        if !known_ids.contains(question.id.as_str()) {
             errors.push(ValidationError::UnknownQuestionId {
                 id: question.id.clone(),
             });
             continue;
-        };
-
-        for answer in &question.answers {
-            if !target_answers.contains(answer.as_str()) {
-                errors.push(ValidationError::AnswerNotInTargets {
-                    id: question.id.clone(),
-                    answer: answer.clone(),
-                });
-            }
-        }
-
-        let answer_set = question
-            .answers
-            .iter()
-            .map(String::as_str)
-            .collect::<HashSet<_>>();
-        for target_answer in target_answers {
-            if !answer_set.contains(target_answer) {
-                errors.push(ValidationError::MissingTargetAnswer {
-                    id: question.id.clone(),
-                    answer: (*target_answer).to_string(),
-                });
-            }
         }
     }
 

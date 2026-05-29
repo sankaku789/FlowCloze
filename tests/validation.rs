@@ -12,6 +12,26 @@ fn intermediate_json() -> String {
 }
 
 #[test]
+fn llmの最小出力jsonを読める() {
+    let generated_json = r#"
+{
+  "questions": [
+    {
+      "id": "qblock-001",
+      "question": "＿＿＿はOSの＿＿＿である．"
+    }
+  ]
+}
+"#;
+
+    let document: flowcloze::GeneratedDocument = serde_json::from_str(generated_json).unwrap();
+
+    assert_eq!(document.questions[0].question_type, "context-cloze");
+    assert_eq!(document.questions[0].targets, None);
+    assert!(document.questions[0].answers.is_empty());
+}
+
+#[test]
 fn 正しい生成結果jsonを検証できる() {
     let intermediate_json = intermediate_json();
     let generated_json = fixture("generated-valid.json");
@@ -96,22 +116,74 @@ fn 空欄数とanswers数の不一致を検出する() {
 }
 
 #[test]
-fn targetsにないanswerを検出する() {
+fn targetsが空でも検証エラーにしない() {
+    let intermediate_json = intermediate_json();
+    let generated_json = r#"
+{
+  "questions": [
+    {
+      "id": "qblock-001",
+      "type": "context-cloze",
+      "targets": [],
+      "question": "＿＿＿はOSの＿＿＿である．\n＿＿＿で＿＿＿し，だめなら＿＿＿になる．\n＿＿＿で＿＿＿する．",
+      "answers": [
+        "セマフォ",
+        "プロセス間同期機能",
+        "P命令",
+        "獲得",
+        "待ち状態",
+        "V命令",
+        "解放"
+      ]
+    }
+  ]
+}
+"#;
+
+    let report = validate_generated_json(&intermediate_json, generated_json);
+
+    assert!(report.is_valid());
+}
+
+#[test]
+fn targetsにないanswerでも空欄数が合っていれば検証エラーにしない() {
     let intermediate_json = intermediate_json();
     let generated_json = fixture("generated-unknown-answer.json");
 
     let report = validate_generated_json(&intermediate_json, &generated_json);
 
-    assert!(report
-        .errors
-        .contains(&ValidationError::AnswerNotInTargets {
-            id: "qblock-001".to_string(),
-            answer: "ミューテックス".to_string(),
-        }));
-    assert!(report
-        .errors
-        .contains(&ValidationError::MissingTargetAnswer {
-            id: "qblock-001".to_string(),
-            answer: "解放".to_string(),
-        }));
+    assert!(report.is_valid());
+}
+
+#[test]
+fn 段落改行不足は検証エラーにしない() {
+    let markdown = r#"
+# 章
+
+#qblock{
+[OS]{term-name}は基本ソフトウェアである。
+
+## 機能
+
+[メモリ管理]{term-name}を行う。
+}
+"#;
+    let qblocks = parse_markdown(markdown).unwrap();
+    let intermediate_json = to_intermediate_json("inline.md", &qblocks).unwrap();
+    let generated_json = r#"
+{
+  "questions": [
+    {
+      "id": "qblock-001",
+      "type": "context-cloze",
+      "question": "＿＿＿は基本ソフトウェアであり、＿＿＿を行う。",
+      "answers": ["OS", "メモリ管理"]
+    }
+  ]
+}
+"#;
+
+    let report = validate_generated_json(&intermediate_json, generated_json);
+
+    assert!(report.is_valid());
 }
