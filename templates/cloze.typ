@@ -9,8 +9,9 @@
 #set par(leading: 0.58em, justify: false)
 
 #let answer-color = rgb("#e11d1d")
-#let answer-text-size = 9.4pt
-#let answer-slot-height = 16pt
+#let answer-text-size = 8.3pt
+#let answer-slot-height = 15pt
+#let paragraph-gap = 0pt
 #let cell-stroke = 0.45pt + black
 #let slot-stroke = 0.35pt + black
 #let section-fill = luma(235)
@@ -23,9 +24,38 @@
 #let measured-height-safety = 1.12
 
 #let write-lines(body) = {
-  for line in str(body).split("\n") {
-    [#line]
-    linebreak()
+  let lines = str(body).split("\n")
+  for (index, line) in lines.enumerate() {
+    if line == "" {
+      v(paragraph-gap)
+    } else {
+      [#line]
+      if index < lines.len() - 1 {
+        linebreak()
+      }
+    }
+  }
+}
+
+#let answer-slot-size(answer) = {
+  let length = str(answer).clusters().len()
+  if length >= 24 {
+    28pt
+  } else if length >= 14 {
+    22pt
+  } else {
+    answer-slot-height
+  }
+}
+
+#let answer-font-size(answer) = {
+  let length = str(answer).clusters().len()
+  if length >= 24 {
+    7.2pt
+  } else if length >= 14 {
+    7.8pt
+  } else {
+    answer-text-size
   }
 }
 
@@ -40,20 +70,20 @@
     table(
       columns: (1fr,),
       stroke: slot-stroke,
-      inset: 3pt,
+      inset: 2pt,
       [#v(answer-slot-height)],
     )
   } else {
     table(
       columns: (1fr,),
       stroke: slot-stroke,
-      inset: 3pt,
+      inset: 2pt,
       ..answers.map(answer => if show-answers {
-        block(height: answer-slot-height)[
-          #text(fill: answer-color, size: answer-text-size)[#str(answer)]
+        block(height: answer-slot-size(answer))[
+          #text(fill: answer-color, size: answer-font-size(answer))[#str(answer)]
         ]
       } else {
-        [#v(answer-slot-height)]
+        [#v(answer-slot-size(answer))]
       }),
     )
   }
@@ -61,7 +91,7 @@
 
 #let question-unit(question, show-answers: true) = block(width: 100%, breakable: false)[
   #table(
-    columns: (2.05fr, 1.2fr),
+    columns: (1.95fr, 1.3fr),
     stroke: cell-stroke,
     inset: 3pt,
     align: horizon + left,
