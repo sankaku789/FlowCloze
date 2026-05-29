@@ -4,15 +4,14 @@
 
 FlowCloze is a CLI tool that generates context cloze questions from study notes written in Markdown.
 
-You keep your notes readable as normal Markdown and wrap only the ranges you want to turn into questions with `#qblock{ ... }`. Terms to be used as answers are explicitly marked as `[answer]`. FlowCloze converts those annotations into an intermediate JSON, asks Gemini only to edit the question body, then fills fixed fields such as answers, targets, sections, source text, and paragraph boundaries on the Rust side before validating and producing PDFs.
+You keep your notes readable as normal Markdown and wrap only the ranges you want to turn into questions with `#qblock{ ... }`. Terms to be used as answers are explicitly marked as `[answer]`. FlowCloze converts those annotations into an intermediate JSON, generates question text with Gemini, validates the generation results, and can produce a PDF using Typst.
 
 ```text
 Markdown note
   -> qblock / target extraction
   -> intermediate JSON
-  -> Gemini edits question text only
-  -> generated JSON normalization
-  -> validation
+  -> Gemini question generation
+  -> generated JSON validation
   -> Typst PDF
 ```
 
@@ -33,21 +32,17 @@ FlowCloze was created to combine the ease of writing Markdown notes with the mem
 
 ## System Overview
 
-FlowCloze extracts qblock ranges and answer targets from Markdown notes and builds intermediate JSON. Gemini does not receive the full intermediate JSON; it receives only a slim input containing `id`, `cloze_template`, `blank_count`, and `answers`. Gemini uses the source text and cloze draft to generate only the `question` body. FlowCloze then normalizes the final generated JSON from the intermediate JSON and validates blank counts, answer order, and paragraph boundaries.
+FlowCloze extracts qblock ranges from Markdown notes, generates questions with an LLM, and validates the generated output. You can save generated questions as JSON, render them as a PDF with Typst, or export CSV for Ankilot import.
 
 ```mermaid
 flowchart LR
-    note[Markdown note<br/>#qblock / targets] --> parse[Parser<br/>qblock / target / section]
-    parse --> intermediate[Intermediate JSON<br/>fixed structure]
-    intermediate --> prompt[Prompt input<br/>id + cloze draft + blank count + answers]
-    prompt --> gemini[Gemini API<br/>question text only]
-    gemini --> normalize[Normalizer<br/>fill fixed fields]
-    intermediate --> normalize
-    normalize --> validate[Validator]
-    validate --> json[Generated JSON]
-    json --> pdf[PDF<br/>via Typst]
-    json --> csv[Ankilot CSV]
-    json --> tui[TUI viewer]
+    note[Markdown note<br/>#qblock / targets] --> cli[FlowCloze CLI]
+    cli --> gemini[Gemini API]
+    gemini --> cli
+    cli --> json[Generated JSON]
+    cli --> pdf[PDF<br/>via Typst]
+    cli --> csv[Ankilot CSV]
+    cli --> tui[TUI viewer]
 ```
 
 ## Features
@@ -56,9 +51,8 @@ flowchart LR
 - Use only terms marked as `[answer]` or `[answer]{type}` as answer targets
 - Treat `# Heading 1` as the section title for generated JSON and PDF output
 - Auto-assign qblock IDs in `qblock-001` order
-- Edit fragmented note text into context cloze question bodies with the Gemini API
-- Deterministically build `section`, `targets`, `answers`, and `source_text` from intermediate JSON
-- Compare intermediate JSON and generated JSON to detect blank-count, answer-order, target, and paragraph-boundary mismatches
+- Generate context cloze question JSON with the Gemini API
+- Compare intermediate JSON and generated JSON to detect extra answers or mismatched blank counts
 - Review generated questions in a TUI before output
 - Render A4 landscape PDFs with Typst in answer-page then question-page order
 - Export CSV suitable for Ankilot import
@@ -131,17 +125,17 @@ Write answer targets as `[answer]`. When needed, you can also write `[answer]{ty
 [Requirements definition] consists of [elicitation], [analysis], [specification], and [validation].
 ```
 
-The text inside `[]` is the answer string. When `{}` is present, it is used as the question perspective. When the type is omitted, FlowCloze treats it as `term-name`. Targets and answers are copied from the intermediate JSON into the generated JSON by Rust, so Gemini does not infer answer targets.
+The text inside `[]` is the answer string. When `{}` is present, it is used as the question perspective. When the type is omitted, FlowCloze treats it as `term-name`. FlowCloze instructs Gemini not to use anything other than these targets as answers.
 
 ### Sections
 
-PDF section titles use the nearest `# Heading 1` before a qblock, or the first `# Heading 1` inside the qblock. `##` and `###` headings are not used as sections.
+Only Markdown level-1 headings are used as section titles in PDF output.
 
 ```md
 # Requirements Definition
 ```
 
-Inside a qblock, `##` and `###` are treated as paragraph boundaries, not as sections. The heading text itself is not included in the generated question body.
+`##` and `###` headings may remain for note structure but are not used as PDF section titles.
 
 ### Target Types
 
@@ -211,7 +205,7 @@ flowcloze --json sample/sample.md
 
 ### Generate Questions
 
-Generate context cloze questions with Gemini. Gemini returns only each qblock's `id` and `question`. FlowCloze then fills `section`, `type`, `targets`, `answers`, and `source_text` from the intermediate JSON and normalizes the final generated JSON. If validation fails, FlowCloze sends the validation errors back to Gemini and regenerates the output up to 3 times.
+Generate context cloze questions with Gemini. After generation, FlowCloze validates the generated JSON against the intermediate JSON and saves only valid output. If validation fails, FlowCloze sends the validation errors back to Gemini and regenerates the output up to 3 times.
 
 ```bash
 flowcloze generate -o sample/sample.json sample/sample.md
@@ -285,79 +279,28 @@ flowcloze --version
 
 ## JSON Format
 
-The intermediate JSON stores facts extracted from Markdown as Rust-side generation tasks.
-Blank positions, answer order, paragraph boundaries, and section titles are fixed by Rust. Gemini does not receive this full intermediate JSON; FlowCloze extracts only `id`, `cloze_template`, `blank_count`, and `answers` into a slim Gemini input. `answers` is provided only so Gemini can check that the sentence remains grammatical when answers are put back into the blanks.
+The intermediate JSON contains only facts extracted from Markdown.
 
 ```json
 {
-  "schema_version": 3,
   "meta": {
-    "source": "sample/sample.md",
-    "format": {
-      "blank": "＿＿＿",
-      "block_separator": "\n\n",
-      "paragraph_indent": "　"
-    }
+    "source": "sample/sample.md"
   },
-  "tasks": [
+  "qblocks": [
     {
       "id": "qblock-001",
-      "type": "context-cloze",
       "section": "Requirements Definition",
-      "source": {
-        "raw": "[Requirements definition]{term-name} is the process of creating a [requirements specification]{relation} from what the customer wants.",
-        "plain": "Requirements definition is the process of creating a requirements specification from what the customer wants."
-      },
-      "blocks": [
-        {
-          "id": "qblock-001-b001",
-          "kind": "paragraph",
-          "starts_new_paragraph": false,
-          "text": "Requirements definition is the process of creating a requirements specification from what the customer wants.",
-          "cloze_text": "　＿＿＿ is the process of creating a ＿＿＿ from what the customer wants.",
-          "target_refs": [0, 1]
-        }
-      ],
-      "cloze_template": "Original text:\nRequirements definition is the process of creating a requirements specification from what the customer wants.\n\nCloze draft:\n　＿＿＿ is the process of creating a ＿＿＿ from what the customer wants.",
+      "source_text": "Requirements definition is the process of creating a requirements specification from what the customer wants.",
       "targets": [
-        { "index": 0, "answer": "Requirements definition", "type": "term-name", "block_id": "qblock-001-b001" },
-        { "index": 1, "answer": "requirements specification", "type": "relation", "block_id": "qblock-001-b001" }
-      ],
-      "answers": ["Requirements definition", "requirements specification"]
+        { "answer": "Requirements definition", "type": "term-name" },
+        { "answer": "requirements specification", "type": "relation" }
+      ]
     }
   ]
 }
 ```
 
-The actual Gemini input is conceptually the following minimal shape. It does not include `meta`, `source`, `blocks`, or `targets`.
-
-```json
-{
-  "tasks": [
-    {
-      "id": "qblock-001",
-      "cloze_template": "Original text:\nRequirements definition is the process of creating a requirements specification from what the customer wants.\n\nCloze draft:\n　＿＿＿ is the process of creating a ＿＿＿ from what the customer wants.",
-      "blank_count": 2,
-      "answers": ["Requirements definition", "requirements specification"]
-    }
-  ]
-}
-```
-
-Gemini's raw output is expected to be the following minimal shape.
-
-```json
-{
-  "questions": [
-    {
-      "id": "qblock-001",
-      "question": "　＿＿＿ is the process of creating a ＿＿＿ from what the customer wants."
-    }
-  ]
-}
-```
-
-FlowCloze normalizes this output against the intermediate JSON. Generated JSON is the format read by the Typst template and validator.
+Generated JSON is the format read by the Typst template and validator.
 
 ```json
 {
@@ -380,18 +323,6 @@ FlowCloze normalizes this output against the intermediate JSON. Generated JSON i
   ]
 }
 ```
-
-## Responsibility Split
-
-The current generation flow does not ask Gemini to maintain the whole JSON structure.
-
-- `parser.rs`: extracts `#qblock`, targets, sections, and target positions from Markdown
-- `json.rs`: builds intermediate JSON and fixes `blocks`, `cloze_text`, `cloze_template`, `targets`, and `answers`
-- `prompt.rs`: extracts only `id` / `cloze_template` / `blank_count` / `answers` and builds a short prompt for editing `question`
-- `gemini.rs`: calls the Gemini API and receives minimal JSON containing `id` and `question`
-- `main.rs`: normalizes Gemini output with intermediate JSON and fills `section` / `type` / `targets` / `answers` / `source_text` / paragraph boundaries
-- `validation.rs`: validates blank counts, answer order, target correspondence, and paragraph boundaries
-- `templates/cloze.typ`: typesets generated JSON into PDF
 
 ## Editor Support
 

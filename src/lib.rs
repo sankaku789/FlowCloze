@@ -11,15 +11,12 @@ pub mod validation;
 
 pub use csv::to_ankilot_csv;
 pub use gemini::{GeminiClient, GeminiError};
-pub use json::{
-    to_intermediate_json, IntermediateBlock, IntermediateDocument, IntermediateFormat,
-    IntermediateMeta, IntermediateSource, IntermediateTarget, IntermediateTask,
-};
+pub use json::{to_intermediate_json, IntermediateDocument, IntermediateMeta, IntermediateQBlock};
 pub use models::{QBlock, Target, ALLOWED_TARGET_TYPES};
 pub use parser::{parse_markdown, parse_qblocks, MarkdownParseError};
 pub use pdf::{compile_pdf, default_pdf_output_path, PdfError, PdfOptions};
 pub use prompt::build_generation_prompt;
 pub use validation::{
-    validate_generated_document, validate_generated_json, GeneratedDocument, GeneratedQuestion,
-    GeneratedTarget, ValidationError, ValidationReport,
+    validate_generated_document, validate_generated_json, GeneratedDocument, ValidationError,
+    ValidationReport,
 };

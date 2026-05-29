@@ -82,7 +82,7 @@ fn qblockを解析できる() {
 }
 
 #[test]
-fn 直近の見出し1をqblockのsectionにする() {
+fn 見出し1だけをqblockのsectionにする() {
     let markdown = r#"
 # ソフトウェア工学の概論
 
@@ -108,23 +108,6 @@ fn 直近の見出し1をqblockのsectionにする() {
             Some("ソフトウェア工学の概論")
         ]
     );
-}
-
-#[test]
-fn qblock内の先頭見出し1をsectionにする() {
-    let markdown = r#"
-#qblock{
-# 組込みシステムとは
-[組込みシステム]{term-name}は機器に組み込まれる．
-
-## 構成要素
-センサを持つ．
-}
-"#;
-
-    let qblock = parse_markdown(markdown).unwrap().remove(0);
-
-    assert_eq!(qblock.section.as_deref(), Some("組込みシステムとは"));
 }
 
 #[test]
