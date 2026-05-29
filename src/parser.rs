@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::models::{QBlock, Target, ALLOWED_TARGET_TYPES, DEFAULT_TARGET_TYPE};
+use crate::models::{QBlock, Target, TargetOccurrence, ALLOWED_TARGET_TYPES, DEFAULT_TARGET_TYPE};
 
 /// qblockの閉じ忘れなど，FlowCloze記法を解析できない場合のエラー．
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,9 +54,9 @@ fn parse_qblock_with_default_id(
     default_id: &str,
     section: Option<String>,
 ) -> Result<QBlock, MarkdownParseError> {
-    let targets = extract_targets(body);
+    let parsed = parse_targets_and_plain(body);
     let mut warnings = Vec::new();
-    for target in &targets {
+    for target in &parsed.targets {
         if !ALLOWED_TARGET_TYPES.contains(&target.target_type.as_str()) {
             warnings.push(format!(
                 "answer '{}' のtarget type '{}' は未定義です",
@@ -68,8 +68,10 @@ fn parse_qblock_with_default_id(
     Ok(QBlock {
         id: default_id.to_string(),
         section,
-        source_text: strip_target_markup(body).trim().to_string(),
-        targets,
+        raw_source_text: body.trim().to_string(),
+        source_text: parsed.plain,
+        targets: parsed.targets,
+        target_occurrences: parsed.occurrences,
         warnings,
     })
 }
@@ -167,56 +169,17 @@ fn is_fence_line(line: &str) -> bool {
     trimmed.starts_with("```") || trimmed.starts_with("~~~")
 }
 
-fn extract_targets(body: &str) -> Vec<Target> {
-    let mut targets = Vec::new();
-    let mut rest = body;
-
-    while let Some(start) = rest.find('[') {
-        rest = &rest[start + 1..];
-        let Some(answer_end) = rest.find(']') else {
-            break;
-        };
-        let answer = &rest[..answer_end];
-        let after_answer = &rest[answer_end + 1..];
-        if answer.contains('\n') {
-            rest = after_answer;
-            continue;
-        }
-        if let Some(after_open_brace) = after_answer.strip_prefix('{') {
-            let Some(type_end) = after_open_brace.find('}') else {
-                rest = after_answer;
-                continue;
-            };
-            let target_type = &after_open_brace[..type_end];
-            if let Some(target_type) = normalize_target_type(target_type) {
-                targets.push(Target {
-                    answer: answer.to_string(),
-                    target_type: target_type.to_string(),
-                });
-            }
-            rest = &after_open_brace[type_end + 1..];
-        } else {
-            if after_answer.starts_with('(') {
-                rest = after_answer;
-                continue;
-            }
-            if let Some(label_len) = markdown_reference_label_len(after_answer) {
-                rest = &after_answer[label_len..];
-                continue;
-            }
-            targets.push(Target {
-                answer: answer.to_string(),
-                target_type: DEFAULT_TARGET_TYPE.to_string(),
-            });
-            rest = after_answer;
-        }
-    }
-
-    targets
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedTargets {
+    plain: String,
+    targets: Vec<Target>,
+    occurrences: Vec<TargetOccurrence>,
 }
 
-fn strip_target_markup(body: &str) -> String {
+fn parse_targets_and_plain(body: &str) -> ParsedTargets {
     let mut output = String::new();
+    let mut targets = Vec::new();
+    let mut occurrences = Vec::new();
     let mut rest = body;
 
     while let Some(start) = rest.find('[') {
@@ -224,11 +187,16 @@ fn strip_target_markup(body: &str) -> String {
         let after_open = &rest[start + 1..];
         let Some(answer_end) = after_open.find(']') else {
             output.push_str(&rest[start..]);
-            return output;
+            return trim_parsed_targets(output, targets, occurrences);
         };
         let answer = &after_open[..answer_end];
         let after_answer = &after_open[answer_end + 1..];
-        if let Some(after_open_brace) = after_answer.strip_prefix('{') {
+        if answer.contains('\n') {
+            output.push('[');
+            output.push_str(answer);
+            output.push(']');
+            rest = after_answer;
+        } else if let Some(after_open_brace) = after_answer.strip_prefix('{') {
             let Some(type_end) = after_open_brace.find('}') else {
                 output.push('[');
                 output.push_str(answer);
@@ -238,7 +206,14 @@ fn strip_target_markup(body: &str) -> String {
             };
             let target_type = &after_open_brace[..type_end];
             if normalize_target_type(target_type).is_some() {
-                output.push_str(answer);
+                let target_type = normalize_target_type(target_type).unwrap();
+                push_target(
+                    answer,
+                    target_type,
+                    &mut output,
+                    &mut targets,
+                    &mut occurrences,
+                );
             } else {
                 output.push('[');
                 output.push_str(answer);
@@ -259,14 +234,71 @@ fn strip_target_markup(body: &str) -> String {
             }
             if !after_answer.starts_with('(') && !answer.contains('\n') {
                 output.truncate(output.len() - answer.len() - 2);
-                output.push_str(answer);
+                push_target(
+                    answer,
+                    DEFAULT_TARGET_TYPE,
+                    &mut output,
+                    &mut targets,
+                    &mut occurrences,
+                );
             }
             rest = after_answer;
         }
     }
 
     output.push_str(rest);
-    output
+    trim_parsed_targets(output, targets, occurrences)
+}
+
+fn push_target(
+    answer: &str,
+    target_type: &str,
+    output: &mut String,
+    targets: &mut Vec<Target>,
+    occurrences: &mut Vec<TargetOccurrence>,
+) {
+    let start = output.len();
+    output.push_str(answer);
+    let end = output.len();
+    let target_index = targets.len();
+    targets.push(Target {
+        answer: answer.to_string(),
+        target_type: target_type.to_string(),
+    });
+    occurrences.push(TargetOccurrence {
+        target_index,
+        start,
+        end,
+    });
+}
+
+fn trim_parsed_targets(
+    plain: String,
+    targets: Vec<Target>,
+    occurrences: Vec<TargetOccurrence>,
+) -> ParsedTargets {
+    let trimmed = plain.trim();
+    let leading_trim = plain.len() - plain.trim_start().len();
+    let trailing_end = leading_trim + trimmed.len();
+    let occurrences = occurrences
+        .into_iter()
+        .filter_map(|occurrence| {
+            if occurrence.start < leading_trim || occurrence.end > trailing_end {
+                return None;
+            }
+            Some(TargetOccurrence {
+                target_index: occurrence.target_index,
+                start: occurrence.start - leading_trim,
+                end: occurrence.end - leading_trim,
+            })
+        })
+        .collect();
+
+    ParsedTargets {
+        plain: trimmed.to_string(),
+        targets,
+        occurrences,
+    }
 }
 
 fn normalize_target_type(target_type: &str) -> Option<&str> {

@@ -513,7 +513,7 @@
         {
           "id": "qblock-009-b002",
           "kind": "paragraph",
-          "starts_new_paragraph": false,
+          "starts_new_paragraph": true,
           "text": "---",
           "cloze_text": "　---",
           "target_refs": []
@@ -521,7 +521,7 @@
         {
           "id": "qblock-009-b003",
           "kind": "paragraph",
-          "starts_new_paragraph": false,
+          "starts_new_paragraph": true,
           "text": "- TTLはキャッシュを保持してよい時間を示す\n- TTLを短くすると変更は反映されやすいが，問い合わせ回数が増えてDNSサーバの負荷が上がる\n- TTLを長くすると負荷は下がるが，古い名前解決結果が残りやすくなる",
           "cloze_text": "　- TTLはキャッシュを保持してよい時間を示す\n- TTLを短くすると変更は反映されやすいが，＿＿＿\n- TTLを長くすると負荷は下がるが，＿＿＿",
           "target_refs": [
