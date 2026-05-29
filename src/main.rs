@@ -720,7 +720,11 @@ fn normalize_question_text(task: &IntermediateTask, question: String) -> String 
         if has_paragraph_break_before(&question, position) {
             continue;
         }
-        question.insert_str(position, "\n\n");
+        let insertion_position = paragraph_break_insertion_position(&question, position);
+        if question[insertion_position..position].contains("\n\n") {
+            continue;
+        }
+        question.insert_str(insertion_position, "\n\n");
     }
 
     indent_question_paragraphs(&question)
@@ -765,6 +769,28 @@ fn has_paragraph_break_before(text: &str, position: usize) -> bool {
         .take_while(|ch| ch.is_whitespace())
         .collect::<String>()
         .contains("\n\n")
+}
+
+fn paragraph_break_insertion_position(text: &str, blank_position: usize) -> usize {
+    let mut position = text[..blank_position]
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| {
+            is_paragraph_boundary_before_indent(ch).then_some(index + ch.len_utf8())
+        })
+        .unwrap_or(blank_position);
+
+    while position < blank_position {
+        let Some(ch) = text[position..blank_position].chars().next() else {
+            break;
+        };
+        if !ch.is_whitespace() {
+            break;
+        }
+        position += ch.len_utf8();
+    }
+
+    position
 }
 
 fn indent_question_paragraphs(question: &str) -> String {
@@ -896,5 +922,31 @@ fn print_text_summary(qblocks: Vec<flowcloze::QBlock>) {
         for warning in qblock.warnings {
             println!("  warning: {warning}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::paragraph_break_insertion_position;
+
+    #[test]
+    fn 段落境界は空欄直前ではなく文頭に差し込む() {
+        let question = "認証を確認する。多要素認証では，パスワードだけに依存しないことで＿＿＿。";
+        let blank_position = question.find("＿＿＿").unwrap();
+        let insertion_position = paragraph_break_insertion_position(question, blank_position);
+
+        assert_eq!(
+            &question[insertion_position..],
+            "多要素認証では，パスワードだけに依存しないことで＿＿＿。"
+        );
+    }
+
+    #[test]
+    fn 文境界がなければ空欄直前に差し込む() {
+        let question = "多要素認証では＿＿＿。";
+        let blank_position = question.find("＿＿＿").unwrap();
+        let insertion_position = paragraph_break_insertion_position(question, blank_position);
+
+        assert_eq!(insertion_position, blank_position);
     }
 }
