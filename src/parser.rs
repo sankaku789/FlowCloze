@@ -278,7 +278,7 @@ fn trim_parsed_targets(
     occurrences: Vec<TargetOccurrence>,
 ) -> ParsedTargets {
     let trimmed = plain.trim();
-    let leading_trim = trimmed.as_ptr() as usize - plain.as_ptr() as usize;
+    let leading_trim = plain.len() - plain.trim_start().len();
     let trailing_end = leading_trim + trimmed.len();
     let occurrences = occurrences
         .into_iter()

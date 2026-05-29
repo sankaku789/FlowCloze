@@ -16,7 +16,7 @@ struct GeminiPromptTask {
     answers: Vec<String>,
 }
 
-/// 中間データと生成前チェックリストを含むプロンプトを作る．
+/// 中間データからGemini用の最小入力JSONを埋め込んだプロンプトを作る．
 pub fn build_generation_prompt(
     intermediate: &IntermediateDocument,
 ) -> Result<String, serde_json::Error> {
