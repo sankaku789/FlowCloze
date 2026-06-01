@@ -66,30 +66,36 @@ flowchart LR
 - Typst CLI (required for PDF output)
 - Gemini API key (required for the `generate` command)
 
-### Build and Install
+### Install
 
 ```bash
-cargo build --release
-mkdir -p ~/.local/bin
-ln -sfn "$PWD/target/release/flowcloze" ~/.local/bin/flowcloze
+cargo install --path .
 ```
 
-If `~/.local/bin` is not in your `PATH`, add it to your shell configuration.
+If `~/.cargo/bin` is not in your `PATH`, add it to your shell configuration.
 
-Verify the build and tests:
+Verify the installation:
 
 ```bash
 flowcloze --version
-cargo test
 ```
 
-For a debug build, you can run:
+### Development Build
+
+When developing in the repository, use the regular debug build and tests:
 
 ```bash
 cargo build
+cargo test
 ```
 
-Examples below assume you created the symbolic link after a release build and can run `flowcloze`. For a temporary local run, use `cargo run -- ...` instead of `flowcloze ...`.
+To run the local code without installing it, use `cargo run -- ...`:
+
+```bash
+cargo run -- sample/sample.md
+```
+
+Examples below assume you ran `cargo install --path .` and can run `flowcloze`.
 
 ```bash
 flowcloze sample/sample.md
