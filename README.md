@@ -42,22 +42,57 @@ npm run docs:api:lint
 
 - Rust / Cargo
 - Typst CLI（PDF出力を使う場合）
+- 日本語フォント（PDF出力で日本語を表示する場合）
 - Gemini API key（`generate` コマンドを使う場合）
 
-ビルド:
+Ubuntu / WSLでは，PDFの日本語表示用にNoto CJKフォントを入れてください．
+
+```bash
+sudo apt update
+sudo apt install -y fonts-noto-cjk
+fc-cache -fv
+```
+
+Typstから見えているか確認する場合:
+
+```bash
+typst fonts | grep "Noto Sans CJK"
+```
+
+ビルドだけ行う場合:
 
 ```bash
 cargo build --release
 ```
 
-ローカルでコマンドとして使う場合:
+### コマンドとしてインストールする
+
+このリポジトリをcloneしたディレクトリで次を実行すると，`flowcloze` コマンドとして使えるようになります．
+
+```bash
+cargo install --path .
+```
+
+インストール先は通常 `~/.cargo/bin/flowcloze` です．`~/.cargo/bin` が `PATH` に入っていない場合は，シェル設定に追加してください．
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+確認:
+
+```bash
+flowcloze --version
+```
+
+releaseビルド済みバイナリへシンボリックリンクを張る方法でも使えます．
 
 ```bash
 mkdir -p ~/.local/bin
 ln -sfn "$PWD/target/release/flowcloze" ~/.local/bin/flowcloze
 ```
 
-一時的に試すだけなら `cargo run -- ...` でも実行できます．
+一時的に試すだけなら，インストールせずに `cargo run -- ...` でも実行できます．
 
 ## Gemini API設定
 

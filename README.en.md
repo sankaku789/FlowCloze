@@ -42,22 +42,57 @@ Requirements:
 
 - Rust / Cargo
 - Typst CLI (required for PDF output)
+- Japanese fonts (required for Japanese PDF output)
 - Gemini API key (required for the `generate` command)
 
-Build:
+On Ubuntu / WSL, install Noto CJK fonts for Japanese PDF output:
+
+```bash
+sudo apt update
+sudo apt install -y fonts-noto-cjk
+fc-cache -fv
+```
+
+To check whether Typst can see the font:
+
+```bash
+typst fonts | grep "Noto Sans CJK"
+```
+
+Build only:
 
 ```bash
 cargo build --release
 ```
 
-Install locally as a command:
+### Install as a Command
+
+Run this from the cloned repository to install `flowcloze` as a command:
+
+```bash
+cargo install --path .
+```
+
+The binary is usually installed to `~/.cargo/bin/flowcloze`. If `~/.cargo/bin` is not in your `PATH`, add it to your shell configuration:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+Verify the install:
+
+```bash
+flowcloze --version
+```
+
+You can also symlink the release binary:
 
 ```bash
 mkdir -p ~/.local/bin
 ln -sfn "$PWD/target/release/flowcloze" ~/.local/bin/flowcloze
 ```
 
-For a temporary local run, use `cargo run -- ...`.
+For a temporary local run without installing, use `cargo run -- ...`.
 
 ## Gemini API Settings
 
