@@ -14,22 +14,20 @@ const MAX_RETRY_DELAY: Duration = Duration::from_secs(20);
 /// Gemini generateContent APIを呼び出す同期クライアント．
 #[derive(Debug, Clone)]
 pub struct GeminiClient {
-    api_key: String,
+    api: GeminiApi,
     model: String,
-    base_url: String,
 }
 
 impl GeminiClient {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api: GeminiApi::new(api_key),
             model: model.into(),
-            base_url: DEFAULT_BASE_URL.to_string(),
         }
     }
 
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
+        self.api = self.api.with_base_url(base_url);
         self
     }
 
@@ -46,21 +44,56 @@ impl GeminiClient {
                 response_json_schema: generated_document_schema(),
             },
         };
-        let url = format!(
-            "{}/models/{}:generateContent",
-            self.base_url.trim_end_matches('/'),
-            self.model
-        );
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|error| GeminiError::Http(error.to_string()))?;
+        let body = self
+            .api
+            .post_json(&format!("models/{}:generateContent", self.model), &request)?;
+        let response = serde_json::from_str::<GenerateContentResponse>(&body)
+            .map_err(|error| GeminiError::Response(error.to_string()))?;
+        let text = response
+            .candidates
+            .first()
+            .and_then(|candidate| candidate.content.parts.first())
+            .map(|part| strip_markdown_code_fence(&part.text))
+            .filter(|text| !text.trim().is_empty())
+            .ok_or(GeminiError::EmptyResponse)?;
+
+        Ok(text)
+    }
+}
+
+/// Gemini REST APIへJSONリクエストを送る低レベル同期クライアント．
+#[derive(Debug, Clone)]
+pub struct GeminiApi {
+    api_key: String,
+    base_url: String,
+    client: reqwest::blocking::Client,
+}
+
+impl GeminiApi {
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self {
+            api_key: api_key.into(),
+            base_url: DEFAULT_BASE_URL.to_string(),
+            client: reqwest::blocking::Client::new(),
+        }
+    }
+
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = base_url.into();
+        self
+    }
+
+    /// 指定パスへJSONをPOSTし，成功時のレスポンス本文を返す．
+    pub fn post_json<T: Serialize>(&self, path: &str, request: &T) -> Result<String, GeminiError> {
+        let url = self.url(path);
         let mut last_error = None;
         for attempt in 1..=MAX_API_ATTEMPTS {
-            let response = match client
+            let response = match self
+                .client
                 .post(&url)
+                .timeout(Duration::from_secs(120))
                 .header("x-goog-api-key", &self.api_key)
-                .json(&request)
+                .json(request)
                 .send()
             {
                 Ok(response) => response,
@@ -83,17 +116,7 @@ impl GeminiClient {
                 .map_err(|error| GeminiError::Http(error.to_string()))?;
 
             if status.is_success() {
-                let response = serde_json::from_str::<GenerateContentResponse>(&body)
-                    .map_err(|error| GeminiError::Response(error.to_string()))?;
-                let text = response
-                    .candidates
-                    .first()
-                    .and_then(|candidate| candidate.content.parts.first())
-                    .map(|part| strip_markdown_code_fence(&part.text))
-                    .filter(|text| !text.trim().is_empty())
-                    .ok_or(GeminiError::EmptyResponse)?;
-
-                return Ok(text);
+                return Ok(body);
             }
 
             if is_retryable_status(status) && attempt < MAX_API_ATTEMPTS {
@@ -112,6 +135,14 @@ impl GeminiClient {
         Err(GeminiError::Http(last_error.unwrap_or_else(|| {
             "Gemini APIへのリトライに失敗しました".to_string()
         })))
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!(
+            "{}/{}",
+            self.base_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        )
     }
 }
 
@@ -370,5 +401,15 @@ mod tests {
         assert_eq!(retry_delay(2, None), Duration::from_secs(4));
         assert_eq!(retry_delay(4, None), Duration::from_secs(16));
         assert_eq!(retry_delay(10, None), MAX_RETRY_DELAY);
+    }
+
+    #[test]
+    fn api_urlはbase_urlとpathを正規化して結合する() {
+        let api = GeminiApi::new("key").with_base_url("https://example.com/api/");
+
+        assert_eq!(
+            api.url("/models/gemini:generateContent"),
+            "https://example.com/api/models/gemini:generateContent"
+        );
     }
 }

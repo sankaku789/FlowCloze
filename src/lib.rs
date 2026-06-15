@@ -10,7 +10,7 @@ pub mod prompt;
 pub mod validation;
 
 pub use csv::to_ankilot_csv;
-pub use gemini::{GeminiClient, GeminiError};
+pub use gemini::{GeminiApi, GeminiClient, GeminiError};
 pub use json::{to_intermediate_json, IntermediateDocument, IntermediateMeta, IntermediateQBlock};
 pub use models::{QBlock, Target, ALLOWED_TARGET_TYPES};
 pub use parser::{parse_markdown, parse_qblocks, MarkdownParseError};

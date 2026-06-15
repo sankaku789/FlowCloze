@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FlowCloze Specification</title>
+    <link rel="stylesheet" href="./assets/site.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Main navigation">
+        <a class="brand" href="./index.html">FlowCloze</a>
+        <div class="nav-links">
+          <a href="./index.html">概要</a>
+          <a href="./specification.html" aria-current="page">仕様</a>
+          <a href="./api.html">API</a>
+          <a href="https://github.com/sankaku789/FlowCloze/blob/main/README.md">README</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Specification</p>
+        <h1>記法と生成仕様</h1>
+        <p class="lead">
+          FlowClozeのMarkdown記法，target type，中間JSON，生成JSONの要点をまとめています．
+        </p>
+      </section>
+
+      <section class="band">
+        <div class="section">
+          <h2>Markdown記法</h2>
+          <div class="spec-grid">
+            <div class="item">
+              <h3>qblock</h3>
+              <p>問題化したい範囲を <code>#qblock{ ... }</code> で囲みます．IDは出現順に自動採番されます．</p>
+            </div>
+            <div class="item">
+              <h3>target</h3>
+              <p>答えにしたい語句を <code>[答え]</code> で囲みます．必要に応じて <code>[答え]{type}</code> と書けます．</p>
+            </div>
+            <div class="item">
+              <h3>section</h3>
+              <p>Markdownの見出し1だけを単元見出しとして扱います．</p>
+            </div>
+            <div class="item">
+              <h3>blank</h3>
+              <p>生成される問題文では，空欄に <code>＿＿＿</code> を使います．</p>
+            </div>
+          </div>
+
+          <pre class="code-block"><code># ソフトウェア工学の概論
+
+#qblock{
+- [QCD]{term-name}は[品質]{meaning}，[コスト]{meaning}，[納期]{meaning}を表す．
+}</code></pre>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>target type</h2>
+        <p>
+          typeは「その語句をどの観点で問いたいか」を示すラベルです．未定義typeも抽出されますが，中間JSONのwarningsに警告が入ります．
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>type</th>
+                <th>説明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>term-name</code></td>
+                <td>用語名そのものを問う</td>
+              </tr>
+              <tr>
+                <td><code>meaning</code></td>
+                <td>意味，定義，性質，目的などを問う</td>
+              </tr>
+              <tr>
+                <td><code>process</code></td>
+                <td>手順，工程，動作，状態変化などを問う</td>
+              </tr>
+              <tr>
+                <td><code>relation</code></td>
+                <td>構成，比較，分類，関係，対応などを問う</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="band">
+        <div class="section">
+          <h2>生成と検証</h2>
+          <div class="feature-grid">
+            <div class="item">
+              <h3>中間JSON</h3>
+              <p>Markdownからqblock，section，source_text，targets，warningsを抽出します．</p>
+            </div>
+            <div class="item">
+              <h3>生成JSON</h3>
+              <p>Geminiは <code>context-cloze</code> のquestions配列を返します．</p>
+            </div>
+            <div class="item">
+              <h3>検証</h3>
+              <p>空欄数とanswers数，targetsとの一致，重複ID，未知IDを確認します．</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>HTTP API</h2>
+        <p>
+          HTTP APIとして実装する場合の契約はOpenAPIで管理します．詳細は <a href="./api.html">APIドキュメント</a> を参照してください．
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      FlowCloze documentation
+    </footer>
+  </body>
+</html>

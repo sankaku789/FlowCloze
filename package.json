@@ -1,0 +1,11 @@
+{
+  "name": "flowcloze-docs",
+  "private": true,
+  "scripts": {
+    "docs:api": "redocly build-docs docs/openapi.yaml --output docs/api.html",
+    "docs:api:lint": "redocly lint docs/openapi.yaml"
+  },
+  "devDependencies": {
+    "@redocly/cli": "^1.34.5"
+  }
+}

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FlowCloze</title>
+    <link rel="stylesheet" href="./assets/site.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Main navigation">
+        <a class="brand" href="./index.html">FlowCloze</a>
+        <div class="nav-links">
+          <a href="./index.html" aria-current="page">概要</a>
+          <a href="./specification.html">仕様</a>
+          <a href="./api.html">API</a>
+          <a href="https://github.com/sankaku789/FlowCloze/blob/main/README.md">README</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-grid">
+          <div>
+            <p class="eyebrow">Markdown to context cloze</p>
+            <h1>FlowCloze</h1>
+            <p class="lead">
+              Markdownで書いた学習ノートから，文章補完問題のJSON，PDF，Ankilot向けCSVを生成するCLIツールです．
+            </p>
+            <div class="actions">
+              <a class="button" href="./specification.html">仕様を見る</a>
+              <a class="button secondary" href="./api.html">APIを見る</a>
+            </div>
+          </div>
+          <figure class="visual">
+            <img src="./assets/tui.png" alt="FlowCloze TUI preview" />
+          </figure>
+        </div>
+      </section>
+
+      <section class="band">
+        <div class="section">
+          <h2>背景</h2>
+          <p>
+            Markdownノートは書きやすく見返しやすい一方で，用語や定義を正確に思い出す練習には少し弱いところがあります．
+            手作りの暗記シートは記憶に残りやすいものの，問題文作成，表計算ソフトへの転記，PDF整形に時間がかかります．
+          </p>
+          <p>
+            FlowClozeは，ノートの読みやすさを保ったまま，覚えたい語句だけを指定し，生成・検証・出力までを一連の流れにします．
+          </p>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>流れ</h2>
+        <div class="steps">
+          <div class="item">
+            <h3>Markdown</h3>
+            <p><code>#qblock{ ... }</code> で問題化する範囲を囲みます．</p>
+          </div>
+          <div class="item">
+            <h3>Targets</h3>
+            <p><code>[答え]</code> または <code>[答え]{type}</code> で解答対象を指定します．</p>
+          </div>
+          <div class="item">
+            <h3>Generate</h3>
+            <p>Gemini APIで文章補完問題を生成します．</p>
+          </div>
+          <div class="item">
+            <h3>Validate</h3>
+            <p>中間JSONと生成JSONを照合します．</p>
+          </div>
+          <div class="item">
+            <h3>Output</h3>
+            <p>JSON，PDF，Ankilot向けCSVとして出力します．</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="band">
+        <div class="section">
+          <h2>主な機能</h2>
+          <div class="feature-grid">
+            <div class="item">
+              <h3>明示的な解答指定</h3>
+              <p>Geminiには，Markdown内で指定したtargetsだけを答えにするよう指示します．</p>
+            </div>
+            <div class="item">
+              <h3>検証つき生成</h3>
+              <p>空欄数，解答数，対象外の答え，IDの不整合を検出します．</p>
+            </div>
+            <div class="item">
+              <h3>複数形式の出力</h3>
+              <p>TUI確認，Typst PDF，Ankilot CSVへつなげられます．</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      FlowCloze documentation
+    </footer>
+  </body>
+</html>

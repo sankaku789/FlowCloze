@@ -1,0 +1,332 @@
+openapi: 3.1.0
+info:
+  title: FlowCloze API
+  version: 0.1.0
+  description: API contract for parsing FlowCloze markdown and generating context cloze questions.
+  license:
+    name: MIT OR Apache-2.0
+    identifier: MIT OR Apache-2.0
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local development server
+tags:
+  - name: FlowCloze
+    description: Parse markdown, generate questions, and validate generated output.
+paths:
+  /v1/parse:
+    post:
+      tags:
+        - FlowCloze
+      summary: Parse FlowCloze markdown
+      operationId: parseMarkdown
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ParseRequest"
+      responses:
+        "200":
+          description: Parsed intermediate document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParseResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /v1/generate:
+    post:
+      tags:
+        - FlowCloze
+      summary: Generate context cloze questions with Gemini
+      operationId: generateQuestions
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateRequest"
+      responses:
+        "200":
+          description: Generated questions and validation report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "502":
+          $ref: "#/components/responses/UpstreamError"
+  /v1/validate:
+    post:
+      tags:
+        - FlowCloze
+      summary: Validate generated questions against an intermediate document
+      operationId: validateGeneratedDocument
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidateRequest"
+      responses:
+        "200":
+          description: Validation report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationReport"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-goog-api-key
+      description: Gemini API key. A server implementation may also load this from GEMINI_API_KEY.
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UpstreamError:
+      description: Gemini API request failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    ParseRequest:
+      type: object
+      required:
+        - markdown
+      properties:
+        source:
+          type: string
+          default: input.md
+        markdown:
+          type: string
+    ParseResponse:
+      type: object
+      required:
+        - intermediate
+      properties:
+        intermediate:
+          $ref: "#/components/schemas/IntermediateDocument"
+    GenerateRequest:
+      type: object
+      required:
+        - markdown
+      properties:
+        source:
+          type: string
+          default: input.md
+        markdown:
+          type: string
+        model:
+          type: string
+          default: gemini-2.5-flash
+        constraints:
+          type: array
+          items:
+            type: string
+          default: []
+        maxValidationAttempts:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 3
+    GenerateResponse:
+      type: object
+      required:
+        - intermediate
+        - generated
+        - validation
+      properties:
+        intermediate:
+          $ref: "#/components/schemas/IntermediateDocument"
+        generated:
+          $ref: "#/components/schemas/GeneratedDocument"
+        validation:
+          $ref: "#/components/schemas/ValidationReport"
+        model:
+          type: string
+    ValidateRequest:
+      type: object
+      required:
+        - intermediate
+        - generated
+      properties:
+        intermediate:
+          $ref: "#/components/schemas/IntermediateDocument"
+        generated:
+          $ref: "#/components/schemas/GeneratedDocument"
+    IntermediateDocument:
+      type: object
+      required:
+        - meta
+        - qblocks
+      properties:
+        meta:
+          $ref: "#/components/schemas/IntermediateMeta"
+        qblocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/IntermediateQBlock"
+    IntermediateMeta:
+      type: object
+      required:
+        - source
+      properties:
+        source:
+          type: string
+    IntermediateQBlock:
+      type: object
+      required:
+        - id
+        - source_text
+        - targets
+      properties:
+        id:
+          type: string
+        section:
+          type:
+            - string
+            - "null"
+        source_text:
+          type: string
+        targets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Target"
+        warnings:
+          type: array
+          items:
+            type: string
+          default: []
+    Target:
+      type: object
+      required:
+        - answer
+        - type
+      properties:
+        answer:
+          type: string
+        type:
+          type: string
+          description: Usually one of term-name, meaning, process, or relation. Unknown values may be preserved with warnings.
+    GeneratedDocument:
+      type: object
+      required:
+        - questions
+      properties:
+        questions:
+          type: array
+          items:
+            $ref: "#/components/schemas/GeneratedQuestion"
+    GeneratedQuestion:
+      type: object
+      required:
+        - id
+        - type
+        - question
+        - answers
+      properties:
+        id:
+          type: string
+        section:
+          type:
+            - string
+            - "null"
+        type:
+          type: string
+          const: context-cloze
+        targets:
+          type:
+            - array
+            - "null"
+          items:
+            $ref: "#/components/schemas/Target"
+        question:
+          type: string
+          description: Uses ＿＿＿ for blanks.
+        answers:
+          type: array
+          items:
+            type: string
+        source_text:
+          type:
+            - string
+            - "null"
+        explanation:
+          type:
+            - string
+            - "null"
+        tags:
+          type: array
+          items:
+            type: string
+          default: []
+        warnings:
+          type: array
+          items:
+            type: string
+          default: []
+    ValidationReport:
+      type: object
+      required:
+        - valid
+        - errors
+      properties:
+        valid:
+          type: boolean
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/ValidationError"
+    ValidationError:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          enum:
+            - invalid_intermediate_json
+            - invalid_generated_json
+            - empty_question
+            - duplicate_question_id
+            - unknown_question_id
+            - blank_answer_count_mismatch
+            - answer_not_in_targets
+            - missing_target_answer
+        message:
+          type: string
+        id:
+          type: string
+        answer:
+          type: string
+        blank_count:
+          type: integer
+          minimum: 0
+        answer_count:
+          type: integer
+          minimum: 0
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
