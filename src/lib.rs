@@ -1,12 +1,16 @@
 //! FlowCloze CLIが使う解析・生成支援・検証・出力のコア機能．
 
+pub mod compose;
 pub mod csv;
 pub mod gemini;
 pub mod json;
+pub mod local_openai;
 pub mod models;
 pub mod parser;
 pub mod pdf;
+pub mod planner;
 pub mod prompt;
+pub mod scaffold;
 pub mod validation;
 
 pub use csv::to_ankilot_csv;

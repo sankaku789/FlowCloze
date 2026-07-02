@@ -106,13 +106,19 @@ cp .env.example .env
 
 ```env
 GEMINI_API_KEY=your_api_key_here
-GEMINI_MODEL=gemini-2.5-flash
+FLOWCLOZE_LLM_BACKEND=gemini
+LOCAL_LLM_BASE_URL=
+LOCAL_LLM_API_KEY=
+FLOWCLOZE_BATCH_POLICY=auto
+FLOWCLOZE_MAX_TASKS_PER_BATCH=8
+FLOWCLOZE_MAX_INPUT_TOKENS=12000
+FLOWCLOZE_MAX_CONCURRENT_BATCHES=3
 ```
 
 CLIから保存する場合:
 
 ```bash
-flowcloze api set --key your_api_key_here --model gemini-2.5-flash
+flowcloze api set --key your_api_key_here
 ```
 
 ## 最小例
@@ -143,6 +149,38 @@ Geminiで問題を生成:
 
 ```bash
 flowcloze generate -s -o sample/generated.json sample/sample.md
+```
+
+LLMに渡すscaffoldを確認:
+
+```bash
+flowcloze inspect-scaffold sample/sample.md
+```
+
+batch policyを指定して生成:
+
+```bash
+flowcloze generate --batch small -s -o sample/generated.json sample/sample.md
+```
+
+OllamaまたはLM StudioのOpenAI互換サーバでローカルLLMを使って生成:
+
+標準ローカルモデルを取得し，OllamaまたはLM Studioのローカルサーバを起動してから実行します。未設定時はOllama (`http://localhost:11434/v1`) を先に試し，失敗したらLM Studio (`http://localhost:1234/v1`) を試します。
+
+Ollamaを使う場合:
+
+```bash
+ollama pull gemma-4-e2b
+```
+
+LM Studioを使う場合は，LM Studio上で`gemma-4-e2b`を取得・ロードし，Local Serverを起動します。
+
+```bash
+flowcloze local check
+```
+
+```bash
+flowcloze generate --backend local -s -o sample/generated.json sample/sample.md
 ```
 
 PDFを作る:

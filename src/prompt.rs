@@ -1,6 +1,7 @@
 //! 中間データから問題生成用のLLMプロンプトを組み立てる．
 
 use crate::json::IntermediateDocument;
+use crate::scaffold::ScaffoldDocument;
 
 /// 中間データと生成前チェックリストを含むプロンプトを作る．
 pub fn build_generation_prompt(
@@ -72,4 +73,57 @@ fn build_generation_checklist(
         ));
     }
     Ok(lines.join("\n"))
+}
+
+/// scaffoldをもとに，LLMへquestion本文だけを生成させるプロンプトを作る．
+pub fn build_question_composer_prompt(
+    scaffold: &ScaffoldDocument,
+    extra_constraints: &[String],
+    retry_feedback: &[String],
+) -> Result<String, serde_json::Error> {
+    let scaffold_json = serde_json::to_string_pretty(scaffold)?;
+    let mut prompt = format!(
+        r#"次のscaffoldから，文章補完問題のquestion本文だけを自然な文章へ再構成してください。
+
+制約:
+- 出力はJSONのみとし，Markdownコードフェンスを付けない
+- ルートキーは questions にする
+- 各questionには id と question だけを含める
+- section, type, targets, answers, source_text, explanation, tags, warnings は出力しない
+- scaffold.tasks[].id と同じidだけを返す
+- question内の空欄は必ず ＿＿＿ を使う
+- taskごとの ＿＿＿ の数を blank_count と必ず一致させる
+- ＿＿＿ の順序は answers の順序と一致させる
+- answers に含まれる語句を question 本文に戻さない
+- 元ノートにない知識を追加しない
+- 箇条書き断片は必要に応じて文章化する
+- 文章は常体にする
+- 段落先頭は必要に応じて全角スペースに整える
+- source_text と scaffold_question の情報量を保ち，target以外の説明を不自然に省略しない
+
+入力scaffold:
+{scaffold_json}"#
+    );
+
+    if !extra_constraints.is_empty() {
+        prompt.push_str("\n\n追加制約:\n");
+        for constraint in extra_constraints {
+            prompt.push_str("- ");
+            prompt.push_str(constraint);
+            prompt.push('\n');
+        }
+    }
+
+    if !retry_feedback.is_empty() {
+        prompt.push_str(
+            "\n\n前回の出力は検証に失敗しました。次のエラーを修正し，JSONのみを再出力してください。\n",
+        );
+        for feedback in retry_feedback {
+            prompt.push_str("- ");
+            prompt.push_str(feedback);
+            prompt.push('\n');
+        }
+    }
+
+    Ok(prompt)
 }

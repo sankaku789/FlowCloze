@@ -41,7 +41,7 @@ impl GeminiClient {
             generation_config: GenerationConfig {
                 temperature: 0.0,
                 response_mime_type: "application/json",
-                response_json_schema: generated_document_schema(),
+                response_json_schema: composed_document_schema(),
             },
         };
         let body = self
@@ -146,6 +146,7 @@ impl GeminiApi {
     }
 }
 
+/// Gemini APIのHTTP statusが再試行で回復しうるものか判定する．
 fn is_retryable_status(status: StatusCode) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS
         || status == StatusCode::REQUEST_TIMEOUT
@@ -154,10 +155,12 @@ fn is_retryable_status(status: StatusCode) -> bool {
         || status == StatusCode::GATEWAY_TIMEOUT
 }
 
+/// 通信層の一時的な失敗をretry対象として扱う．
 fn is_retryable_http_error(error: &reqwest::Error) -> bool {
     error.is_connect() || error.is_timeout()
 }
 
+/// Retry-Afterがあれば尊重し，なければ指数バックオフで待機時間を決める．
 fn retry_delay(attempt: u32, retry_after: Option<Duration>) -> Duration {
     retry_after
         .map(|duration| duration.min(MAX_RETRY_DELAY))
@@ -168,6 +171,7 @@ fn retry_delay(attempt: u32, retry_after: Option<Duration>) -> Duration {
         })
 }
 
+/// Retry-After headerの秒数表記をDurationへ変換する．
 fn parse_retry_after(value: &str) -> Option<Duration> {
     value
         .trim()
@@ -178,6 +182,7 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
 }
 
 /// GeminiがJSONをMarkdownコードフェンスで包んだ場合に中身だけ取り出す．
+/// LLMがJSONをMarkdown code fenceで包んだ場合に外側だけを取り除く．
 pub fn strip_markdown_code_fence(text: &str) -> String {
     let trimmed = text.trim();
     if !trimmed.starts_with("```") {
@@ -262,7 +267,8 @@ struct GenerationConfig<'a> {
     response_json_schema: Value,
 }
 
-fn generated_document_schema() -> Value {
+/// Geminiの構造化出力を，LLMが担当するid/questionだけに制限する．
+fn composed_document_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
@@ -273,81 +279,20 @@ fn generated_document_schema() -> Value {
                     "properties": {
                         "id": {
                             "type": "string",
-                            "description": "Input qblock id."
-                        },
-                        "section": {
-                            "type": "string",
-                            "description": "Input qblock section heading. Use an empty string if missing."
-                        },
-                        "type": {
-                            "type": "string",
-                            "description": "Always context-cloze."
-                        },
-                        "targets": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "answer": {
-                                        "type": "string",
-                                        "description": "Exact target answer from the input."
-                                    },
-                                    "type": {
-                                        "type": "string",
-                                        "description": "Exact target type from the input."
-                                    }
-                                },
-                                "required": ["answer", "type"]
-                            }
+                            "description": "Input task id."
                         },
                         "question": {
                             "type": "string",
-                            "description": "Context cloze question using ＿＿＿ for every blank."
-                        },
-                        "answers": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            },
-                            "description": "Answers in the same order as blanks in question."
-                        },
-                        "source_text": {
-                            "type": "string",
-                            "description": "Source text from the qblock."
-                        },
-                        "explanation": {
-                            "type": "string",
-                            "description": "Short explanation. Use an empty string if unnecessary."
-                        },
-                        "tags": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            }
-                        },
-                        "warnings": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            }
+                            "description": "Natural context cloze question using ＿＿＿ for every blank."
                         }
                     },
-                    "required": [
-                        "id",
-                        "section",
-                        "type",
-                        "targets",
-                        "question",
-                        "answers",
-                        "source_text",
-                        "explanation",
-                        "tags",
-                        "warnings"
-                    ]
+                    "required": ["id", "question"],
+                    "propertyOrdering": ["id", "question"]
                 }
             }
         },
-        "required": ["questions"]
+        "required": ["questions"],
+        "propertyOrdering": ["questions"]
     })
 }
 

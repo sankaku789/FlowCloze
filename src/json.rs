@@ -38,6 +38,7 @@ pub struct IntermediateTarget {
 }
 
 impl IntermediateDocument {
+    /// parserが返したqblock一覧を，保存・検証用の中間JSON構造へ変換する．
     pub fn from_qblocks(source: impl Into<String>, qblocks: &[QBlock]) -> Self {
         Self {
             meta: IntermediateMeta {
@@ -49,6 +50,7 @@ impl IntermediateDocument {
 }
 
 impl From<&QBlock> for IntermediateQBlock {
+    /// parserのドメインモデルから，JSONへ保存するqblock snapshotを作る．
     fn from(qblock: &QBlock) -> Self {
         Self {
             id: qblock.id.clone(),
@@ -65,6 +67,7 @@ impl From<&QBlock> for IntermediateQBlock {
 }
 
 impl From<&Target> for IntermediateTarget {
+    /// Markdown上のtarget指定を，answer/typeだけのJSON向け構造へ写す．
     fn from(target: &Target) -> Self {
         Self {
             answer: target.answer.clone(),

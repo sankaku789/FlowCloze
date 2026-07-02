@@ -106,13 +106,19 @@ Set values like:
 
 ```env
 GEMINI_API_KEY=your_api_key_here
-GEMINI_MODEL=gemini-2.5-flash
+FLOWCLOZE_LLM_BACKEND=gemini
+LOCAL_LLM_BASE_URL=
+LOCAL_LLM_API_KEY=
+FLOWCLOZE_BATCH_POLICY=auto
+FLOWCLOZE_MAX_TASKS_PER_BATCH=8
+FLOWCLOZE_MAX_INPUT_TOKENS=12000
+FLOWCLOZE_MAX_CONCURRENT_BATCHES=3
 ```
 
 Or save them through the CLI:
 
 ```bash
-flowcloze api set --key your_api_key_here --model gemini-2.5-flash
+flowcloze api set --key your_api_key_here
 ```
 
 ## Minimal Example
@@ -143,6 +149,38 @@ Generate questions with Gemini:
 
 ```bash
 flowcloze generate -s -o sample/generated.json sample/sample.md
+```
+
+Inspect the scaffold sent to the LLM:
+
+```bash
+flowcloze inspect-scaffold sample/sample.md
+```
+
+Generate with a specific batch policy:
+
+```bash
+flowcloze generate --batch small -s -o sample/generated.json sample/sample.md
+```
+
+Generate with a local LLM through Ollama or LM Studio's OpenAI-compatible server:
+
+Install the default local model, then start either the Ollama or LM Studio local server before running FlowCloze. When `LOCAL_LLM_BASE_URL` is unset, FlowCloze tries Ollama (`http://localhost:11434/v1`) first, then falls back to LM Studio (`http://localhost:1234/v1`).
+
+For Ollama:
+
+```bash
+ollama pull gemma-4-e2b
+```
+
+For LM Studio, download and load `gemma-4-e2b` in LM Studio, then start the Local Server.
+
+```bash
+flowcloze local check
+```
+
+```bash
+flowcloze generate --backend local -s -o sample/generated.json sample/sample.md
 ```
 
 Build a PDF:

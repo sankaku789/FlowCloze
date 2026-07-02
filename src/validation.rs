@@ -75,6 +75,11 @@ pub enum ValidationError {
         id: String,
         answer: String,
     },
+    /// answer文字列が空欄化されずquestion本文に残っている．
+    AnswerLeakage {
+        id: String,
+        answer: String,
+    },
     MissingTargetAnswer {
         id: String,
         answer: String,
@@ -103,6 +108,9 @@ impl std::fmt::Display for ValidationError {
             ),
             Self::AnswerNotInTargets { id, answer } => {
                 write!(f, "{id}: answer '{answer}' はtargetsに含まれていません")
+            }
+            Self::AnswerLeakage { id, answer } => {
+                write!(f, "{id}: answer '{answer}' がquestion本文に残っています")
             }
             Self::MissingTargetAnswer { id, answer } => {
                 write!(f, "{id}: target '{answer}' がanswersに含まれていません")
@@ -214,6 +222,13 @@ fn validate_documents(
                     answer: answer.clone(),
                 });
             }
+            // LLMがanswerを空欄とは別に本文へ戻していないかを保守的に検出する．
+            if !answer.is_empty() && question.question.contains(answer) {
+                errors.push(ValidationError::AnswerLeakage {
+                    id: question.id.clone(),
+                    answer: answer.clone(),
+                });
+            }
         }
 
         let answer_set = question
@@ -234,10 +249,12 @@ fn validate_documents(
     ValidationReport { errors }
 }
 
+/// question本文に含まれる標準空欄表記の個数を数える．
 fn count_blanks(question: &str) -> usize {
     question.matches("＿＿＿").count()
 }
 
+/// JSONでnullが来ても空配列などの既定値として扱う互換用deserializer．
 fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
@@ -246,6 +263,7 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// 旧出力で混ざりうる入れ子answersを，単一の文字列配列へ平坦化する．
 fn flatten_answers<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -266,6 +284,7 @@ enum AnswerValue {
 }
 
 impl AnswerValue {
+    /// 再帰的に入れ子配列を展開し，最終的なanswers配列へ追加する．
     fn flatten_into(self, answers: &mut Vec<String>) {
         match self {
             Self::Text(answer) => answers.push(answer),

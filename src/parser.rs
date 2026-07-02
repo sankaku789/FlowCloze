@@ -49,6 +49,7 @@ pub fn parse_qblock(body: &str) -> Result<QBlock, MarkdownParseError> {
     parse_qblock_with_default_id(body, "qblock-001", None)
 }
 
+/// qblock本文からtargetと表示用本文を抽出し，不足するidは呼び出し側の既定値で補う．
 fn parse_qblock_with_default_id(
     body: &str,
     default_id: &str,
@@ -74,6 +75,7 @@ fn parse_qblock_with_default_id(
     })
 }
 
+/// 入力順に基づいて安定した自動qblock idを作る．
 fn auto_qblock_id(index: usize) -> String {
     format!("qblock-{:03}", index + 1)
 }
@@ -84,6 +86,7 @@ struct QBlockSection {
     section: Option<String>,
 }
 
+/// Markdown全体を走査し，#qblock{...} の範囲と現在sectionを取り出す．
 fn iter_qblock_sections(markdown: &str) -> Result<Vec<QBlockSection>, MarkdownParseError> {
     let lines: Vec<&str> = markdown.lines().collect();
     let mut sections = Vec::new();
@@ -140,6 +143,7 @@ fn iter_qblock_sections(markdown: &str) -> Result<Vec<QBlockSection>, MarkdownPa
     Ok(sections)
 }
 
+/// Markdown見出し行からsection名として使う文字列を取り出す．
 fn parse_markdown_heading(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
     let level = trimmed.chars().take_while(|ch| *ch == '#').count();
@@ -154,19 +158,23 @@ fn parse_markdown_heading(line: &str) -> Option<String> {
     (!heading.is_empty()).then(|| heading.to_string())
 }
 
+/// 行がqblock開始マーカーかどうかを判定する．
 fn is_qblock_open(line: &str) -> bool {
     matches!(line.trim(), "#qblock{" | "#qblock {")
 }
 
+/// 行がqblock終了マーカーかどうかを判定する．
 fn is_qblock_close(line: &str) -> bool {
     line.trim() == "}"
 }
 
+/// Markdownコードフェンス内のqblock風テキストを誤検出しないための判定．
 fn is_fence_line(line: &str) -> bool {
     let trimmed = line.trim_start();
     trimmed.starts_with("```") || trimmed.starts_with("~~~")
 }
 
+/// qblock本文から `[answer]` / `[answer]{type}` のtargetを順序付きで抽出する．
 fn extract_targets(body: &str) -> Vec<Target> {
     let mut targets = Vec::new();
     let mut rest = body;
@@ -215,6 +223,7 @@ fn extract_targets(body: &str) -> Vec<Target> {
     targets
 }
 
+/// 中間表現のsource_text用に，targetマークアップだけを取り除いた本文を作る．
 fn strip_target_markup(body: &str) -> String {
     let mut output = String::new();
     let mut rest = body;
@@ -269,6 +278,7 @@ fn strip_target_markup(body: &str) -> String {
     output
 }
 
+/// 許可されたtarget typeだけを採用し，未知のtypeは警告側へ回せるようNoneにする．
 fn normalize_target_type(target_type: &str) -> Option<&str> {
     if target_type.chars().any(char::is_whitespace) {
         return None;
@@ -280,6 +290,7 @@ fn normalize_target_type(target_type: &str) -> Option<&str> {
     }
 }
 
+/// Markdown参照リンク風の `[...]` をanswer targetと誤認しないための長さ判定．
 fn markdown_reference_label_len(text: &str) -> Option<usize> {
     let label = text.strip_prefix('[')?;
     let label_end = label.find(']')?;

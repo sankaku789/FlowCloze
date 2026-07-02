@@ -151,10 +151,12 @@ pub fn compile_pdf(options: &PdfOptions) -> Result<(), PdfError> {
     Ok(())
 }
 
+/// 相対パスでもTypstへ安定して渡せるよう，存在する親ディレクトリ基準で絶対化する．
 fn canonicalize(path: &Path) -> Result<PathBuf, std::io::Error> {
     path.canonicalize()
 }
 
+/// Typstのatomic rename失敗を避けるため，同じディレクトリ内の一時PDFパスを作る．
 fn typst_output_paths(
     output_pdf_path: &Path,
 ) -> Result<(PathBuf, PathBuf, Option<PathBuf>), PdfError> {

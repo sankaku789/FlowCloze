@@ -12,6 +12,35 @@ fn intermediate_json() -> String {
 }
 
 #[test]
+fn detects_answer_leakage_in_question_body() {
+    // 空欄数は正しいが，answerが別の本文位置に残っているケースを検証する．
+    let intermediate_json = r#"{
+        "meta": {"source": "inline.md"},
+        "qblocks": [{
+            "id": "q1",
+            "source_text": "短期記憶はワーキングメモリである。",
+            "targets": [{"answer": "ワーキングメモリ", "type": "term"}],
+            "warnings": []
+        }]
+    }"#;
+    let generated_json = r#"{
+        "questions": [{
+            "id": "q1",
+            "type": "context-cloze",
+            "question": "短期記憶は＿＿＿であり，ワーキングメモリは重要である。",
+            "answers": ["ワーキングメモリ"]
+        }]
+    }"#;
+
+    let report = validate_generated_json(intermediate_json, generated_json);
+
+    assert!(report.errors.contains(&ValidationError::AnswerLeakage {
+        id: "q1".to_string(),
+        answer: "ワーキングメモリ".to_string(),
+    }));
+}
+
+#[test]
 fn 正しい生成結果jsonを検証できる() {
     let intermediate_json = intermediate_json();
     let generated_json = fixture("generated-valid.json");
