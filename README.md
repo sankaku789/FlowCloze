@@ -170,10 +170,10 @@ OllamaまたはLM StudioのOpenAI互換サーバでローカルLLMを使って�
 Ollamaを使う場合:
 
 ```bash
-ollama pull gemma-4-e2b
+ollama pull gemma4:e2b-it-qat
 ```
 
-LM Studioを使う場合は，LM Studio上で`gemma-4-e2b`を取得・ロードし，Local Serverを起動します。
+LM Studioを使う場合は，LM Studio上で`gemma4:e2b-it-qat`を取得・ロードし，Local Serverを起動します。
 
 ```bash
 flowcloze local check

@@ -170,10 +170,10 @@ Install the default local model, then start either the Ollama or LM Studio local
 For Ollama:
 
 ```bash
-ollama pull gemma-4-e2b
+ollama pull gemma4:e2b-it-qat
 ```
 
-For LM Studio, download and load `gemma-4-e2b` in LM Studio, then start the Local Server.
+For LM Studio, download and load `gemma4:e2b-it-qat` in LM Studio, then start the Local Server.
 
 ```bash
 flowcloze local check

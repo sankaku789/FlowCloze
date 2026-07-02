@@ -17,7 +17,7 @@ mod view;
 const DEFAULT_MODEL: &str = "gemini-2.5-flash";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 const DEFAULT_LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
-const DEFAULT_LOCAL_MODEL: &str = "gemma-4-e2b";
+const DEFAULT_LOCAL_MODEL: &str = "gemma4:e2b-it-qat";
 
 fn main() {
     let _ = dotenvy::dotenv();
@@ -340,7 +340,7 @@ impl Args {
                 }
                 "--model" => {
                     return Err(
-                        "--model は廃止されました。local は gemma-4-e2b、gemini は gemini-2.5-flash を使用します"
+                        "--model は廃止されました。local は gemma4:e2b-it-qat、gemini は gemini-2.5-flash を使用します"
                             .to_string(),
                     );
                 }
