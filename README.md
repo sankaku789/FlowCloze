@@ -121,7 +121,7 @@ flowcloze generate --provider gemini --model gemini-2.5-flash \
 
 設定値の優先順位は、CLI、canonical環境変数、（ある場合のみ）legacy環境変数、`config.toml`、既定値です。空の環境変数は未指定として扱います。`FLOWCLOZE_CONFIG` で設定ファイルのパスを変更できます。設定ファイルの例は [`config.toml.example`](config.toml.example) を参照してください。
 
-`--verbose` または `FLOWCLOZE_LOG=debug` はstderrに観測用JSON Linesを出力します。そこにMarkdown本文、prompt、プロバイダ応答、認証情報は含まれません。`max_concurrent_batches` は入力検証と観測に使われますが、現在の実行は逐次です。
+`generate` はstderrへ解析・batch・検証・保存の人間向け進捗を表示します。`--verbose` または `FLOWCLOZE_LOG=debug` では、その表示に加えて観測用JSON Linesもstderrに出力します。いずれにもMarkdown本文、prompt、プロバイダ応答、認証情報は含まれません。`max_concurrent_batches` は入力検証と観測に使われますが、現在の実行は逐次です。
 
 互換性のためのCLI保存機能:
 

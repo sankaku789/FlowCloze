@@ -13,6 +13,7 @@ use crate::json::IntermediateDocument;
 use crate::observability::{
     fnv1a_64, ComposeEvent, ComposeEventKind, EventSink, NoopEventSink, RunContext,
 };
+use crate::progress::{NoopProgressSink, ProgressEvent, ProgressSink, RetryResult};
 use crate::prompt::{build_compose_request_prompt, build_question_composer_prompt};
 use crate::scaffold::{ScaffoldDocument, ScaffoldTask};
 use crate::validation::{
@@ -124,6 +125,18 @@ pub enum FailureReason {
     Transport,
 }
 
+/// provider起因の実際の終端分類。公開エラー形状とは分離して内部で保持する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalCause {
+    Content,
+    Authentication,
+    Configuration,
+    RateLimited,
+    Timeout,
+    Transport,
+    Api,
+}
+
 impl std::fmt::Display for ComposePlanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -173,6 +186,69 @@ struct TaskFailure {
     /// 次回promptへ渡すための検証フィードバック．
     errors: Vec<String>,
     reason: FailureReason,
+    terminal_cause: TerminalCause,
+}
+
+/// 公開エラーへ変換する前だけ、実際に実行を止めた原因を保持する。
+#[derive(Debug)]
+pub(crate) struct ComposeExecutionError {
+    error: ComposePlanError,
+    terminal_cause: Option<TerminalCause>,
+    fallback_causes: Vec<TerminalCause>,
+}
+
+impl ComposeExecutionError {
+    fn from_error(error: ComposePlanError) -> Self {
+        Self {
+            error,
+            terminal_cause: None,
+            fallback_causes: Vec::new(),
+        }
+    }
+
+    fn with_cause(error: ComposePlanError, terminal_cause: TerminalCause) -> Self {
+        Self {
+            error,
+            terminal_cause: Some(terminal_cause),
+            fallback_causes: Vec::new(),
+        }
+    }
+
+    pub(crate) fn terminal_cause(&self) -> Option<TerminalCause> {
+        self.terminal_cause
+    }
+
+    pub(crate) fn as_public(&self) -> &ComposePlanError {
+        &self.error
+    }
+
+    pub(crate) fn into_public(self) -> ComposePlanError {
+        self.error
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (ComposePlanError, Option<TerminalCause>, Vec<TerminalCause>) {
+        (self.error, self.terminal_cause, self.fallback_causes)
+    }
+}
+
+impl From<ComposePlanError> for ComposeExecutionError {
+    fn from(error: ComposePlanError) -> Self {
+        Self::from_error(error)
+    }
+}
+
+/// policy 検証済みの初回 batch 計画。開始表示と実行で同じ計画を共有する。
+#[derive(Debug, Clone)]
+pub struct PreparedComposePlan {
+    batches: Vec<Vec<TaskAttempt>>,
+}
+
+impl PreparedComposePlan {
+    pub fn batch_count(&self) -> usize {
+        self.batches.len()
+    }
 }
 
 /// 既定の文字数heuristicを使ってadaptive composeを実行する．
@@ -226,7 +302,29 @@ pub fn compose_with_question_composer_observed(
     context: &RunContext,
     sink: &dyn EventSink,
 ) -> Result<GeneratedDocument, ComposePlanError> {
-    compose_with_question_composer_observed_with_constraints(
+    let progress = NoopProgressSink;
+    compose_with_question_composer_observed_with_progress(
+        intermediate,
+        scaffold,
+        policy,
+        composer,
+        context,
+        sink,
+        &progress,
+    )
+}
+
+/// port 実行へ本文を含まない進捗 sink を注入する入口。
+pub fn compose_with_question_composer_observed_with_progress(
+    intermediate: &IntermediateDocument,
+    scaffold: &ScaffoldDocument,
+    policy: ComposeExecutionPolicy,
+    composer: &dyn QuestionComposer,
+    context: &RunContext,
+    sink: &dyn EventSink,
+    progress: &dyn ProgressSink,
+) -> Result<GeneratedDocument, ComposePlanError> {
+    compose_with_question_composer_observed_with_constraints_with_progress(
         intermediate,
         scaffold,
         policy,
@@ -234,10 +332,12 @@ pub fn compose_with_question_composer_observed(
         &[],
         context,
         sink,
+        progress,
     )
 }
 
 /// 追加制約をprovider requestだけへ渡す観測付き入口。
+#[allow(clippy::too_many_arguments)]
 pub fn compose_with_question_composer_observed_with_constraints(
     intermediate: &IntermediateDocument,
     scaffold: &ScaffoldDocument,
@@ -247,6 +347,31 @@ pub fn compose_with_question_composer_observed_with_constraints(
     context: &RunContext,
     sink: &dyn EventSink,
 ) -> Result<GeneratedDocument, ComposePlanError> {
+    let progress = NoopProgressSink;
+    compose_with_question_composer_observed_with_constraints_with_progress(
+        intermediate,
+        scaffold,
+        policy,
+        composer,
+        extra_constraints,
+        context,
+        sink,
+        &progress,
+    )
+}
+
+/// 追加制約をprovider requestだけへ渡し、進捗sinkも注入する入口。
+#[allow(clippy::too_many_arguments)]
+pub fn compose_with_question_composer_observed_with_constraints_with_progress(
+    intermediate: &IntermediateDocument,
+    scaffold: &ScaffoldDocument,
+    policy: ComposeExecutionPolicy,
+    composer: &dyn QuestionComposer,
+    extra_constraints: &[String],
+    context: &RunContext,
+    sink: &dyn EventSink,
+    progress: &dyn ProgressSink,
+) -> Result<GeneratedDocument, ComposePlanError> {
     compose_with_question_composer_observed_with_constraints_and_leakage_baselines(
         intermediate,
         scaffold,
@@ -255,6 +380,7 @@ pub fn compose_with_question_composer_observed_with_constraints(
         extra_constraints,
         context,
         sink,
+        progress,
         None,
     )
 }
@@ -269,15 +395,78 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
     extra_constraints: &[String],
     context: &RunContext,
     sink: &dyn EventSink,
+    progress: &dyn ProgressSink,
     leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
 ) -> Result<GeneratedDocument, ComposePlanError> {
-    validate_port_policy(scaffold, policy)?;
+    compose_with_question_composer_prepared_with_terminal_cause(
+        intermediate,
+        scaffold,
+        policy,
+        composer,
+        extra_constraints,
+        context,
+        sink,
+        progress,
+        leakage_baselines,
+        None,
+    )
+    .map_err(ComposeExecutionError::into_public)
+}
+
+/// 初回計画を作成済みの呼び出し側用。retry は計画外の task 単位で実行する。
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
+pub(crate) fn compose_with_question_composer_prepared(
+    intermediate: &IntermediateDocument,
+    scaffold: &ScaffoldDocument,
+    policy: ComposeExecutionPolicy,
+    composer: &dyn QuestionComposer,
+    extra_constraints: &[String],
+    context: &RunContext,
+    sink: &dyn EventSink,
+    progress: &dyn ProgressSink,
+    leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
+    prepared: Option<&PreparedComposePlan>,
+) -> Result<GeneratedDocument, ComposePlanError> {
+    compose_with_question_composer_prepared_with_terminal_cause(
+        intermediate,
+        scaffold,
+        policy,
+        composer,
+        extra_constraints,
+        context,
+        sink,
+        progress,
+        leakage_baselines,
+        prepared,
+    )
+    .map_err(ComposeExecutionError::into_public)
+}
+
+/// orchestration用に、公開エラーへ落とす前の終端原因を返す。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
+    intermediate: &IntermediateDocument,
+    scaffold: &ScaffoldDocument,
+    policy: ComposeExecutionPolicy,
+    composer: &dyn QuestionComposer,
+    extra_constraints: &[String],
+    context: &RunContext,
+    sink: &dyn EventSink,
+    progress: &dyn ProgressSink,
+    leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
+    prepared: Option<&PreparedComposePlan>,
+) -> Result<GeneratedDocument, ComposeExecutionError> {
+    validate_port_policy(scaffold, policy).map_err(ComposeExecutionError::from_error)?;
     let estimator = CharHeuristicTokenEstimator;
     let mut completed = HashMap::<String, ComposedQuestion>::new();
     let mut retry_queue = Vec::<TaskAttempt>::new();
 
     let mut terminal_failures = Vec::new();
-    let batches = plan_batches(scaffold, policy.batch_policy, &estimator);
+    let batches = prepared
+        .map(|plan| plan.batches.clone())
+        .unwrap_or_else(|| plan_batches(scaffold, policy.batch_policy, &estimator));
+    let initial_batch_total = batches.len();
     for (batch_number, batch) in batches.iter().enumerate() {
         let failures = run_port_batch(
             intermediate,
@@ -292,11 +481,22 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
             extra_constraints,
             leakage_baselines,
         )?;
+        let failure_count = failures.len();
         let batch_terminal_failures =
             enqueue_port_failures(&mut retry_queue, failures, policy.max_content_retries);
+        progress.emit(ProgressEvent::BatchComplete {
+            number: batch_number + 1,
+            total: initial_batch_total,
+            successes: batch.len() - failure_count,
+            retries: failure_count - batch_terminal_failures.len(),
+        });
         let has_terminal_transport = batch_terminal_failures
             .iter()
             .any(|failure| failure.reason == FailureReason::Transport);
+        let terminal_cause = batch_terminal_failures
+            .iter()
+            .find(|failure| failure.reason == FailureReason::Transport)
+            .map(|failure| failure.terminal_cause);
         terminal_failures.extend(batch_terminal_failures);
         if has_terminal_transport {
             // 先行batchでcontent retry待ちだったtaskも、通信断後は再実行しない。
@@ -309,6 +509,7 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
                     retry_count: attempt.retry_count,
                     errors: attempt.feedback,
                     reason: FailureReason::Content,
+                    terminal_cause: TerminalCause::Content,
                 })
             }));
             // provider障害後に未実行batchへ通信せず、残りtaskをdraft対象へ渡す。
@@ -319,6 +520,7 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
                     retry_count: attempt.retry_count,
                     errors: vec!["not-attempted-after-terminal".to_string()],
                     reason: FailureReason::Transport,
+                    terminal_cause: terminal_cause.expect("transport failure has a cause"),
                 }
             }));
             return Err(partial_plan_error(
@@ -333,6 +535,8 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
         if completed.contains_key(&scaffold.tasks[attempt.index].id) {
             continue;
         }
+        let task_index = attempt.index;
+        let retry_count = attempt.retry_count;
         let failures = run_port_batch(
             intermediate,
             scaffold,
@@ -346,11 +550,22 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
             extra_constraints,
             leakage_baselines,
         )?;
-        terminal_failures.extend(enqueue_port_failures(
-            &mut retry_queue,
-            failures,
-            policy.max_content_retries,
-        ));
+        let task_id = scaffold.tasks[task_index].id.clone();
+        let terminal =
+            enqueue_port_failures(&mut retry_queue, failures, policy.max_content_retries);
+        let result = if completed.contains_key(&task_id) {
+            RetryResult::Success
+        } else if terminal.iter().any(|failure| failure.index == task_index) {
+            RetryResult::Failed
+        } else {
+            RetryResult::Retry
+        };
+        progress.emit(ProgressEvent::Retry {
+            task_id,
+            attempt: retry_count,
+            result,
+        });
+        terminal_failures.extend(terminal);
     }
 
     if !terminal_failures.is_empty() {
@@ -368,8 +583,8 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
             .filter_map(|qblock| completed.remove(&qblock.id))
             .collect(),
     };
-    let generated = try_merge_composed_questions(intermediate, composed).map_err(|error| {
-        ComposePlanError::Validation {
+    let generated = try_merge_composed_questions(intermediate, composed)
+        .map_err(|error| ComposePlanError::Validation {
             id: error
                 .issues
                 .first()
@@ -380,8 +595,8 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
                 .iter()
                 .map(|_| "id-mismatch".to_string())
                 .collect(),
-        }
-    })?;
+        })
+        .map_err(ComposeExecutionError::from_error)?;
     let owned_baselines;
     let baselines = match leakage_baselines {
         Some(baselines) => baselines,
@@ -405,15 +620,17 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
     let report =
         validate_generated_documents_with_leakage_baselines(intermediate, &generated, baselines);
     if let Some(error) = report.errors.first() {
-        return Err(ComposePlanError::Validation {
-            id: validation_error_id(error),
-            errors: report
-                .errors
-                .iter()
-                .map(validation_error_class)
-                .map(str::to_string)
-                .collect(),
-        });
+        return Err(ComposeExecutionError::from_error(
+            ComposePlanError::Validation {
+                id: validation_error_id(error),
+                errors: report
+                    .errors
+                    .iter()
+                    .map(validation_error_class)
+                    .map(str::to_string)
+                    .collect(),
+            },
+        ));
     }
     Ok(generated)
 }
@@ -430,7 +647,7 @@ fn partial_plan_error(
     intermediate: &IntermediateDocument,
     completed: &HashMap<String, ComposedQuestion>,
     failures: Vec<TaskFailure>,
-) -> ComposePlanError {
+) -> ComposeExecutionError {
     let mut seen_ids = HashSet::new();
     let mut failures = failures
         .into_iter()
@@ -439,22 +656,35 @@ fn partial_plan_error(
         .collect::<Vec<_>>();
     // fallbackの対象と理由は、batchやretry queueの順ではなく入力順で安定させる。
     failures.sort_by_key(|failure| failure.index);
-    ComposePlanError::Partial {
-        document: merge_composed_questions(
-            intermediate,
-            ComposedDocument {
-                questions: intermediate
-                    .qblocks
-                    .iter()
-                    .filter_map(|qblock| completed.get(&qblock.id).cloned())
-                    .collect(),
-            },
-        ),
-        failed_ids: failures
+    let terminal_cause = failures
+        .iter()
+        .rev()
+        .find(|failure| failure.terminal_cause != TerminalCause::Content)
+        .or_else(|| failures.last())
+        .map(|failure| failure.terminal_cause);
+    ComposeExecutionError {
+        error: ComposePlanError::Partial {
+            document: merge_composed_questions(
+                intermediate,
+                ComposedDocument {
+                    questions: intermediate
+                        .qblocks
+                        .iter()
+                        .filter_map(|qblock| completed.get(&qblock.id).cloned())
+                        .collect(),
+                },
+            ),
+            failed_ids: failures
+                .iter()
+                .map(|failure| failure.task_id.clone())
+                .collect(),
+            failed_reasons: failures.iter().map(|failure| failure.reason).collect(),
+        },
+        terminal_cause,
+        fallback_causes: failures
             .iter()
-            .map(|failure| failure.task_id.clone())
+            .map(|failure| failure.terminal_cause)
             .collect(),
-        failed_reasons: failures.iter().map(|failure| failure.reason).collect(),
     }
 }
 
@@ -482,6 +712,26 @@ fn validate_port_policy(
     Ok(())
 }
 
+/// policy 検証と単独 task の token 予算検査を、実行前にまとめて行う。
+/// 呼び出し側が開始イベントを出す前に使う。
+pub fn prepare_initial_batch_count(
+    scaffold: &ScaffoldDocument,
+    policy: ComposeExecutionPolicy,
+) -> Result<usize, ComposePlanError> {
+    Ok(prepare_compose_plan(scaffold, policy)?.batch_count())
+}
+
+/// policy 検証と初回 batch の作成を一度だけ行う。
+pub fn prepare_compose_plan(
+    scaffold: &ScaffoldDocument,
+    policy: ComposeExecutionPolicy,
+) -> Result<PreparedComposePlan, ComposePlanError> {
+    validate_port_policy(scaffold, policy)?;
+    Ok(PreparedComposePlan {
+        batches: plan_batches(scaffold, policy.batch_policy, &CharHeuristicTokenEstimator),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_port_batch(
     intermediate: &IntermediateDocument,
@@ -495,7 +745,7 @@ fn run_port_batch(
     max_concurrent_batches: usize,
     extra_constraints: &[String],
     leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
-) -> Result<Vec<TaskFailure>, ComposePlanError> {
+) -> Result<Vec<TaskFailure>, ComposeExecutionError> {
     let request = ComposeBatchRequest {
         schema_version: 1,
         // retryはtask単位なので、別batch由来の再試行とも衝突しないIDにする。
@@ -551,10 +801,12 @@ fn run_port_batch(
                     retry_count: attempt.retry_count,
                     errors: vec!["invalid-provider-content".to_string()],
                     reason: FailureReason::Content,
+                    terminal_cause: TerminalCause::Content,
                 })
                 .collect());
         }
         Err(error) if transport_fallbackable(&error) => {
+            let terminal_cause = terminal_cause_for_error(&error);
             emit_attempt_events(
                 attempts,
                 scaffold,
@@ -575,6 +827,7 @@ fn run_port_batch(
                     retry_count: attempt.retry_count,
                     errors: vec![error_class(&error).to_string()],
                     reason: FailureReason::Transport,
+                    terminal_cause,
                 })
                 .collect());
         }
@@ -591,7 +844,11 @@ fn run_port_batch(
                 Some(error_class(&error)),
                 None,
             );
-            return Err(map_composer_error(error));
+            let terminal_cause = terminal_cause_for_error(&error);
+            return Err(ComposeExecutionError::with_cause(
+                map_composer_error(error),
+                terminal_cause,
+            ));
         }
     };
     let output_chars = output
@@ -653,6 +910,7 @@ fn run_port_batch(
                 retry_count: attempt.retry_count,
                 errors: vec!["id-mismatch".to_string()],
                 reason: FailureReason::Content,
+                terminal_cause: TerminalCause::Content,
             });
             continue;
         }
@@ -663,6 +921,7 @@ fn run_port_batch(
                 retry_count: attempt.retry_count,
                 errors: vec!["missing-id".to_string()],
                 reason: FailureReason::Content,
+                terminal_cause: TerminalCause::Content,
             });
             continue;
         };
@@ -678,6 +937,7 @@ fn run_port_batch(
                     retry_count: attempt.retry_count,
                     errors: vec![error.to_string()],
                     reason: FailureReason::Content,
+                    terminal_cause: TerminalCause::Content,
                 });
                 continue;
             }
@@ -692,9 +952,11 @@ fn run_port_batch(
                 questions: vec![question.clone()],
             },
         )
-        .map_err(|_| ComposePlanError::Validation {
-            id: qblock.id.clone(),
-            errors: vec!["id-mismatch".to_string()],
+        .map_err(|_| {
+            ComposeExecutionError::from_error(ComposePlanError::Validation {
+                id: qblock.id.clone(),
+                errors: vec!["id-mismatch".to_string()],
+            })
         })?;
         // located経路では、target spanを除いた正確な基準で確定前に検証する。
         let report = match leakage_baselines {
@@ -728,16 +990,19 @@ fn run_port_batch(
                 retry_count: attempt.retry_count,
                 errors: build_retry_feedback(&qblock.id, &generated, &report.errors),
                 reason: FailureReason::Content,
+                terminal_cause: TerminalCause::Content,
             });
         }
     }
     // 未知IDは相関不能のstrict failure。既知taskの成功を先に確定し、batch全体を
     // content retryには戻さない。
     if let Some(id) = unknown_id {
-        return Err(ComposePlanError::Validation {
-            id,
-            errors: vec!["unknown-id".to_string()],
-        });
+        return Err(ComposeExecutionError::from_error(
+            ComposePlanError::Validation {
+                id,
+                errors: vec!["unknown-id".to_string()],
+            },
+        ));
     }
     Ok(failures)
 }
@@ -812,6 +1077,18 @@ fn error_class(error: &ComposeError) -> &'static str {
     }
 }
 
+fn terminal_cause_for_error(error: &ComposeError) -> TerminalCause {
+    match error {
+        ComposeError::InvalidResponse | ComposeError::EmptyResponse => TerminalCause::Content,
+        ComposeError::Configuration => TerminalCause::Configuration,
+        ComposeError::Authentication => TerminalCause::Authentication,
+        ComposeError::RateLimited => TerminalCause::RateLimited,
+        ComposeError::Timeout => TerminalCause::Timeout,
+        ComposeError::Transport => TerminalCause::Transport,
+        ComposeError::Api { .. } => TerminalCause::Api,
+    }
+}
+
 fn transport_fallbackable(error: &ComposeError) -> bool {
     matches!(
         error,
@@ -839,8 +1116,8 @@ fn map_composer_error(error: ComposeError) -> ComposePlanError {
         ComposeError::Configuration => ComposePlanError::Configuration {
             id: "composer".to_string(),
         },
-        // 通信・provider失敗はtransport側で完結させ、内容修正retryへは送らない。
-        _ => ComposePlanError::Llm(error.to_string()),
+        // 公開payloadはComposer境界の表示と一致させ、詳細な分類は内部で保持する。
+        error => ComposePlanError::Llm(error.to_string()),
     }
 }
 
@@ -987,6 +1264,19 @@ where
     batches
 }
 
+/// 初回実行だけのbatch数。retry/fallbackはこの計画に含めない。
+pub fn initial_batch_count(scaffold: &ScaffoldDocument, policy: BatchPolicy) -> usize {
+    plan_batches(scaffold, policy, &CharHeuristicTokenEstimator).len()
+}
+
+/// 初回計画の各batchに入るtask数を返す。
+pub fn initial_batch_sizes(scaffold: &ScaffoldDocument, policy: BatchPolicy) -> Vec<usize> {
+    plan_batches(scaffold, policy, &CharHeuristicTokenEstimator)
+        .iter()
+        .map(Vec::len)
+        .collect()
+}
+
 /// 1 taskがprompt内で消費するtoken数を概算する．
 fn estimate_task_tokens<E>(task: &ScaffoldTask, estimator: &E) -> usize
 where
@@ -1036,6 +1326,7 @@ where
                     retry_count: attempt.retry_count,
                     errors: vec![format!("生成結果JSONを読めません: {error}")],
                     reason: FailureReason::Content,
+                    terminal_cause: TerminalCause::Content,
                 })
                 .collect());
         }
@@ -1093,6 +1384,7 @@ where
                 retry_count: attempt.retry_count,
                 errors: vec![format!("{}: {:?}", qblock.id, issue)],
                 reason: FailureReason::Content,
+                terminal_cause: TerminalCause::Content,
             });
             continue;
         }
@@ -1103,6 +1395,7 @@ where
                 retry_count: attempt.retry_count,
                 errors: vec![format!("{}: LLM出力にidが含まれていません", qblock.id)],
                 reason: FailureReason::Content,
+                terminal_cause: TerminalCause::Content,
             });
             continue;
         };
@@ -1140,6 +1433,7 @@ where
                 retry_count: attempt.retry_count,
                 errors: build_retry_feedback(qblock.id.as_str(), &generated, &report.errors),
                 reason: FailureReason::Content,
+                terminal_cause: TerminalCause::Content,
             });
         }
     }
@@ -1525,6 +1819,31 @@ mod tests {
         assert_eq!(generated.questions.len(), 2);
         // 初回batchの空応答後は、task単位で再試行する。
         assert_eq!(*composer.0.lock().unwrap(), 3);
+    }
+
+    #[test]
+    fn public_composer_error_payload_matches_compose_error_display() {
+        let errors = [
+            ComposeError::Authentication,
+            ComposeError::RateLimited,
+            ComposeError::Timeout,
+            ComposeError::Transport,
+            ComposeError::Api {
+                status: 503,
+                retryable: true,
+            },
+            ComposeError::Api {
+                status: 400,
+                retryable: false,
+            },
+            ComposeError::InvalidResponse,
+            ComposeError::EmptyResponse,
+        ];
+
+        for error in errors {
+            let expected = error.to_string();
+            assert_eq!(map_composer_error(error), ComposePlanError::Llm(expected));
+        }
     }
 
     #[test]

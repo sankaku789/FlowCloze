@@ -121,7 +121,7 @@ flowcloze generate --provider gemini --model gemini-2.5-flash \
 
 Settings resolve in this order: CLI, canonical environment variable, legacy environment variable where supported, `config.toml`, then the default. Empty environment variables are unspecified. Set `FLOWCLOZE_CONFIG` to choose another config file; see [`config.toml.example`](config.toml.example).
 
-`--verbose` or `FLOWCLOZE_LOG=debug` writes observability JSON Lines to stderr. They never include Markdown bodies, prompts, provider responses, or credentials. `max_concurrent_batches` is validated and observed, but execution is currently sequential.
+`generate` writes human-readable parse, batch, validation, and save progress to stderr. `--verbose` or `FLOWCLOZE_LOG=debug` additionally writes observability JSON Lines to stderr. Neither stream includes Markdown bodies, prompts, provider responses, or credentials. `max_concurrent_batches` is validated and observed, but execution is currently sequential.
 
 For compatibility, the CLI can save a key:
 

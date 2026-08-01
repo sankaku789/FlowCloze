@@ -9,9 +9,10 @@ use std::sync::Arc;
 
 use flowcloze::{
     compile_pdf, default_pdf_output_path, parse_markdown, to_ankilot_csv, to_intermediate_json,
-    validate_generated_json, CliOverrides, ComposeEvent, ComposeEventKind, EventSink, GeminiClient,
-    GeneratedDocument, GenerationConfig, IdentityComposer, IntermediateDocument,
-    JsonLinesEventSink, PdfOptions, Provider, RewritePolicy, RunContext,
+    validate_generated_json, CliOverrides, ComposeEvent, ComposeEventKind, EventSink, FailureClass,
+    GeminiClient, GeneratedDocument, GenerationConfig, IdentityComposer, IntermediateDocument,
+    JsonLinesEventSink, PdfOptions, PlainProgressSink, ProgressEvent, ProgressSink, ProgressStage,
+    Provider, RewritePolicy, RunContext,
 };
 
 mod view;
@@ -86,6 +87,7 @@ fn main() {
                 .input_path
                 .as_deref()
                 .expect("generateには入力パスが必要です");
+            let progress = PlainProgressSink::stderr("Generate");
             let config = match flowcloze::config::load(CliOverrides {
                 provider: backend.as_ref().map(backend_name),
                 model: args.model.clone(),
@@ -96,16 +98,28 @@ fn main() {
             }) {
                 Ok(config) => config,
                 Err(error) => {
+                    progress.emit(ProgressEvent::Failed {
+                        stage: ProgressStage::Config,
+                        class: FailureClass::Configuration,
+                    });
                     eprintln!("{error}");
                     process::exit(2);
                 }
             };
+            progress.set_label(match (config.rewrite, config.provider) {
+                (RewritePolicy::Never, _) => "Identity",
+                (RewritePolicy::Always, Provider::Gemini) => "Gemini",
+                (RewritePolicy::Always, Provider::Local) => "Local",
+                (RewritePolicy::Auto, Provider::Gemini) => "Auto(Gemini)",
+                (RewritePolicy::Auto, Provider::Local) => "Auto(Local)",
+            });
             generate_with_llm(
                 input_path,
                 args.output_path.as_deref(),
                 &config,
                 args.skip_constraints,
                 args.verbose,
+                &progress,
             );
             return;
         }
@@ -598,7 +612,7 @@ fn print_help() {
     eprintln!(
         "  --batch <policy>        generateのbatch policyを指定します(auto/small/one-task) / Batch policy"
     );
-    eprintln!("  --verbose               観測JSON Linesをstderrへ出力します (FLOWCLOZE_LOG=debugでも有効)");
+    eprintln!("  --verbose               通常の進捗表示に観測JSON Linesをstderrへ追加します (FLOWCLOZE_LOG=debugでも有効)");
     eprintln!("                           max_concurrent_batchesは検証・観測のみで、現在は並列実行しません");
     eprintln!(
         "  --template <path>       pdfのTypstテンプレートを指定します / Typst template for pdf"
@@ -859,17 +873,19 @@ fn generate_with_llm(
     config: &GenerationConfig,
     skip_constraints: bool,
     verbose: bool,
+    progress: &dyn ProgressSink,
 ) {
     let markdown = match fs::read_to_string(input_path) {
         Ok(markdown) => markdown,
         Err(error) => {
+            progress.emit(ProgressEvent::Failed {
+                stage: ProgressStage::Read,
+                class: FailureClass::Io,
+            });
             eprintln!("{input_path} を読めませんでした: {error}");
             process::exit(1);
         }
     };
-    eprintln!("問題文を生成中です．しばらくお待ち下さい....");
-    let _ = io::stderr().flush();
-
     let mut options = flowcloze::GenerateMarkdownOptions::new(input_path);
     options.policy.batch_policy = config.batch_policy();
     options.rewrite = config.rewrite;
@@ -887,16 +903,6 @@ fn generate_with_llm(
             event.error_class = Some(retry.error_class.to_string());
             retry_sink.emit(event);
         });
-    if config.rewrite == RewritePolicy::Auto {
-        if let Ok(qblocks) = parse_markdown(&markdown) {
-            for qblock in qblocks {
-                let reasons = flowcloze::orchestration::auto_rewrite_reasons(&qblock.source_text);
-                if !reasons.is_empty() {
-                    eprintln!("rewrite: task={} reasons={reasons:?}", qblock.id);
-                }
-            }
-        }
-    }
     let needs_provider = match config.rewrite {
         RewritePolicy::Always => true,
         RewritePolicy::Never => false,
@@ -915,25 +921,30 @@ fn generate_with_llm(
         Vec::new()
     };
     let outcome = if !needs_provider {
-        flowcloze::generate_markdown_with_composer_observed(
+        flowcloze::generate_markdown_with_composer_observed_with_progress(
             &markdown,
             options,
             &IdentityComposer,
             &context,
             &*sink,
+            progress,
         )
     } else {
         match config.provider {
             Provider::Gemini => {
                 let key = config.api_key().unwrap_or_else(|error| {
                     eprintln!("{error}");
+                    progress.emit(ProgressEvent::Failed {
+                        stage: ProgressStage::Config,
+                        class: FailureClass::Authentication,
+                    });
                     process::exit(2)
                 });
                 let adapter = flowcloze::GeminiAdapter::new(key, config.model.clone())
                     .with_structured_output(config.structured_output)
                     .with_transport(retry_transport);
-                flowcloze::generate_markdown_with_composer_observed(
-                    &markdown, options, &adapter, &context, &*sink,
+                flowcloze::generate_markdown_with_composer_observed_with_progress(
+                    &markdown, options, &adapter, &context, &*sink, progress,
                 )
             }
             Provider::Local => {
@@ -951,8 +962,8 @@ fn generate_with_llm(
                         })
                         .collect(),
                 };
-                flowcloze::generate_markdown_with_composer_observed(
-                    &markdown, options, &adapter, &context, &*sink,
+                flowcloze::generate_markdown_with_composer_observed_with_progress(
+                    &markdown, options, &adapter, &context, &*sink, progress,
                 )
             }
         }
@@ -961,12 +972,6 @@ fn generate_with_llm(
         eprintln!("{error}");
         process::exit(1)
     });
-    for fallback in &outcome.fallback_summary {
-        eprintln!(
-            "fallback: task={} reason={:?}",
-            fallback.id, fallback.reason
-        );
-    }
     if debug_events {
         let mut event = ComposeEvent::new(ComposeEventKind::Summary, &context);
         event.metrics = Some(sink.summary());
@@ -977,6 +982,10 @@ fn generate_with_llm(
     let generated_json = match serde_json::to_string_pretty(&generated_document) {
         Ok(json) => json,
         Err(error) => {
+            progress.emit(ProgressEvent::Failed {
+                stage: ProgressStage::Serialize,
+                class: FailureClass::Serialization,
+            });
             eprintln!("生成結果JSONへの変換に失敗しました: {error}");
             process::exit(1);
         }
@@ -984,12 +993,34 @@ fn generate_with_llm(
 
     if let Some(output_path) = output_path {
         if let Err(error) = fs::write(output_path, generated_json) {
+            progress.emit(ProgressEvent::Failed {
+                stage: ProgressStage::Save,
+                class: FailureClass::Io,
+            });
             eprintln!("{output_path} へ書き込めませんでした: {error}");
             process::exit(1);
         }
+        progress.emit(ProgressEvent::Saved {
+            path: output_path.to_string(),
+        });
     } else {
-        print!("{generated_json}");
+        let stdout = io::stdout();
+        if let Err(error) = write_stdout_json(stdout.lock(), &generated_json) {
+            progress.emit(ProgressEvent::Failed {
+                stage: ProgressStage::Output,
+                class: FailureClass::Io,
+            });
+            eprintln!("stdout へ書き込めませんでした: {error}");
+            process::exit(1);
+        }
+        progress.emit(ProgressEvent::Stdout);
     }
+}
+
+/// stdout は完了通知前に lock した writer へ全量を書き、失敗を呼び出し側へ返す。
+fn write_stdout_json(mut writer: impl Write, json: &str) -> io::Result<()> {
+    writer.write_all(json.as_bytes())?;
+    writer.flush()
 }
 
 /// Localの既定候補だけを接続系失敗時に順送りする。
@@ -1294,5 +1325,37 @@ fn print_text_summary(qblocks: Vec<flowcloze::QBlock>) {
         for warning in qblock.warnings {
             println!("  warning: {warning}");
         }
+    }
+}
+
+#[cfg(test)]
+mod stdout_tests {
+    use super::*;
+
+    struct BrokenWriter;
+
+    impl Write for BrokenWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn stdout_json_bytes_match_generated_json() {
+        let mut output = Vec::new();
+        write_stdout_json(&mut output, "{\"questions\":[]}").unwrap();
+        assert_eq!(output, b"{\"questions\":[]}");
+    }
+
+    #[test]
+    fn stdout_write_failure_is_returned() {
+        assert_eq!(
+            write_stdout_json(BrokenWriter, "{}").unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
     }
 }

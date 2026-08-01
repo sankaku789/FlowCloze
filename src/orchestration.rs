@@ -9,6 +9,7 @@ use crate::json::IntermediateDocument;
 use crate::observability::{ComposeEvent, ComposeEventKind, EventSink, NoopEventSink, RunContext};
 use crate::parser::{parse_markdown_located, MarkdownParseError, ParsedDocument};
 use crate::planner::{ComposeExecutionPolicy, ComposePlanError, FailureReason};
+use crate::progress::{FailureClass, NoopProgressSink, ProgressEvent, ProgressSink};
 use crate::scaffold::{ScaffoldDocument, ScaffoldTask};
 use crate::validation::GeneratedDocument;
 
@@ -121,7 +122,24 @@ pub fn generate_markdown_with_composer(
 ) -> Result<GenerateMarkdownOutcome, GenerateMarkdownError> {
     let context = RunContext::new();
     let sink = NoopEventSink;
-    generate_markdown_with_composer_observed(markdown, options, composer, &context, &sink)
+    let progress = NoopProgressSink;
+    generate_markdown_with_composer_observed_with_progress(
+        markdown, options, composer, &context, &sink, &progress,
+    )
+}
+
+/// 人間向け進捗を注入できる生成入口。既存の観測JSONとは独立している。
+pub fn generate_markdown_with_composer_with_progress(
+    markdown: &str,
+    options: GenerateMarkdownOptions,
+    composer: &dyn QuestionComposer,
+    progress: &dyn ProgressSink,
+) -> Result<GenerateMarkdownOutcome, GenerateMarkdownError> {
+    let context = RunContext::new();
+    let events = NoopEventSink;
+    generate_markdown_with_composer_observed_with_progress(
+        markdown, options, composer, &context, &events, progress,
+    )
 }
 
 /// 位置情報を使った安全な標準生成経路へ、本文なしの観測hookを加えた版。
@@ -132,15 +150,50 @@ pub fn generate_markdown_with_composer_observed(
     context: &RunContext,
     sink: &dyn EventSink,
 ) -> Result<GenerateMarkdownOutcome, GenerateMarkdownError> {
-    let parsed = parse_markdown_located(markdown).map_err(GenerateMarkdownError::Markdown)?;
+    let progress = NoopProgressSink;
+    generate_markdown_with_composer_observed_with_progress(
+        markdown, options, composer, context, sink, &progress,
+    )
+}
+
+/// JSON Lines観測と人間向け進捗を同時に注入する入口。
+pub fn generate_markdown_with_composer_observed_with_progress(
+    markdown: &str,
+    options: GenerateMarkdownOptions,
+    composer: &dyn QuestionComposer,
+    context: &RunContext,
+    sink: &dyn EventSink,
+    progress: &dyn ProgressSink,
+) -> Result<GenerateMarkdownOutcome, GenerateMarkdownError> {
+    let parsed = match parse_markdown_located(markdown) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            progress.emit(ProgressEvent::Failed {
+                stage: crate::progress::ProgressStage::Parse,
+                class: FailureClass::InvalidInput,
+            });
+            return Err(GenerateMarkdownError::Markdown(error));
+        }
+    };
     let qblocks = parsed
         .qblocks
         .iter()
         .map(|qblock| qblock.qblock.clone())
         .collect::<Vec<_>>();
     let intermediate = IntermediateDocument::from_qblocks(options.source, &qblocks);
-    let (scaffold, leakage_baselines) =
-        build_sentinel_scaffold(markdown, &parsed).map_err(GenerateMarkdownError::Markdown)?;
+    let (scaffold, leakage_baselines) = match build_sentinel_scaffold(markdown, &parsed) {
+        Ok(value) => value,
+        Err(error) => {
+            progress.emit(ProgressEvent::Failed {
+                stage: crate::progress::ProgressStage::Parse,
+                class: FailureClass::InvalidInput,
+            });
+            return Err(GenerateMarkdownError::Markdown(error));
+        }
+    };
+    progress.emit(ProgressEvent::Parsed {
+        tasks: scaffold.tasks.len(),
+    });
     let rewrite_indexes = scaffold
         .tasks
         .iter()
@@ -179,26 +232,56 @@ pub fn generate_markdown_with_composer_observed(
     let identity_indexes = (0..scaffold.tasks.len())
         .filter(|index| !rewrite_indexes.contains(index))
         .collect::<Vec<_>>();
+    let identity_plan = match prepare_selected_plan(&scaffold, &identity_indexes, options.policy) {
+        Ok(count) => count,
+        Err(error) => {
+            progress.emit(ProgressEvent::Failed {
+                stage: crate::progress::ProgressStage::Plan,
+                class: failure_class_for_plan(&error),
+            });
+            return Err(GenerateMarkdownError::Compose(error));
+        }
+    };
+    let rewrite_plan = match prepare_selected_plan(&scaffold, &rewrite_indexes, options.policy) {
+        Ok(count) => count,
+        Err(error) => {
+            progress.emit(ProgressEvent::Failed {
+                stage: crate::progress::ProgressStage::Plan,
+                class: failure_class_for_plan(&error),
+            });
+            return Err(GenerateMarkdownError::Compose(error));
+        }
+    };
+    let identity_batches = identity_plan.batch_count();
+    let rewrite_batches = rewrite_plan.batch_count();
+    let initial_batches = identity_batches + rewrite_batches;
+    progress.emit(ProgressEvent::Planned {
+        initial_batches,
+        provider_tasks: rewrite_indexes.len(),
+        identity_tasks: identity_indexes.len(),
+    });
     let mut questions = Vec::new();
     let mut fallback_summary = Vec::new();
     if !identity_indexes.is_empty() {
-        questions.extend(
-            compose_indexes(
-                &intermediate,
-                &scaffold,
-                &identity_indexes,
-                options.policy,
-                &IdentityComposer,
-                context,
-                sink,
-                &[],
-                &leakage_baselines,
-            )
-            .map_err(GenerateMarkdownError::Compose)?
-            .questions,
-        );
+        let batch_progress = BatchProgressSink::new(progress, 0, initial_batches);
+        let document = compose_indexes(
+            &intermediate,
+            &scaffold,
+            &identity_indexes,
+            options.policy,
+            &IdentityComposer,
+            context,
+            sink,
+            &batch_progress,
+            Some(&identity_plan),
+            &[],
+            &leakage_baselines,
+        )
+        .map_err(|error| GenerateMarkdownError::Compose(error.into_public()))?;
+        questions.extend(document.questions);
     }
     if !rewrite_indexes.is_empty() {
+        let batch_progress = BatchProgressSink::new(progress, identity_batches, initial_batches);
         // fallback方針は初回batchの形を変えない。plannerが失敗taskだけを単独retryする。
         match compose_indexes(
             &intermediate,
@@ -208,17 +291,31 @@ pub fn generate_markdown_with_composer_observed(
             composer,
             context,
             sink,
+            &batch_progress,
+            Some(&rewrite_plan),
             &options.extra_constraints,
             &leakage_baselines,
         ) {
             Ok(document) => questions.extend(document.questions),
-            Err(ComposePlanError::Partial {
-                document,
-                failed_ids,
-                failed_reasons,
-            }) if options.fallback == FallbackPolicy::Draft => {
+            Err(error)
+                if options.fallback == FallbackPolicy::Draft
+                    && matches!(error.as_public(), ComposePlanError::Partial { .. }) =>
+            {
+                let (public_error, _, fallback_causes) = error.into_parts();
+                let ComposePlanError::Partial {
+                    document,
+                    failed_ids,
+                    failed_reasons,
+                } = public_error
+                else {
+                    unreachable!("guard ensures a partial error")
+                };
                 questions.extend(document.questions);
-                for (id, failure_reason) in failed_ids.into_iter().zip(failed_reasons) {
+                for ((id, failure_reason), terminal_cause) in failed_ids
+                    .into_iter()
+                    .zip(failed_reasons)
+                    .zip(fallback_causes)
+                {
                     let index = rewrite_indexes
                         .iter()
                         .copied()
@@ -232,16 +329,22 @@ pub fn generate_markdown_with_composer_observed(
                         &IdentityComposer,
                         context,
                         sink,
+                        &NoopProgressSink,
+                        None,
                         &[],
                         &leakage_baselines,
                     )
-                    .map_err(GenerateMarkdownError::Compose)?;
+                    .map_err(|error| GenerateMarkdownError::Compose(error.into_public()))?;
                     fallback_summary.push(FallbackSummary {
                         id: scaffold.tasks[index].id.clone(),
                         reason: match failure_reason {
                             FailureReason::Content => FallbackReason::Content,
                             FailureReason::Transport => FallbackReason::Transport,
                         },
+                    });
+                    progress.emit(ProgressEvent::Fallback {
+                        task_id: scaffold.tasks[index].id.clone(),
+                        reason: failure_class_for_terminal_cause(terminal_cause),
                     });
                     let mut event = ComposeEvent::new(ComposeEventKind::Fallback, context);
                     event.task_id = Some(scaffold.tasks[index].id.clone());
@@ -256,7 +359,13 @@ pub fn generate_markdown_with_composer_observed(
                     questions.extend(draft.questions);
                 }
             }
-            Err(error) => return Err(GenerateMarkdownError::Compose(error)),
+            Err(error) => {
+                progress.emit(ProgressEvent::Failed {
+                    stage: crate::progress::ProgressStage::Generate,
+                    class: failure_class_for_execution(&error),
+                });
+                return Err(GenerateMarkdownError::Compose(error.into_public()));
+            }
         }
     }
     // 分割実行しても中間表現の順番を唯一の出力順として保つ。
@@ -271,6 +380,10 @@ pub fn generate_markdown_with_composer_observed(
     // fallbackを含めても、部分文書を成功として返さない。
     let report = crate::validation::validate_generated_documents(&intermediate, &document);
     if let Some(error) = report.errors.first() {
+        progress.emit(ProgressEvent::Failed {
+            stage: crate::progress::ProgressStage::Validate,
+            class: FailureClass::Validation,
+        });
         return Err(GenerateMarkdownError::Compose(
             ComposePlanError::Validation {
                 id: "document".to_string(),
@@ -278,10 +391,106 @@ pub fn generate_markdown_with_composer_observed(
             },
         ));
     }
+    progress.emit(ProgressEvent::Validated {
+        tasks: scaffold.tasks.len(),
+    });
     Ok(GenerateMarkdownOutcome {
         document,
         fallback_summary,
     })
+}
+
+fn prepare_selected_plan(
+    scaffold: &ScaffoldDocument,
+    indexes: &[usize],
+    policy: ComposeExecutionPolicy,
+) -> Result<crate::planner::PreparedComposePlan, ComposePlanError> {
+    let selected = ScaffoldDocument {
+        tasks: indexes
+            .iter()
+            .map(|index| scaffold.tasks[*index].clone())
+            .collect(),
+    };
+    crate::planner::prepare_compose_plan(&selected, policy)
+}
+
+/// planner が実測時点で出す batch 番号を、auto の通し番号へ変換する。
+struct BatchProgressSink<'a> {
+    inner: &'a dyn ProgressSink,
+    offset: usize,
+    total: usize,
+}
+
+impl<'a> BatchProgressSink<'a> {
+    fn new(inner: &'a dyn ProgressSink, offset: usize, total: usize) -> Self {
+        Self {
+            inner,
+            offset,
+            total,
+        }
+    }
+}
+
+impl ProgressSink for BatchProgressSink<'_> {
+    fn emit(&self, event: ProgressEvent) {
+        match event {
+            ProgressEvent::BatchComplete {
+                number,
+                successes,
+                retries,
+                ..
+            } => self.inner.emit(ProgressEvent::BatchComplete {
+                number: self.offset + number,
+                total: self.total,
+                successes,
+                retries,
+            }),
+            event => self.inner.emit(event),
+        }
+    }
+}
+
+fn failure_class_for_plan(error: &ComposePlanError) -> FailureClass {
+    match error {
+        ComposePlanError::Configuration { .. } => FailureClass::Configuration,
+        ComposePlanError::Prompt(_) | ComposePlanError::Json(_) => FailureClass::Content,
+        ComposePlanError::Llm(class) => match class.as_str() {
+            "authentication" => FailureClass::Authentication,
+            "configuration" => FailureClass::Configuration,
+            "rate_limited" => FailureClass::RateLimited,
+            "timeout" => FailureClass::Timeout,
+            "transport" => FailureClass::Transport,
+            "content" => FailureClass::Content,
+            _ => FailureClass::Api,
+        },
+        ComposePlanError::Validation { .. } => FailureClass::Validation,
+        ComposePlanError::Partial { failed_reasons, .. } => failed_reasons
+            .first()
+            .map(|reason| match reason {
+                FailureReason::Content => FailureClass::Content,
+                FailureReason::Transport => FailureClass::Transport,
+            })
+            .unwrap_or(FailureClass::Validation),
+    }
+}
+
+fn failure_class_for_execution(error: &crate::planner::ComposeExecutionError) -> FailureClass {
+    match error.terminal_cause() {
+        Some(cause) => failure_class_for_terminal_cause(cause),
+        None => failure_class_for_plan(error.as_public()),
+    }
+}
+
+fn failure_class_for_terminal_cause(cause: crate::planner::TerminalCause) -> FailureClass {
+    match cause {
+        crate::planner::TerminalCause::Content => FailureClass::Content,
+        crate::planner::TerminalCause::Authentication => FailureClass::Authentication,
+        crate::planner::TerminalCause::Configuration => FailureClass::Configuration,
+        crate::planner::TerminalCause::RateLimited => FailureClass::RateLimited,
+        crate::planner::TerminalCause::Timeout => FailureClass::Timeout,
+        crate::planner::TerminalCause::Transport => FailureClass::Transport,
+        crate::planner::TerminalCause::Api => FailureClass::Api,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -293,9 +502,11 @@ fn compose_indexes(
     composer: &dyn QuestionComposer,
     context: &RunContext,
     sink: &dyn EventSink,
+    progress: &dyn ProgressSink,
+    prepared: Option<&crate::planner::PreparedComposePlan>,
     extra_constraints: &[String],
     leakage_baselines: &HashMap<String, Vec<usize>>,
-) -> Result<GeneratedDocument, ComposePlanError> {
+) -> Result<GeneratedDocument, crate::planner::ComposeExecutionError> {
     let selected_intermediate = IntermediateDocument {
         meta: intermediate.meta.clone(),
         qblocks: indexes
@@ -309,7 +520,7 @@ fn compose_indexes(
             .map(|index| scaffold.tasks[*index].clone())
             .collect(),
     };
-    crate::planner::compose_with_question_composer_observed_with_constraints_and_leakage_baselines(
+    crate::planner::compose_with_question_composer_prepared_with_terminal_cause(
         &selected_intermediate,
         &selected_scaffold,
         policy,
@@ -317,7 +528,9 @@ fn compose_indexes(
         extra_constraints,
         context,
         sink,
+        progress,
         Some(leakage_baselines),
+        prepared,
     )
 }
 

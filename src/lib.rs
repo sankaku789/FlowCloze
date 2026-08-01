@@ -13,6 +13,7 @@ pub mod orchestration;
 pub mod parser;
 pub mod pdf;
 pub mod planner;
+pub mod progress;
 pub mod prompt;
 pub mod scaffold;
 pub mod validation;
@@ -39,12 +40,19 @@ pub use observability::{
 };
 pub use orchestration::{
     generate_markdown_with_composer, generate_markdown_with_composer_observed,
-    GenerateMarkdownError, GenerateMarkdownOptions, GenerateMarkdownOutcome,
+    generate_markdown_with_composer_observed_with_progress,
+    generate_markdown_with_composer_with_progress, GenerateMarkdownError, GenerateMarkdownOptions,
+    GenerateMarkdownOutcome,
 };
 pub use parser::{parse_markdown, parse_qblocks, MarkdownParseError};
 pub use pdf::{compile_pdf, default_pdf_output_path, PdfError, PdfOptions};
 pub use planner::{
-    compose_with_question_composer, BatchPolicy, ComposeExecutionPolicy, ComposePlanError,
+    compose_with_question_composer, prepare_compose_plan, BatchPolicy, ComposeExecutionPolicy,
+    ComposePlanError, PreparedComposePlan,
+};
+pub use progress::{
+    FailureClass, NoopProgressSink, PlainProgressSink, ProgressEvent, ProgressSink, ProgressStage,
+    RetryResult,
 };
 pub use prompt::{build_compose_request_prompt, build_generation_prompt};
 pub use validation::{
