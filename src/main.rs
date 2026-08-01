@@ -5,18 +5,22 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process;
+use std::sync::Arc;
 
 use flowcloze::{
     compile_pdf, default_pdf_output_path, parse_markdown, to_ankilot_csv, to_intermediate_json,
-    validate_generated_document, validate_generated_json, GeminiClient, GeneratedDocument,
-    IntermediateDocument, PdfOptions,
+    validate_generated_json, CliOverrides, ComposeEvent, ComposeEventKind, EventSink, GeminiClient,
+    GeneratedDocument, GenerationConfig, IdentityComposer, IntermediateDocument,
+    JsonLinesEventSink, PdfOptions, Provider, RewritePolicy, RunContext,
 };
 
 mod view;
 
+#[allow(dead_code)]
 const DEFAULT_MODEL: &str = "gemini-2.5-flash";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 const DEFAULT_LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
+#[allow(dead_code)]
 const DEFAULT_LOCAL_MODEL: &str = "gemma4:e2b-it-qat";
 
 fn main() {
@@ -48,6 +52,9 @@ fn main() {
             return;
         }
         Command::ApiSet { api_key } => {
+            eprintln!(
+                "warning: api set は非推奨です。api_key_env が示す環境変数を設定してください。"
+            );
             if let Err(error) = save_api_settings(api_key) {
                 eprintln!("{error}");
                 process::exit(1);
@@ -79,15 +86,15 @@ fn main() {
                 .input_path
                 .as_deref()
                 .expect("generateには入力パスが必要です");
-            let backend = match resolve_backend(backend.as_ref()) {
-                Ok(backend) => backend,
-                Err(error) => {
-                    eprintln!("{error}");
-                    process::exit(2);
-                }
-            };
-            let batch_policy = match resolve_batch_policy(&backend, args.batch_policy.as_ref()) {
-                Ok(policy) => policy,
+            let config = match flowcloze::config::load(CliOverrides {
+                provider: backend.as_ref().map(backend_name),
+                model: args.model.clone(),
+                rewrite: args.rewrite.clone(),
+                fallback: args.fallback.clone(),
+                structured_output: args.structured_output.clone(),
+                batch: args.batch_policy.as_ref().map(batch_name),
+            }) {
+                Ok(config) => config,
                 Err(error) => {
                     eprintln!("{error}");
                     process::exit(2);
@@ -96,9 +103,9 @@ fn main() {
             generate_with_llm(
                 input_path,
                 args.output_path.as_deref(),
-                &backend,
+                &config,
                 args.skip_constraints,
-                batch_policy,
+                args.verbose,
             );
             return;
         }
@@ -173,6 +180,11 @@ struct Args {
     json: bool,
     skip_constraints: bool,
     batch_policy: Option<BatchPolicyOverride>,
+    model: Option<String>,
+    rewrite: Option<String>,
+    fallback: Option<String>,
+    structured_output: Option<String>,
+    verbose: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +240,11 @@ impl Args {
         let mut json = false;
         let mut skip_constraints = false;
         let mut batch_policy = None;
+        let mut model = None;
+        let mut rewrite = None;
+        let mut fallback = None;
+        let mut structured_output = None;
+        let mut verbose = false;
         let mut command = Command::Parse;
         let mut args = args.into_iter();
 
@@ -252,7 +269,12 @@ impl Args {
                         output_path: None,
                         json: false,
                         batch_policy: None,
+                        model: None,
+                        rewrite: None,
+                        fallback: None,
+                        structured_output: None,
                         skip_constraints,
+                        verbose,
                     });
                 }
                 "api" if input_path.is_none() && matches!(command, Command::Parse) => {
@@ -263,7 +285,12 @@ impl Args {
                         output_path: None,
                         json: false,
                         skip_constraints,
+                        verbose,
                         batch_policy: None,
+                        model: None,
+                        rewrite: None,
+                        fallback: None,
+                        structured_output: None,
                     });
                 }
                 "local" if input_path.is_none() && matches!(command, Command::Parse) => {
@@ -274,7 +301,12 @@ impl Args {
                         output_path: None,
                         json: false,
                         skip_constraints,
+                        verbose,
                         batch_policy: None,
+                        model: None,
+                        rewrite: None,
+                        fallback: None,
+                        structured_output: None,
                     });
                 }
                 "generate" if input_path.is_none() && matches!(command, Command::Parse) => {
@@ -310,10 +342,16 @@ impl Args {
                         output_path: None,
                         json: false,
                         skip_constraints,
+                        verbose,
                         batch_policy: None,
+                        model: None,
+                        rewrite: None,
+                        fallback: None,
+                        structured_output: None,
                     });
                 }
                 "--json" => json = true,
+                "--verbose" => verbose = true,
                 "-s" | "--skip-constraints" => skip_constraints = true,
                 "--batch" => {
                     let Some(value) = args.next() else {
@@ -326,23 +364,50 @@ impl Args {
                     }
                     batch_policy = Some(parse_batch_policy_override(&value)?);
                 }
-                "--backend" => {
+                "--provider" | "--backend" => {
                     let Some(value) = args.next() else {
                         return Err("--backend には gemini または local が必要です".to_string());
                     };
+                    let selected = parse_backend(&value)?;
                     match &mut command {
                         Command::Generate {
                             backend: command_backend,
                             ..
-                        } => *command_backend = Some(parse_backend(&value)?),
-                        _ => return Err("--backend はgenerateコマンドでのみ使えます".to_string()),
+                        } => {
+                            if command_backend.is_some() {
+                                return Err(
+                                    "--provider と --backend は同時に指定できません".to_string()
+                                );
+                            }
+                            *command_backend = Some(selected)
+                        }
+                        _ => {
+                            return Err(
+                                "--provider/--backend はgenerateコマンドでのみ使えます".to_string()
+                            )
+                        }
                     }
                 }
                 "--model" => {
-                    return Err(
-                        "--model は廃止されました。local は gemma4:e2b-it-qat、gemini は gemini-2.5-flash を使用します"
-                            .to_string(),
-                    );
+                    model = Some(
+                        args.next()
+                            .ok_or_else(|| "--model には値が必要です".to_string())?,
+                    )
+                }
+                "--rewrite" => {
+                    rewrite = Some(args.next().ok_or_else(|| {
+                        "--rewrite には always, never, auto のいずれかが必要です".to_string()
+                    })?)
+                }
+                "--fallback" => {
+                    fallback = Some(args.next().ok_or_else(|| {
+                        "--fallback には error, draft のいずれかが必要です".to_string()
+                    })?)
+                }
+                "--structured-output" => {
+                    structured_output = Some(args.next().ok_or_else(|| {
+                        "--structured-output には auto, on, off のいずれかが必要です".to_string()
+                    })?)
                 }
                 "--template" => {
                     let Some(path) = args.next() else {
@@ -406,6 +471,11 @@ impl Args {
             json,
             skip_constraints,
             batch_policy,
+            model,
+            rewrite,
+            fallback,
+            structured_output,
+            verbose,
         })
     }
 }
@@ -486,7 +556,7 @@ fn print_usage() {
     eprintln!("使い方 / Usage:");
     eprintln!("  flowcloze [--json] [-o output.json] <markdown-file>");
     eprintln!(
-        "  flowcloze generate [-o output.json] [--backend gemini|local] [--batch auto|small|one-task] <markdown-file>"
+        "  flowcloze generate [-o output.json] [--verbose] [--provider gemini|local] [--model model] [--rewrite always|never|auto] [--fallback error|draft] [--structured-output auto|on|off] [--batch auto|small|one-task] <markdown-file>"
     );
     eprintln!("  flowcloze local check");
     eprintln!("  flowcloze inspect-scaffold [-o scaffold.json] <markdown-file>");
@@ -504,7 +574,9 @@ fn print_help() {
     eprintln!(
         "  (default)              Markdownを解析して概要を表示します / Parse markdown summary"
     );
-    eprintln!("  generate               Geminiで問題文JSONを生成します / Generate questions JSON");
+    eprintln!(
+        "  generate               providerで問題文JSONを生成します / Generate questions JSON"
+    );
     eprintln!("  local check            Ollama/LM Studioのlocal server接続を確認します / Check the local server");
     eprintln!("  inspect-scaffold       LLM入力用scaffoldを表示します / Inspect scaffold JSON");
     eprintln!("  validate               中間JSONと生成JSONを検証します / Validate JSON pairs");
@@ -521,11 +593,13 @@ fn print_help() {
     eprintln!("  -s                     追加制約の入力をスキップします / Skip extra constraints");
     eprintln!("  -o, --output <path>     出力先を指定します / Set output path");
     eprintln!(
-        "  --backend <backend>     generateで使うLLM backendを指定します(gemini/local) / LLM backend"
+        "  --provider <provider>   generateで使うLLM providerを指定します(gemini/local)。--backendは別名 / LLM provider"
     );
     eprintln!(
         "  --batch <policy>        generateのbatch policyを指定します(auto/small/one-task) / Batch policy"
     );
+    eprintln!("  --verbose               観測JSON Linesをstderrへ出力します (FLOWCLOZE_LOG=debugでも有効)");
+    eprintln!("                           max_concurrent_batchesは検証・観測のみで、現在は並列実行しません");
     eprintln!(
         "  --template <path>       pdfのTypstテンプレートを指定します / Typst template for pdf"
     );
@@ -589,6 +663,9 @@ fn export_ankilot_csv(generated_path: &str, output_path: Option<&str>) {
 
 /// Gemini API keyを.envへ保存する．
 fn save_api_settings(api_key: &str) -> Result<(), String> {
+    if api_key.contains(['\r', '\n', '\0']) {
+        return Err("APIキーに改行またはNULを含めることはできません".to_string());
+    }
     let env_path = PathBuf::from(".env");
     let existing = fs::read_to_string(&env_path).unwrap_or_default();
     let mut lines = Vec::new();
@@ -611,23 +688,130 @@ fn save_api_settings(api_key: &str) -> Result<(), String> {
     if !body.ends_with('\n') {
         body.push('\n');
     }
-    fs::write(env_path, body).map_err(|error| format!(".env を更新できませんでした: {error}"))?;
+    atomic_write_env(&env_path, &body)
+}
+
+fn atomic_write_env(env_path: &std::path::Path, body: &str) -> Result<(), String> {
+    let (temporary, mut temporary_file) = open_secure_temp(env_path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary_file
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|_| ".env を更新できませんでした".to_string())?;
+    }
+    let write_result = temporary_file
+        .write_all(body.as_bytes())
+        .and_then(|_| temporary_file.sync_all());
+    if write_result.is_err() {
+        drop(temporary_file);
+        let _ = fs::remove_file(&temporary);
+        return Err(".env を更新できませんでした".to_string());
+    }
+    drop(temporary_file);
+    if fs::rename(&temporary, env_path).is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(".env を更新できませんでした".to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(env_path, fs::Permissions::from_mode(0o600))
+            .map_err(|_| ".env を更新できませんでした".to_string())?;
+    }
     Ok(())
+}
+
+fn open_secure_temp(env_path: &std::path::Path) -> Result<(PathBuf, fs::File), String> {
+    use std::fs::OpenOptions;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+    let parent = env_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    for _ in 0..16 {
+        let mut random = [0u8; 16];
+        getrandom::getrandom(&mut random).map_err(|_| ".env を更新できませんでした".to_string())?;
+        let path = parent.join(format!(
+            ".{}.{}.tmp",
+            env_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("env"),
+            random
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err(".env を更新できませんでした".to_string()),
+        }
+    }
+    Err(".env を更新できませんでした".to_string())
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod api_set_tests {
+    use super::*;
+
+    #[test]
+    fn atomic_env_write_uses_private_permissions_and_redacts_failures() {
+        let mut random = [0u8; 8];
+        getrandom::getrandom(&mut random).unwrap();
+        let directory = std::env::temp_dir().join(format!(
+            "flowcloze-api-set-{}",
+            random
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join(".env");
+        atomic_write_env(&path, "GEMINI_API_KEY=secret-marker\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "GEMINI_API_KEY=secret-marker\n"
+        );
+        let error = atomic_write_env(&directory.join("missing/.env"), "secret-marker").unwrap_err();
+        assert!(!error.contains("secret-marker"));
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 /// local backendのセットアップ補助を実行する．
 fn run_local_command(action: &LocalCommand) -> Result<(), String> {
     match action {
-        LocalCommand::Check => check_local_server(),
+        LocalCommand::Check => {
+            let config = flowcloze::config::load(CliOverrides {
+                provider: Some("local".to_string()),
+                ..CliOverrides::default()
+            })?;
+            check_local_server(&config)
+        }
     }
 }
 
 /// OpenAI互換local serverが応答するか確認する．
-fn check_local_server() -> Result<(), String> {
+fn check_local_server(config: &GenerationConfig) -> Result<(), String> {
     let client = reqwest::blocking::Client::new();
     let mut errors = Vec::new();
 
-    for base_url in resolve_local_base_urls() {
+    for base_url in flowcloze::local_openai_url_candidates(config.base_url.as_deref()) {
         let url = format!("{}/models", base_url.trim_end_matches('/'));
         match client
             .get(&url)
@@ -672,9 +856,9 @@ fn compile_pdf_file(generated_json_path: &str, output_path: Option<&str>, templa
 fn generate_with_llm(
     input_path: &str,
     output_path: Option<&str>,
-    backend: &LlmBackend,
+    config: &GenerationConfig,
     skip_constraints: bool,
-    batch_policy: flowcloze::planner::BatchPolicy,
+    verbose: bool,
 ) {
     let markdown = match fs::read_to_string(input_path) {
         Ok(markdown) => markdown,
@@ -683,59 +867,112 @@ fn generate_with_llm(
             process::exit(1);
         }
     };
-    let qblocks = match parse_markdown(&markdown) {
-        Ok(qblocks) => qblocks,
-        Err(error) => {
-            eprintln!("Markdownの解析に失敗しました: {error}");
-            process::exit(1);
-        }
-    };
-    let intermediate = IntermediateDocument::from_qblocks(input_path, &qblocks);
-    let intermediate_json = match serde_json::to_string_pretty(&intermediate) {
-        Ok(json) => json,
-        Err(error) => {
-            eprintln!("中間JSONへの変換に失敗しました: {error}");
-            process::exit(1);
-        }
-    };
-    // CLIオプションに従い，外部ファイル由来の追加制約をpromptへ渡す．
-    let extra_constraints = if skip_constraints {
-        Vec::new()
-    } else {
-        read_additional_constraints()
-    };
-    // 中間表現から，LLMが自然化するための決定的な下書きを作る．
-    let scaffold = flowcloze::scaffold::build_scaffold_document(&intermediate);
-
     eprintln!("問題文を生成中です．しばらくお待ち下さい....");
     let _ = io::stderr().flush();
 
-    // Adaptive Compose Plannerでbatch生成し，失敗taskだけを単独retryする．
-    let composed = match flowcloze::planner::compose_with_adaptive_planner(
-        &intermediate,
-        &scaffold,
-        batch_policy,
-        &extra_constraints,
-        |prompt| generate_text_with_backend(backend, prompt),
-    ) {
-        Ok(composed) => composed,
-        Err(error) => {
-            eprintln!("{error}");
-            process::exit(1);
+    let mut options = flowcloze::GenerateMarkdownOptions::new(input_path);
+    options.policy.batch_policy = config.batch_policy();
+    options.rewrite = config.rewrite;
+    options.fallback = config.fallback;
+    let debug_events = verbose || matches!(env::var("FLOWCLOZE_LOG").as_deref(), Ok("debug"));
+    let context = Arc::new(RunContext::new());
+    let sink = Arc::new(JsonLinesEventSink::stderr(debug_events));
+    let retry_context = Arc::clone(&context);
+    let retry_sink = Arc::clone(&sink);
+    let retry_transport =
+        flowcloze::http::HttpTransport::default().with_retry_observer(move |retry| {
+            let mut event = ComposeEvent::new(ComposeEventKind::RetryDelay, &retry_context);
+            event.attempt = Some(retry.attempt);
+            event.retry_delay_ms = Some(retry.delay_ms);
+            event.error_class = Some(retry.error_class.to_string());
+            retry_sink.emit(event);
+        });
+    if config.rewrite == RewritePolicy::Auto {
+        if let Ok(qblocks) = parse_markdown(&markdown) {
+            for qblock in qblocks {
+                let reasons = flowcloze::orchestration::auto_rewrite_reasons(&qblock.source_text);
+                if !reasons.is_empty() {
+                    eprintln!("rewrite: task={} reasons={reasons:?}", qblock.id);
+                }
+            }
         }
-    };
-
-    // LLMが返したquestionだけを採用し，固定フィールドは中間表現から再構築する．
-    let generated_document = flowcloze::compose::merge_composed_questions(&intermediate, composed);
-    // 成功済みtaskも含め，保存前にdocument全体を最終検証する．
-    let report = validate_generated_document(&intermediate_json, &generated_document);
-    if !report.is_valid() {
-        for error in &report.errors {
-            eprintln!("validation error: {error}");
-        }
-        eprintln!("Geminiの生成結果が最終検証に失敗したため保存しませんでした．");
-        process::exit(1);
     }
+    let needs_provider = match config.rewrite {
+        RewritePolicy::Always => true,
+        RewritePolicy::Never => false,
+        RewritePolicy::Auto => parse_markdown(&markdown)
+            .map(|qblocks| {
+                qblocks.iter().any(|qblock| {
+                    !flowcloze::orchestration::auto_rewrite_reasons(&qblock.source_text).is_empty()
+                })
+            })
+            .unwrap_or(true),
+    };
+    // identityだけの実行ではstdinを読まず、provider requestがある時だけ聞く。
+    options.extra_constraints = if needs_provider && !skip_constraints {
+        read_additional_constraints()
+    } else {
+        Vec::new()
+    };
+    let outcome = if !needs_provider {
+        flowcloze::generate_markdown_with_composer_observed(
+            &markdown,
+            options,
+            &IdentityComposer,
+            &context,
+            &*sink,
+        )
+    } else {
+        match config.provider {
+            Provider::Gemini => {
+                let key = config.api_key().unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    process::exit(2)
+                });
+                let adapter = flowcloze::GeminiAdapter::new(key, config.model.clone())
+                    .with_structured_output(config.structured_output)
+                    .with_transport(retry_transport);
+                flowcloze::generate_markdown_with_composer_observed(
+                    &markdown, options, &adapter, &context, &*sink,
+                )
+            }
+            Provider::Local => {
+                let adapter = LocalCandidateComposer {
+                    adapters: flowcloze::local_openai_url_candidates(config.base_url.as_deref())
+                        .into_iter()
+                        .map(|url| {
+                            flowcloze::OpenAiCompatibleAdapter::new(
+                                url,
+                                config.model.clone(),
+                                std::env::var(&config.api_key_env).ok(),
+                            )
+                            .with_structured_output(config.structured_output)
+                            .with_transport(retry_transport.clone())
+                        })
+                        .collect(),
+                };
+                flowcloze::generate_markdown_with_composer_observed(
+                    &markdown, options, &adapter, &context, &*sink,
+                )
+            }
+        }
+    }
+    .unwrap_or_else(|error| {
+        eprintln!("{error}");
+        process::exit(1)
+    });
+    for fallback in &outcome.fallback_summary {
+        eprintln!(
+            "fallback: task={} reason={:?}",
+            fallback.id, fallback.reason
+        );
+    }
+    if debug_events {
+        let mut event = ComposeEvent::new(ComposeEventKind::Summary, &context);
+        event.metrics = Some(sink.summary());
+        sink.emit(event);
+    }
+    let generated_document = outcome.document;
 
     let generated_json = match serde_json::to_string_pretty(&generated_document) {
         Ok(json) => json,
@@ -752,6 +989,31 @@ fn generate_with_llm(
         }
     } else {
         print!("{generated_json}");
+    }
+}
+
+/// Localの既定候補だけを接続系失敗時に順送りする。
+struct LocalCandidateComposer {
+    adapters: Vec<flowcloze::OpenAiCompatibleAdapter>,
+}
+
+impl flowcloze::QuestionComposer for LocalCandidateComposer {
+    fn compose(
+        &self,
+        request: &flowcloze::ComposeBatchRequest,
+    ) -> Result<flowcloze::ComposeBatchOutput, flowcloze::ComposeError> {
+        for (index, adapter) in self.adapters.iter().enumerate() {
+            match adapter.compose(request) {
+                Ok(output) => return Ok(output),
+                Err(
+                    error @ (flowcloze::ComposeError::Transport | flowcloze::ComposeError::Timeout),
+                ) if index + 1 < self.adapters.len() => {
+                    let _ = error;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(flowcloze::ComposeError::Transport)
     }
 }
 
@@ -792,6 +1054,7 @@ fn inspect_scaffold(input_path: &str, output_path: Option<&str>) {
 }
 
 /// backend種別に応じてGeminiまたはOpenAI互換local APIへpromptを送る．
+#[allow(dead_code)]
 fn generate_text_with_backend(backend: &LlmBackend, prompt: &str) -> Result<String, String> {
     match backend {
         LlmBackend::Gemini => {
@@ -843,6 +1106,7 @@ fn resolve_local_base_urls() -> Vec<String> {
 }
 
 /// CLI/envの指定を選択backendで使うBatchPolicyへ解決する．
+#[allow(dead_code)]
 fn resolve_batch_policy(
     backend: &LlmBackend,
     cli_override: Option<&BatchPolicyOverride>,
@@ -899,6 +1163,7 @@ fn resolve_batch_policy(
 }
 
 /// CLI/envの指定から使用するLLM backendを決める．
+#[allow(dead_code)]
 fn resolve_backend(cli_backend: Option<&LlmBackend>) -> Result<LlmBackend, String> {
     if let Some(backend) = cli_backend {
         return Ok(backend.clone());
@@ -920,6 +1185,23 @@ fn parse_backend(value: &str) -> Result<LlmBackend, String> {
     }
 }
 
+fn backend_name(backend: &LlmBackend) -> String {
+    match backend {
+        LlmBackend::Gemini => "gemini",
+        LlmBackend::Local => "local",
+    }
+    .to_string()
+}
+
+fn batch_name(batch: &BatchPolicyOverride) -> String {
+    match batch {
+        BatchPolicyOverride::Auto => "auto",
+        BatchPolicyOverride::Small => "small",
+        BatchPolicyOverride::OneTask => "one-task",
+    }
+    .to_string()
+}
+
 /// `--batch` や `FLOWCLOZE_BATCH_POLICY` の文字列を内部表現へ変換する．
 fn parse_batch_policy_override(value: &str) -> Result<BatchPolicyOverride, String> {
     match value.trim() {
@@ -933,6 +1215,7 @@ fn parse_batch_policy_override(value: &str) -> Result<BatchPolicyOverride, Strin
 }
 
 /// 正の整数envが設定されていれば対象policy値へ反映する．
+#[allow(dead_code)]
 fn override_usize_env(name: &str, target: &mut usize) -> Result<(), String> {
     let Ok(value) = env::var(name) else {
         return Ok(());

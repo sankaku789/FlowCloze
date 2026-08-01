@@ -43,7 +43,7 @@ npm run docs:api:lint
 - Rust / Cargo
 - Typst CLI（PDF出力を使う場合）
 - 日本語フォント（PDF出力で日本語を表示する場合）
-- Gemini API key（`generate` コマンドを使う場合）
+- Gemini API key（Geminiで書き換え生成する場合）
 
 Ubuntu / WSLでは，PDFの日本語表示用にNoto CJKフォントを入れてください．
 
@@ -94,7 +94,7 @@ ln -sfn "$PWD/target/release/flowcloze" ~/.local/bin/flowcloze
 
 一時的に試すだけなら，インストールせずに `cargo run -- ...` でも実行できます．
 
-## Gemini API設定
+## 生成設定
 
 `.env` を使う場合:
 
@@ -102,20 +102,28 @@ ln -sfn "$PWD/target/release/flowcloze" ~/.local/bin/flowcloze
 cp .env.example .env
 ```
 
-`.env` に設定します．
+`.env` には実際のAPIキーを保存できます。一方、`config.toml`には秘密値を保存せず、`api_key_env`で環境変数名だけを指定します。設定ファイルを使う場合だけ、別途 `cp config.toml.example config.toml` を実行してください。`api set`は非推奨です。全項目と旧名の対応は [`.env.example`](.env.example) を参照してください。
 
 ```env
-GEMINI_API_KEY=your_api_key_here
-FLOWCLOZE_LLM_BACKEND=gemini
-LOCAL_LLM_BASE_URL=
-LOCAL_LLM_API_KEY=
-FLOWCLOZE_BATCH_POLICY=auto
-FLOWCLOZE_MAX_TASKS_PER_BATCH=8
-FLOWCLOZE_MAX_INPUT_TOKENS=12000
-FLOWCLOZE_MAX_CONCURRENT_BATCHES=3
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+FLOWCLOZE_PROVIDER=gemini
 ```
 
-CLIから保存する場合:
+`generate` は `--provider gemini|local` でプロバイダを選びます。`--backend` は互換用の別名です。`--model`、`--rewrite always|never|auto`、`--fallback error|draft`、`--structured-output auto|on|off`、`--verbose` も指定できます。
+
+```bash
+flowcloze generate --provider gemini --model gemini-2.5-flash \
+  --rewrite auto --fallback draft --structured-output auto --verbose \
+  -o sample/generated.json sample/sample.md
+```
+
+`--rewrite never` はIdentity生成を使うためAPIキーやプロバイダ接続を必要としません。`auto` はリスト、複数行、終端記号なし、または短い本文だけを書き換え、その他はIdentity生成します。`--fallback error`（既定値）は失敗をそのまま返します。`--fallback draft` は通信系または内容検証系の失敗時に、失敗したtaskだけをIdentity下書きへ戻します。ただしID・固定フィールド・順序の対応付けが不正な場合は下書きに戻しません。
+
+設定値の優先順位は、CLI、canonical環境変数、（ある場合のみ）legacy環境変数、`config.toml`、既定値です。空の環境変数は未指定として扱います。`FLOWCLOZE_CONFIG` で設定ファイルのパスを変更できます。設定ファイルの例は [`config.toml.example`](config.toml.example) を参照してください。
+
+`--verbose` または `FLOWCLOZE_LOG=debug` はstderrに観測用JSON Linesを出力します。そこにMarkdown本文、prompt、プロバイダ応答、認証情報は含まれません。`max_concurrent_batches` は入力検証と観測に使われますが、現在の実行は逐次です。
+
+互換性のためのCLI保存機能:
 
 ```bash
 flowcloze api set --key your_api_key_here
@@ -165,7 +173,7 @@ flowcloze generate --batch small -s -o sample/generated.json sample/sample.md
 
 OllamaまたはLM StudioのOpenAI互換サーバでローカルLLMを使って生成:
 
-標準ローカルモデルを取得し，OllamaまたはLM Studioのローカルサーバを起動してから実行します。未設定時はOllama (`http://localhost:11434/v1`) を先に試し，失敗したらLM Studio (`http://localhost:1234/v1`) を試します。
+標準ローカルモデルを取得し，OllamaまたはLM Studioのローカルサーバを起動してから実行します。URLは `FLOWCLOZE_BASE_URL`、互換用の `LOCAL_LLM_BASE_URL`、`config.toml`、既定候補の順で解決します。未設定時はOllama (`http://localhost:11434/v1`) を先に試し，失敗したらLM Studio (`http://localhost:1234/v1`) を試します。
 
 Ollamaを使う場合:
 
@@ -180,7 +188,7 @@ flowcloze local check
 ```
 
 ```bash
-flowcloze generate --backend local -s -o sample/generated.json sample/sample.md
+flowcloze generate --provider local -s -o sample/generated.json sample/sample.md
 ```
 
 PDFを作る:

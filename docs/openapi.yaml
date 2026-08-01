@@ -305,8 +305,12 @@ components:
             - empty_question
             - duplicate_question_id
             - unknown_question_id
+            - missing_question
+            - question_order_mismatch
+            - fixed_field_mismatch
             - blank_answer_count_mismatch
             - answer_not_in_targets
+            - answer_leakage
             - missing_target_answer
         message:
           type: string
@@ -320,6 +324,22 @@ components:
         answer_count:
           type: integer
           minimum: 0
+        field:
+          type: string
+          enum:
+            - section
+            - type
+            - targets
+            - answers
+            - source_text
+        expected:
+          type: array
+          items:
+            type: string
+        actual:
+          type: array
+          items:
+            type: string
     ErrorResponse:
       type: object
       required:

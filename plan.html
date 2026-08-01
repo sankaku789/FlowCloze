@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="FlowCloze 最終改修計画。Adaptive Compose Plannerを骨格にした段階的な移行案。">
+  <title>FlowCloze 最終改修計画</title>
+<style>
+/* DADS v2 token roles (https://design.digital.go.jp/dads/): primitives stay separate from semantics. */
+:root {
+  color-scheme: light;
+  --dads-blue-1100: #000071;
+  --dads-blue-1000: #00118f;
+  --dads-blue-900: #0017c1;
+  --dads-blue-800: #0031d8;
+  --dads-blue-700: #264af4;
+  --dads-blue-100: #d9e6ff;
+  --dads-blue-50: #e8f1fe;
+  --dads-gray-900: #1a1a1a;
+  --dads-gray-800: #4d4d4d;
+  --dads-gray-536: #767676;
+  --dads-gray-420: #949494;
+  --dads-gray-200: #ccc;
+  --dads-gray-100: #e6e6e6;
+  --dads-gray-50: #f2f2f2;
+  --dads-neutral-900: var(--dads-gray-900);
+  --dads-neutral-700: var(--dads-gray-800);
+  --dads-neutral-500: var(--dads-gray-536);
+  --dads-neutral-300: var(--dads-gray-420);
+  --dads-neutral-200: var(--dads-gray-200);
+  --dads-neutral-100: var(--dads-gray-100);
+  --dads-neutral-0: #fff;
+  --dads-success-700: #197a4b;
+  --dads-success-600: #259d63;
+  --dads-success-100: #e6f5ec;
+  --dads-warning-700: #927200;
+  --dads-warning-600: #b78f00;
+  --dads-warning-100: #fbf5e0;
+  --dads-error-700: #ec0000;
+  --dads-error-600: #ec0000;
+  --dads-error-100: #fdeeee;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --focus-ring: 3px solid #000;
+  --focus-bg: #ffd43d;
+  --color-text: #1a1a1a;
+  --color-muted: #4d4d4d;
+  --color-border: var(--dads-neutral-300);
+  --color-surface: var(--dads-neutral-0);
+  --color-surface-subtle: var(--dads-neutral-100);
+  --color-link: #0017c1;
+  --color-link-visited: #5c10be;
+  --color-primary: var(--dads-blue-900);
+  --color-accent-soft: var(--dads-blue-50);
+  --color-success: var(--dads-success-700);
+  --color-warning: var(--dads-warning-700);
+  --color-error: var(--dads-error-700);
+  font-family: "Noto Sans JP", -apple-system, BlinkMacSystemFont, sans-serif;
+  line-height: 1.7;
+  letter-spacing: .02em;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { background: var(--color-surface); }
+body {
+  margin: 0;
+  color: var(--color-text);
+  background: var(--color-surface);
+  font-size: 16px;
+  line-height: 1.7;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 var(--space-4); }
+header { border-bottom: 4px solid var(--color-primary); padding: var(--space-8) 0 var(--space-6); }
+h1, h2, h3 { color: var(--color-text); }
+h1 { margin: 0 0 var(--space-2); line-height: 1.3; }
+h2 { margin: var(--space-8) 0 var(--space-4); padding-bottom: var(--space-2); border-bottom: 2px solid var(--color-border); line-height: 1.4; }
+h3 { margin: var(--space-6) 0 var(--space-2); line-height: 1.5; }
+p { margin: var(--space-3) 0; }
+.lede, .small { color: var(--color-muted); }
+.meta { gap: var(--space-2) var(--space-4); margin-top: var(--space-4); color: var(--color-muted); }
+a { color: var(--color-link); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+a:visited { color: var(--color-link-visited); }
+a:hover { color: var(--dads-blue-900); text-decoration-thickness: 3px; }
+a:active { color: #c74700; }
+a:focus-visible, button:focus-visible, [tabindex]:focus-visible { outline: var(--focus-ring); outline-offset: 2px; border-radius: 4px; background: var(--focus-bg); box-shadow: 0 0 0 2px var(--focus-bg); }
+.badge { display: inline-block; border: 1px solid currentColor; border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); font-size: .875rem; font-weight: 700; }
+.badge.done { color: var(--color-success); background: var(--dads-success-100); }
+.badge.todo { color: var(--color-warning); background: var(--dads-warning-100); }
+.badge.risk { color: var(--color-error); background: var(--dads-error-100); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-4); margin-top: var(--space-4); }
+.panel { padding: var(--space-6); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); }
+pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+pre { margin: var(--space-4) 0; padding: var(--space-4); overflow-x: auto; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+.table-wrap { overflow-x: auto; margin: var(--space-4) 0; }
+table { width: 100%; min-width: 640px; border-collapse: collapse; background: var(--color-surface); }
+caption { margin-bottom: var(--space-2); color: var(--color-text); text-align: left; font-weight: 700; }
+th, td { padding: var(--space-3) var(--space-2); border: 1px solid var(--dads-gray-420); text-align: left; vertical-align: top; }
+th { color: var(--dads-gray-900); background: var(--dads-gray-100); font-weight: 700; }
+tbody tr:nth-child(even) { background: var(--dads-gray-50); }
+tbody tr:hover { background: var(--dads-blue-50); }
+.flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: var(--space-2); margin: var(--space-4) 0; }
+.flow-step { flex: 1 1 145px; min-width: 125px; padding: var(--space-3); border: 1px solid var(--dads-blue-700); border-radius: var(--radius-sm); background: var(--color-accent-soft); color: var(--color-text); text-align: center; font-weight: 700; }
+.arrow { align-self: center; color: var(--color-primary); font-size: 1.25rem; font-weight: 700; }
+.phase-list { display: grid; gap: var(--space-3); margin: var(--space-4) 0; }
+.phase { display: grid; grid-template-columns: 8.5rem 1fr; gap: var(--space-3); align-items: start; padding: var(--space-3); border: 1px solid var(--color-border); border-left: 4px solid var(--color-primary); border-radius: var(--radius-sm); background: var(--color-surface); }
+.phase strong { color: var(--dads-blue-900); }
+footer { margin-top: var(--space-8); padding: var(--space-4) 0 var(--space-8); border-top: 1px solid var(--color-border); color: var(--color-muted); }
+@media (max-width: 48rem) {
+  .wrap { padding: 0 var(--space-3); }
+  .phase { grid-template-columns: 1fr; gap: var(--space-1); }
+  .arrow { display: none; }
+  .flow-step { flex-basis: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}
+@media (forced-colors: active) {
+  a, .phase strong { color: LinkText; }
+  .panel, .phase, pre, th, td, .flow-step { border-color: CanvasText; }
+  .badge { border: 1px solid CanvasText; background: Canvas; color: CanvasText; }
+}
+@media print {
+  body { color: #000; background: #fff; font-size: 10pt; }
+  a { color: inherit; text-decoration: underline; }
+  .panel, .phase, pre, table { break-inside: avoid; box-shadow: none; }
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; page-break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+  <!-- 実装状況は現行 src/ の確認結果に基づき、未実装項目を計画として明示する。 -->
+  <header>
+    <div class="wrap">
+      <h1>FlowCloze 最終改修計画</h1>
+      <p class="lede">Adaptive Compose Plannerを実行計画の骨格とし、Markdown解析・固定フィールド・検証をCoreに残したまま、batch対応のQuestionComposerドメインポートとprovider adaptersを段階導入する。</p>
+      <div class="meta"><span>対象: 現行 <code>src/</code> と2件の設計資料</span><span>更新: 2026-07-31</span><span>文書: 実装着手用の最終計画</span></div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section aria-labelledby="decision">
+      <h2 id="decision">1. 結論と設計原則</h2>
+      <div class="grid">
+ <div class="panel"><strong>Coreの主導権</strong><p>変更可能な業務データはquestion本文（空欄を含む）のみ。Core採番の<code>id</code>は相関用opaque echoとして応答に含めるが、新規生成・変更は禁止し、section、type、targets、answers、source_text、順序はParser/Assemblerが決定する。</p></div>
+        <div class="panel"><strong>ポートの単位</strong><p>汎用LLMではなく教材用途の文章合成を表す <code>QuestionComposer</code> を公開する。batchは実行最適化、qblock/taskは意味単位として分離する。</p></div>
+        <div class="panel"><strong>失敗の扱い</strong><p>通信再試行・内容再試行・最終fallbackを分離する。既定は品質を隠さない明示的エラー。決定的draftへのfallbackはCLIで選択可能にする。</p></div>
+      </div>
+      <div class="flow" role="img" aria-label="MarkdownをParser、中間表現、scaffold、Adaptive Compose Planner、QuestionComposer、検証、Assemblerの順に処理して出力するフロー。各ステップは下記の線形テキストでも示す。">
+        <div class="flow-step">Markdown<br>Parser</div><span class="arrow" aria-hidden="true">→</span>
+        <div class="flow-step">IntermediateDocument</div><span class="arrow" aria-hidden="true">→</span>
+        <div class="flow-step">Scaffold / target span</div><span class="arrow" aria-hidden="true">→</span>
+        <div class="flow-step">Adaptive Compose Planner</div><span class="arrow" aria-hidden="true">→</span>
+        <div class="flow-step">QuestionComposer<br>(batch)</div><span class="arrow" aria-hidden="true">→</span>
+        <div class="flow-step">Normalize / Validate</div><span class="arrow" aria-hidden="true">→</span>
+        <div class="flow-step">Assembler → JSON/TUI/CSV/PDF</div>
+      </div>
+    </section>
+
+    <section aria-labelledby="current">
+      <h2 id="current">2. 現行コードの棚卸し</h2>
+      <p>下表の「実装済み」は現行コードで確認できる範囲、「未実装」は計画として追加する範囲であり、未実装機能を既存機能として扱わない。</p>
+      <div class="table-wrap">
+        <table>
+          <caption>実装済み／部分実装／未実装</caption>
+ <thead><tr><th scope="col">領域</th><th scope="col">現状</th><th scope="col">判定</th><th scope="col">計画での扱い</th></tr></thead>
+          <tbody>
+            <tr><td>Parser・中間表現</td><td><code>parser.rs</code>、<code>json.rs</code> がqblock/target/section/sourceを抽出し、既存JSONを出力。</td><td><span class="badge done">実装済み</span></td><td>schemaを維持し、span情報を後方互換で追加。</td></tr>
+<tr><td>Scaffold / merge</td><td><code>scaffold.rs</code> が空欄draftを作り、<code>compose.rs</code> がid/questionだけのComposedDocumentをIntermediateDocumentと突合しGeneratedDocumentを構築。</td><td><span class="badge done">実装済み</span></td><td>現行scaffoldはreplace置換でspan未対応。重複answer・Unicode placeholderをspanベースへ強化。</td></tr>
+            <tr><td>Adaptive Planner</td><td><code>planner.rs</code> に文字数推定、task数/token上限、batch→single retry、Result収集の実装がある（生成関数はclosure）。</td><td><span class="badge done">部分実装</span></td><td>ポート契約へ置換し、失敗理由別再計画と観測IDを追加。</td></tr>
+            <tr><td>Gemini / OpenAI互換</td><td><code>gemini.rs</code> と <code>local_openai.rs</code> が個別client、JSON response_format、個別error型を持つ。</td><td><span class="badge done">部分実装</span></td><td>共通HTTP層・共通<code>RewriteError</code>へ変換。adapter固有型をCoreから隔離。</td></tr>
+            <tr><td>構造化出力</td><td>Gemini <code>response_json_schema</code>、Local OpenAI互換 <code>response_format</code> はid/question schemaを送る。</td><td><span class="badge done">実装済み</span></td><td>capabilityを任意機能として交渉し、非対応backendでは通常JSON＋Validatorへ切替。</td></tr>
+            <tr><td>検証</td><td>空欄数、id、targets、空question、AnswerLeakage等を<code>validation.rs</code>で検証。</td><td><span class="badge done">部分実装</span></td><td>target span・placeholder tokenを正規化し、短縮/長文化・新情報検出を段階追加。</td></tr>
+            <tr><td>CLI・batch/env</td><td><code>--backend gemini|local</code>、<code>--batch</code>、<code>inspect-scaffold</code>、<code>FLOWCLOZE_*</code>を実装。<code>--model</code>は廃止メッセージ。</td><td><span class="badge done">部分実装</span></td><td><code>--rewrite</code>、provider名、config.toml、旧引数互換と優先順位を整理。</td></tr>
+<tr><td>QuestionComposerドメインポート</td><td>batch plannerは<code>FnMut(&str)</code>を受けるだけで、共通trait/request/outputはない。</td><td><span class="badge todo">未実装</span></td><td>本計画のPhase 2で導入。batch契約をCore APIとして固定。</td></tr>
+            <tr><td>共通fallback/観測性</td><td>backendエラーは文字列化され、全体生成の統一ポリシー・metrics schemaはない。</td><td><span class="badge todo">未実装</span></td><td>FallbackPolicy、構造化ログ、fallback件数を追加。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="port">
+      <h2 id="port">3. QuestionComposerポート（batch対応）</h2>
+      <p>単件traitを先に作って後でbatchを足すと、plannerが再びprovider固有呼び出しへ戻るため、最初からbatchを契約に含める。</p>
+      <pre><code>pub trait QuestionComposer: Send + Sync {
+    fn compose_batch(&amp;self, request: &amp;ComposeBatchRequest)
+        -&gt; Result&lt;ComposeBatchOutput, ComposeError&gt;;
+}
+
+struct ComposeBatchRequest {
+    schema_version: u32,
+    batch_id: String,
+    tasks: Vec&lt;ComposeTask&gt;,       // idはCoreが採番。LLMに生成させない
+    style: WritingStyle,
+    prompt_version: String,
+}
+struct ComposeTask {
+    id: String, source_text: String, scaffold_question: String,
+    answers: Vec&lt;String&gt;, blank_token: String, blank_count: usize,
+}
+struct ComposeBatchOutput { items: Vec&lt;ComposedItem&gt;, metadata: ComposeMetadata }
+struct ComposedItem { id: String, question: String }
+enum ComposeError { Configuration, Authentication, RateLimited(Option&lt;Duration&gt;),
+ Timeout, Transport, Api { status: u16, message: String, retryable: bool },
+ InvalidResponse, EmptyResponse }
+</code></pre>
+      <p><strong>ComposeErrorのretry契約:</strong></p>
+      <div class="table-wrap"><table><caption>通信retryとcontent retryの分類</caption><thead><tr><th scope="col">分類</th><th scope="col">variant</th><th scope="col">処理・上限</th></tr></thead><tbody>
+        <tr><th scope="row">HTTP/transport retry</th><td><code>RateLimited</code>、<code>Timeout</code>、<code>Transport</code>、<code>Api { status, retryable: true }</code></td><td>指数backoff＋Retry-After。初回を含む最大3試行。</td></tr>
+        <tr><th scope="row">content retry</th><td><code>InvalidResponse</code>、<code>EmptyResponse</code>、parse/欠落・空欄不一致</td><td>制約feedback付きtask単位で最大2回。通信retryと別カウンタ。</td></tr>
+        <tr><th scope="row">即時終了</th><td><code>Configuration</code>、<code>Authentication</code>、<code>Api { retryable: false }</code></td><td>再試行せずfallbackまたはstrict error。</td></tr>
+      </tbody></table></div>
+      <ul>
+        <li>Plannerは<code>ComposeBatchRequest</code>を作り、成功taskをCollectorへ渡す。失敗taskだけをsingle-task queueへ戻す。</li>
+        <li>IdentityComposerはdraftを返すテスト実装。GeminiAdapter/OpenAiCompatibleAdapterは通信と変換のみ担当。</li>
+        <li>providerがbatch非対応でもadapter内で逐次化し、外部契約は変えない。</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="planner">
+      <h2 id="planner">4. Adaptive Compose Planner契約</h2>
+ <table>
+ <caption>Planner状態遷移と再試行上限</caption>
+ <thead><tr><th scope="col">状態</th><th scope="col">遷移</th><th scope="col">条件・上限</th></tr></thead>
+        <tbody>
+          <tr><td><code>Batched</code></td><td>成功→done / parse・欠落→SingleTask</td><td>backend別 <code>max_tasks_per_batch</code> と推定token上限。</td></tr>
+          <tr><td><code>SingleTask</code></td><td>成功→done / 再失敗→errorまたはfallback</td><td><code>max_retry_count</code>を超えない。document全体は再生成しない。</td></tr>
+          <tr><td>将来の<code>Segmented</code></td><td>単独でも巨大なtaskのみ</td><td>初期計画では未導入。context_before/target/afterと全体再検証が必須。</td></tr>
+        </tbody>
+      </table>
+ <p class="small">初期値: Geminiは8 task/12,000 token/最大3並列、Localは2 task/4,000 token/逐次。MVPでは逐次実行とし、<code>max_concurrent_batches</code>は未使用扱い（後続フェーズで有効化）にする。文字数推定はprompt固定部分と追加制約も加味し、安全側のヒューリスティックとして使う（課金計算には使わない）。</p>
+ <p><strong>attempt/idempotency:</strong> 各taskは<code>run_id + task_id + attempt</code>をキーにする。duplicate/unknown/missing IDは成功扱いにせず再計画し、成功確定taskを後続retryで上書きしない。</p>
+      <h3>失敗理由別の再計画</h3>
+      <ul>
+        <li>JSON parse error: batchを縮小。</li><li>missing id/task: 該当taskを単独化。</li><li>blank count mismatch・leakage: 制約フィードバック付き単独retry。</li><li>認証・設定・恒久的4xx: retryせず共通エラー。</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="provider">
+      <h2 id="provider">5. Provider adaptersと構造化出力</h2>
+      <div class="table-wrap"><table>
+        <caption>Provider層ごとの責務境界</caption>
+        <thead><tr><th scope="col">層</th><th scope="col">責務</th><th scope="col">禁止する責務</th></tr></thead>
+        <tbody>
+          <tr><td>共通HTTP/retry</td><td>timeout、429/408/5xx、Retry-After、指数backoff、レスポンス上限。</td><td>答案・空欄・fallbackの判断。</td></tr>
+          <tr><td>GeminiAdapter</td><td>generateContent形式、API key、候補本文抽出、Gemini error→ComposeError。</td><td>最終JSONの組み立て。</td></tr>
+          <tr><td>OpenAiCompatibleAdapter</td><td>任意base_url、Bearer、model、chat/completions形式、Ollama/LM Studio/vLLM差分。</td><td>backend固有仕様をCore型へ漏らすこと。</td></tr>
+        </tbody>
+      </table></div>
+ <p>構造化出力は <strong>capabilityがある場合の最適化</strong>。設定（明示off/on）を最優先し、未指定時は既知adapterの既定値（Gemini/OpenAI互換はon）を使う。400/422でschema非対応と判定した場合は1回だけplain JSONへ降格し、判定結果をcache/logへ保存する。<code>id/question</code> schema、JSON抽出、parse、Validator、retryはどの経路でも必須。</p>
+    </section>
+
+    <section aria-labelledby="validation">
+      <h2 id="validation">6. Validation強化：target spanとplaceholder</h2>
+ <p>現行はanswer文字列の<code>replace</code>置換と<code>＿＿＿</code>個数に依存し、target spanは未保持である。そのため同一answerの複数出現、Unicode類似文字、LLMによる空欄幅変更で誤判定し得る。</p>
+    <p><strong>座標系:</strong> target spanはParserがMarkdownのtarget構文を認識した時点で記録する、正規化前のraw qblock body上の<strong>UTF-8 byte offset</strong>（start inclusive/end exclusive）とする。answer文字列の再検索や最長一致ではspanを決めない。NFC/NFKC、trim、改行変換はspan決定後に行い、座標計算へ使わない。異なるspanに同じanswerがある場合は入力順の別targetとして許可し、同一spanの二重登録は構文エラーにする。内部ではtargetごとに一意なsentinelを割り当て、LLM応答でsentinelの集合と順序を検証した後、最終表記<code>＿＿＿</code>へ正規化する。</p>
+      <ol>
+        <li>Parserでtargetの<strong>byte span／文字境界</strong>と出現順を保持する（既存schemaは維持し、内部型に追加）。</li>
+        <li>placeholderを単一定数として正規化し、全角下線・半角下線・連続空白の受入範囲を明示する。最終出力は<code>＿＿＿</code>へ正規化。</li>
+      <li>MVPのtask単位errorは、空文字、sentinel集合・順序不一致、明白なanswer完全一致漏洩に限定する。短縮/長文化、文体、新情報追加は機械的に完全保証できないため、設定可能な閾値によるheuristic warningとlive評価指標に分ける。</li>
+      <li>document最終段でid順・件数・固定field不変を再検証する。<code>MissingQuestion</code>、<code>QuestionOrderMismatch</code>、<code>FixedFieldMismatch</code>を明示的な最終エラーにする。</li>
+ <li>LLM出力のunknown/duplicate/missing/mutated ID、<code>filter_map</code>による欠落taskは黙って捨てずエラー化する。旧JSONは既存deserializerで読み、欠損fieldは既存既定値を適用して互換を保つ。</li>
+        <li>短い一般語のAnswerLeakage誤検知は既知の限界としてwarning/設定で扱い、仕様変更時にfixtureを更新する。</li>
+      </ol>
+    </section>
+
+    <section aria-labelledby="config">
+      <h2 id="config">7. 設定・CLI互換性とfallback</h2>
+      <pre><code>CLI &gt; 環境変数 &gt; config.toml &gt; 組み込み既定値
+
+flowcloze generate note.md --rewrite never
+flowcloze generate note.md --rewrite always --provider gemini
+flowcloze generate note.md --rewrite always --provider local --batch small
+flowcloze inspect-scaffold note.md
+</code></pre>
+      <ul>
+ <li>現行コードは<code>--model</code>を即時error扱い、<code>api set</code>でAPI keyを.envへ保存する実装である。最終方針では<code>--provider</code>を正規名とし、旧<code>--backend</code>をaliasとして移行期間のみ受理する。</li>
+ <li><code>--model</code>は互換期間のみ受理して設定を上書きし、将来は明示的なprovider設定へ移行する。新規コマンドは秘密値を保存せず<code>api_key_env</code>だけをconfigに置く。既存.envは読み続け、<code>api set</code>は非推奨化する。</li>
+ <li>解決順位は<strong>引数 &gt; 環境変数 &gt; config.toml &gt; 組み込み既定値</strong>。<code>--batch</code>と<code>--skip-constraints</code>は既存挙動を維持し、provider alias適用後に同じpolicyへ渡す。</li>
+        <li>既定rewriteは現行品質を壊さない移行期間<code>always</code>、次majorで<code>auto</code>または<code>never</code>を検討。明示的な<code>--fallback draft|error</code>を追加。</li>
+      </ul>
+ <p><strong>Fallback方針:</strong> 組み込み既定は<code>error</code>（strict、終了コード1）とし、draft fallbackは<code>--fallback draft</code>で明示する。fallbackはtask単位で成功taskを保持し、document単位の致命的整合性エラーは常に終了する。既存GeneratedDocumentのschemaは変更せず、fallback件数・理由・task idはstderr summaryへ出し、詳細は任意sidecarへ書く（metadataを既存JSONへ混在させない）。</p>
+      <p class="small"><strong>資料間の差分を解消した決定:</strong> Refactoring proposalの「Identityでdraftへfallback」とAdaptive Compose Planner設計の「scaffoldを成果物にしない」は目的が異なる。最終計画では、自然化を試みた後の<strong>明示的なdraft fallback</strong>は許可するが、<code>inspect-scaffold</code>のscaffold単独出力を通常生成とは区別し、strictモードでは常にエラーとする。</p>
+    </section>
+
+    <section aria-labelledby="observability">
+      <h2 id="observability">8. 観測性</h2>
+ <p>debugログ（question本文、answer、API keyは記録禁止）に次を記録し、同じ入力でもbatch再計画を追跡できるようにする。</p>
+      <div class="table-wrap"><table><caption>安全に記録する観測項目</caption><thead><tr><th scope="col">項目</th><th scope="col">例</th></tr></thead><tbody>
+ <tr><td>識別子</td><td>run_id、task_id、batch_id、attempt、compose_mode、source_hash</td></tr>
+ <tr><td>実行条件</td><td>provider、model、prompt_version、prompt_hash、policy、estimated_tokens</td></tr>
+ <tr><td>結果</td><td>latency、input/output chars、error_class、retry_delay、validation result、fallback reason</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section aria-labelledby="tests">
+      <h2 id="tests">9. テスト戦略</h2>
+      <div class="grid">
+        <div class="panel"><strong>Core・golden</strong><p>Parser、span、scaffold、Assembler、既存JSON/TUI/CSV/PDFを完全一致。Identity経路はAPIなしでE2E。</p></div>
+        <div class="panel"><strong>Port契約</strong><p>Identity、Gemini、OpenAI互換に共通テスト。正常抽出、空応答、401、429、503、timeout、metadataを固定。</p></div>
+        <div class="panel"><strong>Planner/validation</strong><p>batch成功、失敗taskだけretry、欠落id、blank mismatch、leakage、strict/fallback、token budget境界をモックで検証。</p></div>
+        <div class="panel"><strong>Live smoke（任意）</strong><p>通常CIから分離し、実モデルの成功率・空欄一致率・漏洩率・fallback率・レイテンシを記録。</p></div>
+      </div>
+    <p class="small">現行基準線では<code>cargo test</code>の34件が成功している。ただし、これは新計画のHTTP mock、CLI互換、fallback/sidecar、target span、固定field不変条件をまだ検証しない。各Phaseで対応テストを追加し、<code>cargo test</code>（必須）、provider HTTP mock、必要時のみ<code>--ignored</code> live testを実行する。文章の完全一致はCoreに限定し、LLMは不変条件で評価する。</p>
+    </section>
+
+    <section aria-labelledby="migration">
+      <h2 id="migration">10. 段階的移行タイムライン</h2>
+      <div class="phase-list">
+        <div class="phase"><strong>Phase 0<br>固定化</strong><div>現行fixture・CLI・Gemini/localレスポンスをgolden化。AnswerLeakageとtarget span境界の失敗例を追加。<br><span class="small">完了: 実APIなしで現行経路を再現。</span></div></div>
+        <div class="phase"><strong>Phase 1<br>Assembler hardening</strong><div>現行のid/question限定とCoreによるGeneratedDocument構築を再実装せず、missing/duplicate/unknown ID、件数、順序、固定field不変をエラーとして補強する。既存JSON互換を確認する。<br><span class="small">完了: LLMが固定fieldを変更できず、欠落taskが黙って消えない。</span></div></div>
+        <div class="phase"><strong>Phase 2<br>Domain port</strong><div><code>QuestionComposer</code>、batch request/output、共通<code>ComposeError</code>、IdentityComposerを導入。Plannerのclosureをportへ置換。<br><span class="small">完了: Stub/IdentityでPlanner E2E。</span></div></div>
+        <div class="phase"><strong>Phase 3<br>Adapters</strong><div>GeminiAdapter、OpenAiCompatibleAdapter、共通HTTP/retry、capability付きstructured outputを契約テストで検証。<br><span class="small">完了: Coreがprovider型を参照しない。</span></div></div>
+        <div class="phase"><strong>Phase 4<br>Validation/CLI</strong><div>span/placeholder正規化、fallback policy、<code>--rewrite</code>、provider/config優先順位、互換aliasを追加。</div></div>
+        <div class="phase"><strong>Phase 5<br>運用改善</strong><div>観測性、Auto判定（決定的理由付き）、batch tuning。Anthropic・segment化・HTTP serverは要件が確定した後。</div></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="done">
+      <h2 id="done">11. 完了条件（MVP）</h2>
+      <ul>
+        <li>同じMarkdownから同じIntermediateDocument／固定fieldを生成できる。</li>
+        <li>QuestionComposerのbatch契約をIdentity、Gemini、OpenAI互換が共有し、共通エラーへ変換する。</li>
+        <li>構造化出力の有無にかかわらず、id/question parse・Validator・retryが働く。</li>
+        <li>空欄数・順序・target span・answers漏洩を検出し、strictまたは明示fallbackを選べる。</li>
+        <li>現行JSON、TUI、CSV、PDFとCLI互換テストが通り、provider/model/prompt/fallbackが観測できる。</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="risk">
+      <h2 id="risk">12. リスクと対策</h2>
+      <div class="table-wrap"><table><caption>主要リスクと軽減策</caption><thead><tr><th scope="col">リスク</th><th scope="col">対策</th></tr></thead><tbody>
+        <tr><td>batchで文体が揺れる</td><td>style contract、機械的normalizer、batch単位のgolden。global再生成は標準にしない。</td></tr>
+        <tr><td>巨大qblockの文脈分断</td><td>初期はsegment化せずwarning/error。導入時はbefore/target/afterとqblock全体検証。</td></tr>
+        <tr><td>backendのresponse_format差異</td><td>capabilityを任意化し、最小schema・JSON抽出・retryを常設。fixtureをbackend別に持つ。</td></tr>
+        <tr><td>fallbackが品質低下を隠す</td><td>理由・件数・task idをログと結果metadataに残し、strict運用を提供。</td></tr>
+        <tr><td>抽象化が過剰になる</td><td>MVPはIdentity/Gemini/OpenAI互換に限定。Anthropic、HTTP server、厳密tokenizerは後段。</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section aria-labelledby="diff">
+      <h2 id="diff">13. 現行との差分表</h2>
+      <div class="table-wrap"><table><caption>現行実装から最終形への対応</caption><thead><tr><th scope="col">現行</th><th scope="col">最終形</th><th scope="col">移行上の注意</th></tr></thead><tbody>
+        <tr><td><code>FnMut(&amp;str)</code>でplannerが生成。</td><td><code>QuestionComposer::compose_batch</code>。</td><td>Phase 2でadapterを差し替え、plannerアルゴリズムは維持。</td></tr>
+        <tr><td><code>GeminiError</code>／<code>LocalOpenAiError</code>。</td><td><code>ComposeError</code>＋adapter変換。</td><td>表示文は互換を保ち、match可能な共通variantを公開。</td></tr>
+        <tr><td>文字列置換＋<code>＿＿＿</code>個数。</td><td>target span・placeholder正規化・階層Validator。</td><td>旧中間JSONを読み、spanがない場合は保守的fallback。</td></tr>
+        <tr><td><code>--backend</code>中心、model固定値。</td><td><code>--provider/--model/--rewrite/--fallback</code>＋config優先順位。</td><td>旧backendと<code>--model</code>を移行期間alias。</td></tr>
+        <tr><td>エラー文字列のみ。</td><td>batch/task/attempt/prompt hashの観測。</td><td>本文・秘密情報をログへ出さない。</td></tr>
+      </tbody></table></div>
+    </section>
+  </main>
+  <footer><div class="wrap">この計画は現行コードの実装状況を基準にした差分管理用文書。未実装項目は各Phaseの完了条件を満たすまで実装済みとは扱わない。</div></footer>
+</body>
+</html>

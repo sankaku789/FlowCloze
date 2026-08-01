@@ -102,15 +102,23 @@
               <p>Markdownからqblock，section，source_text，targets，warningsを抽出します．</p>
             </div>
             <div class="item">
-              <h3>生成JSON</h3>
-              <p>Geminiは <code>context-cloze</code> のquestions配列を返します．</p>
+              <h3>QuestionComposer Core</h3>
+              <p>プロバイダはtask IDとquestion本文だけを返し，CoreがID照合，retry，検証，固定フィールドの再構築を担当します．</p>
             </div>
             <div class="item">
               <h3>検証</h3>
-              <p>空欄数とanswers数，targetsとの一致，重複ID，未知IDを確認します．</p>
+              <p>空欄数とanswers数，targetsとの一致，answer漏出，IDの重複・不足・未知，順序，固定フィールドを確認します．</p>
             </div>
           </div>
         </div>
+      </section>
+
+      <section class="section">
+        <h2>生成経路の保証</h2>
+        <p>parserはtargetのUTF-8 spanを確認し、Coreは文書内で衝突しないsentinelを各targetに割り当てます。プロバイダ出力ではsentinelの欠落、重複、順序変更、未知tokenを検出してから標準空欄へ戻すため、answerと空欄の対応を内部で保証します。</p>
+        <p>最終JSONは常に既存の <code>{ questions: [...] }</code> schemaです。section、type、targets、answers、source_textは中間JSONから再構築し、プロバイダ由来なのはquestion本文だけです。fallbackや観測メタデータは最終JSONに追加しません。</p>
+        <p>内容不正はtask単位で最大2回再試行します。<code>fallback=error</code> は失敗を返し、<code>fallback=draft</code> は通信系または内容検証系で失敗したtaskだけをIdentity下書きに戻します。ID・固定フィールド・順序の対応付けが不正な失敗はstrictに返します。</p>
+        <p><code>generate</code> の設定はCLI、canonical環境変数、対応するlegacy環境変数、<code>config.toml</code>、既定値の順に解決します。<code>--provider</code>（<code>--backend</code> は別名）、<code>--model</code>、<code>--rewrite</code>、<code>--fallback</code>、<code>--structured-output</code> を使えます。<code>rewrite=never</code> はプロバイダを呼ばないIdentity生成です。</p>
       </section>
 
       <section class="section">

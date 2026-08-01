@@ -43,7 +43,7 @@ Requirements:
 - Rust / Cargo
 - Typst CLI (required for PDF output)
 - Japanese fonts (required for Japanese PDF output)
-- Gemini API key (required for the `generate` command)
+- Gemini API key (required when Gemini performs rewrite generation)
 
 On Ubuntu / WSL, install Noto CJK fonts for Japanese PDF output:
 
@@ -94,7 +94,7 @@ ln -sfn "$PWD/target/release/flowcloze" ~/.local/bin/flowcloze
 
 For a temporary local run without installing, use `cargo run -- ...`.
 
-## Gemini API Settings
+## Generation Settings
 
 Using `.env`:
 
@@ -102,20 +102,28 @@ Using `.env`:
 cp .env.example .env
 ```
 
-Set values like:
+You may store the actual API key in `.env`. Do not store secrets in `config.toml`; use `api_key_env` there to name the environment variable. If you want a config file, separately run `cp config.toml.example config.toml`. `api set` is deprecated. See [`.env.example`](.env.example) for every setting and its legacy alias.
 
 ```env
-GEMINI_API_KEY=your_api_key_here
-FLOWCLOZE_LLM_BACKEND=gemini
-LOCAL_LLM_BASE_URL=
-LOCAL_LLM_API_KEY=
-FLOWCLOZE_BATCH_POLICY=auto
-FLOWCLOZE_MAX_TASKS_PER_BATCH=8
-FLOWCLOZE_MAX_INPUT_TOKENS=12000
-FLOWCLOZE_MAX_CONCURRENT_BATCHES=3
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+FLOWCLOZE_PROVIDER=gemini
 ```
 
-Or save them through the CLI:
+Use `generate --provider gemini|local` to select a provider; `--backend` is its compatibility alias. `--model`, `--rewrite always|never|auto`, `--fallback error|draft`, `--structured-output auto|on|off`, and `--verbose` are also available.
+
+```bash
+flowcloze generate --provider gemini --model gemini-2.5-flash \
+  --rewrite auto --fallback draft --structured-output auto --verbose \
+  -o sample/generated.json sample/sample.md
+```
+
+`--rewrite never` uses Identity generation, so it needs neither an API key nor a provider connection. `auto` rewrites only list, multiline, unterminated, or short source text, and uses Identity generation otherwise. `--fallback error` (the default) returns failures. With `--fallback draft`, only a task that fails due to transport or content validation falls back to an Identity draft; invalid ID, fixed-field, or ordering correspondence never does.
+
+Settings resolve in this order: CLI, canonical environment variable, legacy environment variable where supported, `config.toml`, then the default. Empty environment variables are unspecified. Set `FLOWCLOZE_CONFIG` to choose another config file; see [`config.toml.example`](config.toml.example).
+
+`--verbose` or `FLOWCLOZE_LOG=debug` writes observability JSON Lines to stderr. They never include Markdown bodies, prompts, provider responses, or credentials. `max_concurrent_batches` is validated and observed, but execution is currently sequential.
+
+For compatibility, the CLI can save a key:
 
 ```bash
 flowcloze api set --key your_api_key_here
@@ -165,7 +173,7 @@ flowcloze generate --batch small -s -o sample/generated.json sample/sample.md
 
 Generate with a local LLM through Ollama or LM Studio's OpenAI-compatible server:
 
-Install the default local model, then start either the Ollama or LM Studio local server before running FlowCloze. When `LOCAL_LLM_BASE_URL` is unset, FlowCloze tries Ollama (`http://localhost:11434/v1`) first, then falls back to LM Studio (`http://localhost:1234/v1`).
+Install the default local model, then start either the Ollama or LM Studio local server before running FlowCloze. The URL resolves through `FLOWCLOZE_BASE_URL`, the legacy `LOCAL_LLM_BASE_URL`, `config.toml`, then the defaults. When unset, FlowCloze tries Ollama (`http://localhost:11434/v1`) first, then falls back to LM Studio (`http://localhost:1234/v1`).
 
 For Ollama:
 
@@ -180,7 +188,7 @@ flowcloze local check
 ```
 
 ```bash
-flowcloze generate --backend local -s -o sample/generated.json sample/sample.md
+flowcloze generate --provider local -s -o sample/generated.json sample/sample.md
 ```
 
 Build a PDF:

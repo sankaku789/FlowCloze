@@ -1,0 +1,1 @@
+Phase 4 generation settings live in `src/config.rs`: strict top-level TOML (unknown fields fatal), canonical env then legacy aliases then config/default; API-key lookup stays lazy. Located orchestration applies pure task-level rewrite routing and retains fallback summaries outside `GeneratedDocument` wire JSON. Local adapter URL candidates only fall through on transport/timeout.

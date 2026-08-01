@@ -1,5 +1,6 @@
 //! 中間データから問題生成用のLLMプロンプトを組み立てる．
 
+use crate::compose::ComposeBatchRequest;
 use crate::json::IntermediateDocument;
 use crate::scaffold::ScaffoldDocument;
 
@@ -125,5 +126,45 @@ pub fn build_question_composer_prompt(
         }
     }
 
+    Ok(prompt)
+}
+
+/// provider実装が共通に使う、port request用のpromptを組み立てる．
+pub fn build_compose_request_prompt(
+    request: &ComposeBatchRequest,
+) -> Result<String, serde_json::Error> {
+    let request_json = serde_json::to_string_pretty(request)?;
+    let mut prompt = format!(
+        r#"次のcompose requestの各taskについて、question本文だけを自然な常体の日本語へ整えてください。
+
+制約:
+- 出力はJSONのみとし、Markdownコードフェンスを付けない
+- ルートキーは items、各itemは id と question だけにする
+- 各taskのidを変更、追加、削除しない
+- blank_tokenの数と順序を維持する
+- answersの値をquestion本文に含めない
+- 元のsource_textにない知識を追加しない
+
+compose request:
+{request_json}"#
+    );
+    if !request.extra_constraints.is_empty() {
+        prompt.push_str("\n\n追加制約:\n");
+        for constraint in &request.extra_constraints {
+            prompt.push_str("- ");
+            prompt.push_str(constraint);
+            prompt.push('\n');
+        }
+    }
+    if !request.retry_feedback.is_empty() {
+        prompt.push_str(
+            "\n前回の出力は検証に失敗しました。次の分類を修正し、JSONのみを再出力してください。\n",
+        );
+        for feedback in &request.retry_feedback {
+            prompt.push_str("- ");
+            prompt.push_str(feedback);
+            prompt.push('\n');
+        }
+    }
     Ok(prompt)
 }
