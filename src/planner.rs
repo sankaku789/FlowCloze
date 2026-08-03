@@ -763,7 +763,7 @@ fn run_port_batch(
             .map(|attempt| compose_task_from_scaffold(&scaffold.tasks[attempt.index]))
             .collect(),
         style: WritingStyle::PlainJapanese,
-        prompt_version: "compose-v1".to_string(),
+        prompt_version: "compose-v2".to_string(),
         extra_constraints: extra_constraints.to_vec(),
         retry_feedback: attempts[0].feedback.clone(),
     };
@@ -1654,6 +1654,45 @@ mod tests {
             generated.questions[0].question,
             scaffold.tasks[0].scaffold_question
         );
+    }
+
+    struct PromptVersionComposer(Mutex<Option<String>>);
+
+    impl QuestionComposer for PromptVersionComposer {
+        fn compose(
+            &self,
+            request: &ComposeBatchRequest,
+        ) -> Result<ComposeBatchOutput, ComposeError> {
+            *self.0.lock().unwrap() = Some(request.prompt_version.clone());
+            Ok(ComposeBatchOutput {
+                items: request
+                    .tasks
+                    .iter()
+                    .map(|task| ComposedItem {
+                        id: task.id.clone(),
+                        question: task.scaffold_question.clone(),
+                    })
+                    .collect(),
+                metadata: ComposeMetadata::default(),
+            })
+        }
+    }
+
+    #[test]
+    fn standard_port_uses_compose_v2_prompt() {
+        let intermediate = intermediate();
+        let scaffold = build_scaffold_document(&intermediate);
+        let composer = PromptVersionComposer(Mutex::new(None));
+
+        compose_with_question_composer(
+            &intermediate,
+            &scaffold,
+            ComposeExecutionPolicy::default(),
+            &composer,
+        )
+        .expect("recorded composer output should validate");
+
+        assert_eq!(composer.0.lock().unwrap().as_deref(), Some("compose-v2"));
     }
 
     struct FirstBatchInvalidThenProvider(Mutex<u32>);
