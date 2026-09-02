@@ -107,10 +107,12 @@ fn auto_downgrades_only_once_and_caches_gemini_schema_rejection() {
 
 #[test]
 fn openai_auto_accepts_compatible_schema_rejection_wording() {
-    let body =
-        r#"{"choices":[{"message":{"content":"{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}}]}"#;
+    let body = r#"{"choices":[{"message":{"content":"{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}}]}"#;
     let (url, calls) = mock(vec![
-        (400, r#"{"error":"response_format json_schema is not supported"}"#),
+        (
+            400,
+            r#"{"error":"response_format json_schema is not supported"}"#,
+        ),
         (200, body),
         (200, body),
     ]);
