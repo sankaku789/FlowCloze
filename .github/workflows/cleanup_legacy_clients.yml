@@ -83,23 +83,36 @@ jobs:
       - name: Format
         run: cargo fmt --all
 
+      - name: Archive transformed source
+        run: tar -czf transformed-source.tar.gz src tests
+
+      - name: Upload transformed source
+        uses: actions/upload-artifact@v4
+        with:
+          name: cleanup-transformed-source
+          path: transformed-source.tar.gz
+
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        id: clippy
+        continue-on-error: true
+        run: cargo clippy --all-targets -- -D warnings 2>&1 | tee clippy.log
 
       - name: Test
         id: test
         continue-on-error: true
         run: cargo test 2>&1 | tee test.log
 
-      - name: Upload test log
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cleanup-test-log
-          path: test.log
+          name: cleanup-diagnostics
+          path: |
+            clippy.log
+            test.log
 
-      - name: Fail if tests failed
-        if: steps.test.outcome != 'success'
+      - name: Fail on validation error
+        if: steps.clippy.outcome != 'success' || steps.test.outcome != 'success'
         run: exit 1
 
       - name: Commit cleanup
