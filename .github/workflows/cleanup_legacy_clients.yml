@@ -84,23 +84,23 @@ jobs:
         run: cargo fmt --all
 
       - name: Clippy
-        id: clippy
-        continue-on-error: true
-        run: cargo clippy --all-targets -- -D warnings 2>&1 | tee clippy.log
+        run: cargo clippy --all-targets -- -D warnings
 
-      - name: Upload clippy log
+      - name: Test
+        id: test
+        continue-on-error: true
+        run: cargo test 2>&1 | tee test.log
+
+      - name: Upload test log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cleanup-clippy-log
-          path: clippy.log
+          name: cleanup-test-log
+          path: test.log
 
-      - name: Fail if clippy failed
-        if: steps.clippy.outcome != 'success'
+      - name: Fail if tests failed
+        if: steps.test.outcome != 'success'
         run: exit 1
-
-      - name: Test
-        run: cargo test
 
       - name: Commit cleanup
         run: |
