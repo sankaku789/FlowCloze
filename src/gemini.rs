@@ -1,7 +1,7 @@
-//! Gemini provider adapterと、互換性を保つ従来client API。
+//! Gemini provider adapter。
 
 use reqwest::header::{HeaderName, HeaderValue};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::compose::{
@@ -71,29 +71,6 @@ impl GeminiAdapter {
         if structured {
             config["responseMimeType"] = json!("application/json");
             config["responseJsonSchema"] = compose_schema();
-        }
-        let body = json!({
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": config
-        })
-        .to_string();
-        let key = HeaderValue::from_str(&self.api_key).map_err(|_| HttpError::Configuration)?;
-        self.transport.post_json(
-            &format!(
-                "{}/models/{}:generateContent",
-                self.base_url.trim_end_matches('/'),
-                self.model
-            ),
-            json_headers([(HeaderName::from_static("x-goog-api-key"), key)]),
-            &body,
-        )
-    }
-
-    fn request_legacy(&self, prompt: &str, structured: bool) -> Result<String, HttpError> {
-        let mut config = json!({"temperature": 0.0});
-        if structured {
-            config["responseMimeType"] = json!("application/json");
-            config["responseJsonSchema"] = legacy_schema();
         }
         let body = json!({
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -210,130 +187,6 @@ fn map_http_error(error: HttpError) -> ComposeError {
     }
 }
 
-/// Gemini generateContent APIを呼ぶ従来の同期client。
-#[derive(Debug, Clone)]
-pub struct GeminiClient {
-    adapter: GeminiAdapter,
-}
-
-impl GeminiClient {
-    pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
-        Self {
-            adapter: GeminiAdapter::new(api_key, model)
-                .with_structured_output(StructuredOutputMode::On),
-        }
-    }
-
-    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.adapter = self.adapter.with_base_url(base_url);
-        self
-    }
-
-    pub fn generate_text(&self, prompt: &str) -> Result<String, GeminiError> {
-        self.adapter
-            .request_legacy(prompt, true)
-            .map_err(GeminiError::from_http)
-            .and_then(extract_text)
-    }
-}
-
-/// Gemini REST APIへJSONを送る互換低レベルclient。
-#[derive(Debug, Clone)]
-pub struct GeminiApi {
-    api_key: String,
-    base_url: String,
-    transport: HttpTransport,
-}
-
-impl GeminiApi {
-    pub fn new(api_key: impl Into<String>) -> Self {
-        Self {
-            api_key: api_key.into(),
-            base_url: DEFAULT_BASE_URL.into(),
-            transport: HttpTransport::default(),
-        }
-    }
-
-    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
-        self
-    }
-
-    pub fn post_json<T: Serialize>(&self, path: &str, request: &T) -> Result<String, GeminiError> {
-        let key = HeaderValue::from_str(&self.api_key)
-            .map_err(|_| GeminiError::Http("configuration".into()))?;
-        let body = serde_json::to_string(request)
-            .map_err(|_| GeminiError::Response("serialization".into()))?;
-        self.transport
-            .post_json(
-                &self.url(path),
-                json_headers([(HeaderName::from_static("x-goog-api-key"), key)]),
-                &body,
-            )
-            .map_err(GeminiError::from_http)
-    }
-
-    fn url(&self, path: &str) -> String {
-        format!(
-            "{}/{}",
-            self.base_url.trim_end_matches('/'),
-            path.trim_start_matches('/')
-        )
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GeminiError {
-    Http(String),
-    Api {
-        status: u16,
-        body: String,
-        attempts: u32,
-    },
-    Response(String),
-    EmptyResponse,
-}
-
-impl GeminiError {
-    fn from_http(error: HttpError) -> Self {
-        match error {
-            HttpError::Api { status, body, .. } => Self::Api {
-                status,
-                body,
-                attempts: 3,
-            },
-            other => Self::Http(other.to_string()),
-        }
-    }
-}
-
-impl std::fmt::Display for GeminiError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Http(_) => write!(f, "Gemini API HTTP error"),
-            Self::Api {
-                status, attempts, ..
-            } => write!(f, "Gemini API error: status={status}, attempts={attempts}"),
-            Self::Response(_) => write!(f, "Gemini API response error"),
-            Self::EmptyResponse => write!(f, "Gemini API response was empty"),
-        }
-    }
-}
-
-impl std::error::Error for GeminiError {}
-
-fn extract_text(body: String) -> Result<String, GeminiError> {
-    let response: GeminiResponse = serde_json::from_str(&body)
-        .map_err(|_| GeminiError::Response("invalid envelope".into()))?;
-    response
-        .candidates
-        .first()
-        .and_then(|c| c.content.parts.first())
-        .map(|p| p.text.clone())
-        .filter(|x| !x.trim().is_empty())
-        .ok_or(GeminiError::EmptyResponse)
-}
-
 pub fn strip_markdown_code_fence(text: &str) -> String {
     crate::compose::extract_json_candidate(text).to_string()
 }
@@ -355,28 +208,6 @@ fn compose_schema() -> Value {
             }
         },
         "required": ["items"]
-    })
-}
-
-fn legacy_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "questions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string"},
-                        "question": {"type": "string"}
-                    },
-                    "required": ["id", "question"],
-                    "additionalProperties": false
-                }
-            }
-        },
-        "required": ["questions"],
-        "additionalProperties": false
     })
 }
 

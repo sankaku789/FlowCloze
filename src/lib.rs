@@ -28,11 +28,10 @@ pub use config::{
 };
 pub use csv::to_ankilot_csv;
 pub use gemini::{GeminiAdapter, StructuredOutputMode};
-pub use gemini::{GeminiApi, GeminiClient, GeminiError};
 pub use json::{to_intermediate_json, IntermediateDocument, IntermediateMeta, IntermediateQBlock};
 pub use local_openai::{
-    local_openai_url_candidates, try_local_openai_candidates, LocalOpenAiClient, LocalOpenAiError,
-    OpenAiCompatibleAdapter, OpenAiCompatiblePool,
+    local_openai_url_candidates, try_local_openai_candidates, OpenAiCompatibleAdapter,
+    OpenAiCompatiblePool,
 };
 pub use models::{QBlock, Target, ALLOWED_TARGET_TYPES};
 pub use observability::{

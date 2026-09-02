@@ -83,30 +83,6 @@ impl OpenAiCompatibleAdapter {
         )
     }
 
-    fn request_legacy(&self, prompt: &str, structured: bool) -> Result<String, HttpError> {
-        let mut body = json!({
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.0
-        });
-        if structured {
-            body["response_format"] = legacy_response_format();
-        }
-        let mut extra = Vec::new();
-        if let Some(key) = &self.api_key {
-            extra.push((
-                HeaderName::from_static("authorization"),
-                HeaderValue::from_str(&format!("Bearer {key}"))
-                    .map_err(|_| HttpError::Configuration)?,
-            ));
-        }
-        self.transport.post_json(
-            &format!("{}/chat/completions", self.base_url),
-            json_headers(extra),
-            &body.to_string(),
-        )
-    }
-
     fn compose_once(
         &self,
         request: &ComposeBatchRequest,
@@ -276,62 +252,6 @@ pub fn try_local_openai_candidates<T>(
     Err(HttpError::Transport)
 }
 
-/// OpenAI互換APIを直接叩く従来の同期client。
-#[derive(Debug, Clone)]
-pub struct LocalOpenAiClient {
-    adapter: OpenAiCompatibleAdapter,
-}
-
-impl LocalOpenAiClient {
-    pub fn new(
-        base_url: impl Into<String>,
-        model: impl Into<String>,
-        api_key: Option<String>,
-    ) -> Self {
-        Self {
-            adapter: OpenAiCompatibleAdapter::new(base_url, model, api_key)
-                .with_structured_output(StructuredOutputMode::On),
-        }
-    }
-
-    pub fn generate_text(&self, prompt: &str) -> Result<String, LocalOpenAiError> {
-        self.adapter
-            .request_legacy(prompt, true)
-            .map_err(LocalOpenAiError::from_http)
-            .and_then(extract)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LocalOpenAiError {
-    Http(String),
-    Api { status: u16, body: String },
-    Response(String),
-    EmptyResponse,
-}
-
-impl LocalOpenAiError {
-    fn from_http(e: HttpError) -> Self {
-        match e {
-            HttpError::Api { status, body, .. } => Self::Api { status, body },
-            other => Self::Http(other.to_string()),
-        }
-    }
-}
-
-impl std::fmt::Display for LocalOpenAiError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Http(_) => write!(f, "Local LLM HTTP error"),
-            Self::Api { status, .. } => write!(f, "Local LLM API error: status={status}"),
-            Self::Response(_) => write!(f, "Local LLM response parse error"),
-            Self::EmptyResponse => write!(f, "Local LLM response was empty"),
-        }
-    }
-}
-
-impl std::error::Error for LocalOpenAiError {}
-
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<Choice>,
@@ -364,17 +284,6 @@ fn parse_response(body: &str, model: &str) -> Result<ComposeBatchOutput, Compose
     Ok(output)
 }
 
-fn extract(body: String) -> Result<String, LocalOpenAiError> {
-    serde_json::from_str::<ChatResponse>(&body)
-        .map_err(|_| LocalOpenAiError::Response("invalid envelope".into()))?
-        .choices
-        .into_iter()
-        .next()
-        .map(|x| x.message.content)
-        .filter(|x| !x.trim().is_empty())
-        .ok_or(LocalOpenAiError::EmptyResponse)
-}
-
 fn response_format() -> Value {
     json!({
         "type": "json_schema",
@@ -398,35 +307,6 @@ fn response_format() -> Value {
                     }
                 },
                 "required": ["items"],
-                "additionalProperties": false
-            }
-        }
-    })
-}
-
-fn legacy_response_format() -> Value {
-    json!({
-        "type": "json_schema",
-        "json_schema": {
-            "name": "flowcloze_questions",
-            "strict": true,
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "questions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": {"type": "string"},
-                                "question": {"type": "string"}
-                            },
-                            "required": ["id", "question"],
-                            "additionalProperties": false
-                        }
-                    }
-                },
-                "required": ["questions"],
                 "additionalProperties": false
             }
         }

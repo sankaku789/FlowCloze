@@ -10,19 +10,12 @@ use std::sync::Arc;
 use flowcloze::{
     compile_pdf, default_pdf_output_path, parse_markdown, to_ankilot_csv, to_intermediate_json,
     validate_generated_json, CliOverrides, ComposeEvent, ComposeEventKind, EventSink, FailureClass,
-    GeminiClient, GeneratedDocument, GenerationConfig, IdentityComposer, IntermediateDocument,
+    GeneratedDocument, GenerationConfig, IdentityComposer, IntermediateDocument,
     JsonLinesEventSink, OpenAiCompatiblePool, PdfOptions, PlainProgressSink, ProgressEvent,
     ProgressSink, ProgressStage, Provider, RewritePolicy, RunContext,
 };
 
 mod view;
-
-#[allow(dead_code)]
-const DEFAULT_MODEL: &str = "gemini-2.5-flash";
-const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
-const DEFAULT_LM_STUDIO_BASE_URL: &str = "http://localhost:1234/v1";
-#[allow(dead_code)]
-const DEFAULT_LOCAL_MODEL: &str = "gemma4:e2b-it-qat";
 
 fn main() {
     let _ = dotenvy::dotenv();
@@ -1049,58 +1042,6 @@ fn inspect_scaffold(input_path: &str, output_path: Option<&str>) {
         }
     } else {
         print!("{scaffold_json}");
-    }
-}
-
-/// backend種別に応じてGeminiまたはOpenAI互換local APIへpromptを送る．
-#[allow(dead_code)]
-fn generate_text_with_backend(backend: &LlmBackend, prompt: &str) -> Result<String, String> {
-    match backend {
-        LlmBackend::Gemini => {
-            let api_key = match env::var("GEMINI_API_KEY") {
-                Ok(api_key) if !api_key.trim().is_empty() => api_key,
-                _ => {
-                    return Err(
-                        "GEMINI_API_KEY が未設定です．.env または環境変数に設定してください．"
-                            .to_string(),
-                    )
-                }
-            };
-            GeminiClient::new(api_key, DEFAULT_MODEL.to_string())
-                .generate_text(prompt)
-                .map_err(|error| error.to_string())
-        }
-        LlmBackend::Local => {
-            let api_key = env::var("LOCAL_LLM_API_KEY")
-                .ok()
-                .filter(|value| !value.trim().is_empty());
-            let mut errors = Vec::new();
-            for base_url in resolve_local_base_urls() {
-                let client = flowcloze::local_openai::LocalOpenAiClient::new(
-                    base_url.clone(),
-                    DEFAULT_LOCAL_MODEL.to_string(),
-                    api_key.clone(),
-                );
-                match client.generate_text(prompt) {
-                    Ok(text) => return Ok(text),
-                    Err(error) => errors.push(format!("{base_url}: {error}")),
-                }
-            }
-            Err(format!(
-                "local LLM backendへの接続に失敗しました。OllamaまたはLM Studioのローカルサーバを起動してください。\n- {}",
-                errors.join("\n- ")
-            ))
-        }
-    }
-}
-
-fn resolve_local_base_urls() -> Vec<String> {
-    match env::var("LOCAL_LLM_BASE_URL") {
-        Ok(value) if !value.trim().is_empty() => vec![value],
-        _ => vec![
-            DEFAULT_OLLAMA_BASE_URL.to_string(),
-            DEFAULT_LM_STUDIO_BASE_URL.to_string(),
-        ],
     }
 }
 
