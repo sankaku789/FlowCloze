@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   rust:
@@ -33,22 +33,44 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Format and capture patch
-        run: |
-          cargo fmt --all
-          git diff -- src tests > rustfmt.patch
+      - name: Apply provider refactor proposal
+        run: python .github/scripts/apply_provider_refactor.py
 
-      - name: Upload rustfmt patch
+      - name: Format proposed changes
+        run: cargo fmt --all
+
+      - name: Capture provider refactor patch
+        run: git diff -- src/config.rs src/main.rs > provider-refactor.patch
+
+      - name: Upload provider refactor patch
         uses: actions/upload-artifact@v4
         with:
-          name: rustfmt-patch
-          path: rustfmt.patch
+          name: provider-refactor-patch
+          path: provider-refactor.patch
+
+      - name: Check legacy provider variant is gone
+        run: |
+          if grep -R "Provider::Local" src tests; then
+            echo "Provider::Local remains"
+            exit 1
+          fi
 
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Run tests
         run: cargo test
+
+      - name: Commit validated provider refactor
+        if: github.ref == 'refs/heads/future/model' && github.event_name == 'push'
+        run: |
+          if ! git diff --quiet -- src/config.rs src/main.rs; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add src/config.rs src/main.rs
+            git commit -m "OpenAI互換providerの責務を整理"
+            git push
+          fi
 
   docs:
     name: OpenAPI docs
