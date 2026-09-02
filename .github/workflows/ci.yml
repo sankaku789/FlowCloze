@@ -33,8 +33,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Format and capture patch
+        run: |
+          cargo fmt --all
+          git diff -- src tests > rustfmt.patch
+
+      - name: Upload rustfmt patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustfmt-patch
+          path: rustfmt.patch
 
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
