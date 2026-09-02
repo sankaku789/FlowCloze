@@ -1,8 +1,5 @@
 //! Gemini provider adapterと、互換性を保つ従来client API。
 
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Mutex;
-
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -12,18 +9,11 @@ use crate::compose::{
 };
 use crate::http::{json_headers, HttpError, HttpTransport};
 use crate::prompt::build_compose_request_prompt;
+use crate::providers::capability::{CapabilityProbe, CapabilityState};
+
+pub use crate::providers::capability::StructuredOutputMode;
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
-const UNKNOWN: u8 = 0;
-const SUPPORTED: u8 = 1;
-const UNSUPPORTED: u8 = 2;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StructuredOutputMode {
-    Off,
-    On,
-    Auto,
-}
 
 /// Geminiのprovider envelopeをCompose portへ変換するadapter。
 #[derive(Debug)]
@@ -32,8 +22,7 @@ pub struct GeminiAdapter {
     model: String,
     base_url: String,
     mode: StructuredOutputMode,
-    structured_state: AtomicU8,
-    probe: Mutex<()>,
+    capability: CapabilityProbe,
     transport: HttpTransport,
 }
 
@@ -44,12 +33,12 @@ impl Clone for GeminiAdapter {
             model: self.model.clone(),
             base_url: self.base_url.clone(),
             mode: self.mode,
-            structured_state: AtomicU8::new(self.structured_state.load(Ordering::Acquire)),
-            probe: Mutex::new(()),
+            capability: self.capability.clone(),
             transport: self.transport.clone(),
         }
     }
 }
+
 impl GeminiAdapter {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
@@ -57,30 +46,37 @@ impl GeminiAdapter {
             model: model.into(),
             base_url: DEFAULT_BASE_URL.into(),
             mode: StructuredOutputMode::Auto,
-            structured_state: AtomicU8::new(UNKNOWN),
-            probe: Mutex::new(()),
+            capability: CapabilityProbe::default(),
             transport: HttpTransport::default(),
         }
     }
+
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = base_url.into();
         self
     }
+
     pub fn with_structured_output(mut self, mode: StructuredOutputMode) -> Self {
         self.mode = mode;
         self
     }
+
     pub fn with_transport(mut self, transport: HttpTransport) -> Self {
         self.transport = transport;
         self
     }
+
     fn request(&self, prompt: &str, structured: bool) -> Result<String, HttpError> {
         let mut config = json!({"temperature": 0.0});
         if structured {
             config["responseMimeType"] = json!("application/json");
             config["responseJsonSchema"] = compose_schema();
         }
-        let body = json!({"contents":[{"role":"user","parts":[{"text":prompt}]}],"generationConfig":config}).to_string();
+        let body = json!({
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": config
+        })
+        .to_string();
         let key = HeaderValue::from_str(&self.api_key).map_err(|_| HttpError::Configuration)?;
         self.transport.post_json(
             &format!(
@@ -92,13 +88,18 @@ impl GeminiAdapter {
             &body,
         )
     }
+
     fn request_legacy(&self, prompt: &str, structured: bool) -> Result<String, HttpError> {
         let mut config = json!({"temperature": 0.0});
         if structured {
             config["responseMimeType"] = json!("application/json");
             config["responseJsonSchema"] = legacy_schema();
         }
-        let body = json!({"contents":[{"role":"user","parts":[{"text":prompt}]}],"generationConfig":config}).to_string();
+        let body = json!({
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": config
+        })
+        .to_string();
         let key = HeaderValue::from_str(&self.api_key).map_err(|_| HttpError::Configuration)?;
         self.transport.post_json(
             &format!(
@@ -110,6 +111,7 @@ impl GeminiAdapter {
             &body,
         )
     }
+
     fn compose_once(
         &self,
         request: &ComposeBatchRequest,
@@ -118,49 +120,56 @@ impl GeminiAdapter {
         let prompt =
             build_compose_request_prompt(request).map_err(|_| ComposeError::Configuration)?;
         let raw = self.request(&prompt, structured).map_err(map_http_error)?;
-        let response: GeminiResponse =
-            serde_json::from_str(&raw).map_err(|_| ComposeError::InvalidResponse)?;
-        let content = response
-            .candidates
-            .first()
-            .and_then(|c| c.content.parts.first())
-            .map(|part| part.text.as_str())
-            .ok_or(ComposeError::EmptyResponse)?;
-        let mut output = crate::compose::parse_compose_output(content)?;
-        output.metadata = ComposeMetadata {
-            adapter: "gemini".into(),
-            provider: "gemini".into(),
-            model: self.model.clone(),
-        };
-        Ok(output)
+        parse_response(&raw, &self.model)
     }
+
     fn unsupported_schema(error: &HttpError) -> bool {
-        matches!(error, HttpError::Api { status: 400 | 422, body, .. } if body.contains("INVALID_ARGUMENT") && (body.contains("responseMimeType") || body.contains("responseJsonSchema") || body.contains("response_mime_type") || body.contains("response_json_schema")))
+        matches!(
+            error,
+            HttpError::Api {
+                status: 400 | 422,
+                body,
+                ..
+            } if body.contains("INVALID_ARGUMENT")
+                && (
+                    body.contains("responseMimeType")
+                        || body.contains("responseJsonSchema")
+                        || body.contains("response_mime_type")
+                        || body.contains("response_json_schema")
+                )
+        )
     }
 }
+
 impl QuestionComposer for GeminiAdapter {
     fn compose(&self, request: &ComposeBatchRequest) -> Result<ComposeBatchOutput, ComposeError> {
         match self.mode {
             StructuredOutputMode::Off => self.compose_once(request, false),
             StructuredOutputMode::On => self.compose_once(request, true),
             StructuredOutputMode::Auto => {
-                if self.structured_state.load(Ordering::Acquire) == UNSUPPORTED {
+                if self.capability.state() == CapabilityState::Unsupported {
                     return self.compose_once(request, false);
                 }
+
                 // 最初のschema probeを直列化し、同じ失敗で複数回降格しない。
-                let _guard = self.probe.lock().map_err(|_| ComposeError::Transport)?;
-                if self.structured_state.load(Ordering::Acquire) == UNSUPPORTED {
+                let _guard = self
+                    .capability
+                    .lock()
+                    .map_err(|_| ComposeError::Transport)?;
+
+                if self.capability.state() == CapabilityState::Unsupported {
                     return self.compose_once(request, false);
                 }
+
                 let prompt = build_compose_request_prompt(request)
                     .map_err(|_| ComposeError::Configuration)?;
                 match self.request(&prompt, true) {
                     Ok(raw) => {
-                        self.structured_state.store(SUPPORTED, Ordering::Release);
+                        self.capability.mark_supported();
                         parse_response(&raw, &self.model)
                     }
                     Err(error) if Self::unsupported_schema(&error) => {
-                        self.structured_state.store(UNSUPPORTED, Ordering::Release);
+                        self.capability.mark_unsupported();
                         self.compose_once(request, false)
                     }
                     Err(error) => Err(map_http_error(error)),
@@ -206,6 +215,7 @@ fn map_http_error(error: HttpError) -> ComposeError {
 pub struct GeminiClient {
     adapter: GeminiAdapter,
 }
+
 impl GeminiClient {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
@@ -213,10 +223,12 @@ impl GeminiClient {
                 .with_structured_output(StructuredOutputMode::On),
         }
     }
+
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.adapter = self.adapter.with_base_url(base_url);
         self
     }
+
     pub fn generate_text(&self, prompt: &str) -> Result<String, GeminiError> {
         self.adapter
             .request_legacy(prompt, true)
@@ -232,6 +244,7 @@ pub struct GeminiApi {
     base_url: String,
     transport: HttpTransport,
 }
+
 impl GeminiApi {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
@@ -240,10 +253,12 @@ impl GeminiApi {
             transport: HttpTransport::default(),
         }
     }
+
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = base_url.into();
         self
     }
+
     pub fn post_json<T: Serialize>(&self, path: &str, request: &T) -> Result<String, GeminiError> {
         let key = HeaderValue::from_str(&self.api_key)
             .map_err(|_| GeminiError::Http("configuration".into()))?;
@@ -257,6 +272,7 @@ impl GeminiApi {
             )
             .map_err(GeminiError::from_http)
     }
+
     fn url(&self, path: &str) -> String {
         format!(
             "{}/{}",
@@ -277,6 +293,7 @@ pub enum GeminiError {
     Response(String),
     EmptyResponse,
 }
+
 impl GeminiError {
     fn from_http(error: HttpError) -> Self {
         match error {
@@ -289,6 +306,7 @@ impl GeminiError {
         }
     }
 }
+
 impl std::fmt::Display for GeminiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -301,6 +319,7 @@ impl std::fmt::Display for GeminiError {
         }
     }
 }
+
 impl std::error::Error for GeminiError {}
 
 fn extract_text(body: String) -> Result<String, GeminiError> {
@@ -314,27 +333,68 @@ fn extract_text(body: String) -> Result<String, GeminiError> {
         .filter(|x| !x.trim().is_empty())
         .ok_or(GeminiError::EmptyResponse)
 }
+
 pub fn strip_markdown_code_fence(text: &str) -> String {
     crate::compose::extract_json_candidate(text).to_string()
 }
+
 fn compose_schema() -> Value {
-    json!({"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"question":{"type":"string"}},"required":["id","question"]}}},"required":["items"]})
+    json!({
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "question": {"type": "string"}
+                    },
+                    "required": ["id", "question"]
+                }
+            }
+        },
+        "required": ["items"]
+    })
 }
+
 fn legacy_schema() -> Value {
-    json!({"type":"object","properties":{"questions":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"question":{"type":"string"}},"required":["id","question"],"additionalProperties":false}}},"required":["questions"],"additionalProperties":false})
+    json!({
+        "type": "object",
+        "properties": {
+            "questions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "question": {"type": "string"}
+                    },
+                    "required": ["id", "question"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["questions"],
+        "additionalProperties": false
+    })
 }
+
 #[derive(Deserialize)]
 struct GeminiResponse {
     candidates: Vec<Candidate>,
 }
+
 #[derive(Deserialize)]
 struct Candidate {
     content: ResponseContent,
 }
+
 #[derive(Deserialize)]
 struct ResponseContent {
     parts: Vec<ResponsePart>,
 }
+
 #[derive(Deserialize)]
 struct ResponsePart {
     text: String,

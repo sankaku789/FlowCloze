@@ -15,6 +15,7 @@ pub mod pdf;
 pub mod planner;
 pub mod progress;
 pub mod prompt;
+pub mod providers;
 pub mod scaffold;
 pub mod validation;
 
@@ -31,7 +32,7 @@ pub use gemini::{GeminiApi, GeminiClient, GeminiError};
 pub use json::{to_intermediate_json, IntermediateDocument, IntermediateMeta, IntermediateQBlock};
 pub use local_openai::{
     local_openai_url_candidates, try_local_openai_candidates, LocalOpenAiClient, LocalOpenAiError,
-    OpenAiCompatibleAdapter,
+    OpenAiCompatibleAdapter, OpenAiCompatiblePool,
 };
 pub use models::{QBlock, Target, ALLOWED_TARGET_TYPES};
 pub use observability::{

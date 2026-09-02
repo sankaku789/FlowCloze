@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use flowcloze::{
-    ComposeBatchRequest, ComposeTask, GeminiAdapter, GeminiClient, LocalOpenAiClient,
-    OpenAiCompatibleAdapter, QuestionComposer, StructuredOutputMode, WritingStyle,
+    ComposeBatchRequest, ComposeError, ComposeTask, GeminiAdapter, GeminiClient, LocalOpenAiClient,
+    OpenAiCompatibleAdapter, OpenAiCompatiblePool, QuestionComposer, StructuredOutputMode,
+    WritingStyle,
 };
 
 fn request() -> ComposeBatchRequest {
@@ -60,7 +61,12 @@ fn mock(responses: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<usize>>) {
             let _ = stream.read(&mut request);
             *counter.lock().unwrap() += 1;
             let reason = if status == 200 { "OK" } else { "Bad Request" };
-            write!(stream, "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
         }
     });
     (format!("http://{address}"), calls)
@@ -97,6 +103,30 @@ fn auto_downgrades_only_once_and_caches_gemini_schema_rejection() {
     adapter.compose(&request()).unwrap();
     adapter.compose(&request()).unwrap();
     assert_eq!(*calls.lock().unwrap(), 3);
+}
+
+#[test]
+fn openai_auto_accepts_compatible_schema_rejection_wording() {
+    let body =
+        r#"{"choices":[{"message":{"content":"{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}}]}"#;
+    let (url, calls) = mock(vec![
+        (400, r#"{"error":"response_format json_schema is not supported"}"#),
+        (200, body),
+        (200, body),
+    ]);
+    let adapter = OpenAiCompatibleAdapter::new(url, "model", None);
+    adapter.compose(&request()).unwrap();
+    adapter.compose(&request()).unwrap();
+    assert_eq!(*calls.lock().unwrap(), 3);
+}
+
+#[test]
+fn empty_openai_pool_is_configuration_error() {
+    let pool = OpenAiCompatiblePool::new(Vec::new());
+    assert!(matches!(
+        pool.compose(&request()),
+        Err(ComposeError::Configuration)
+    ));
 }
 
 #[test]
