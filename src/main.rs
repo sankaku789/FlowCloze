@@ -11,8 +11,8 @@ use flowcloze::{
     compile_pdf, default_pdf_output_path, parse_markdown, to_ankilot_csv, to_intermediate_json,
     validate_generated_json, CliOverrides, ComposeEvent, ComposeEventKind, EventSink, FailureClass,
     GeminiClient, GeneratedDocument, GenerationConfig, IdentityComposer, IntermediateDocument,
-    JsonLinesEventSink, PdfOptions, PlainProgressSink, ProgressEvent, ProgressSink, ProgressStage,
-    Provider, RewritePolicy, RunContext,
+    JsonLinesEventSink, OpenAiCompatiblePool, PdfOptions, PlainProgressSink, ProgressEvent,
+    ProgressSink, ProgressStage, Provider, RewritePolicy, RunContext,
 };
 
 mod view;
@@ -109,9 +109,9 @@ fn main() {
             progress.set_label(match (config.rewrite, config.provider) {
                 (RewritePolicy::Never, _) => "Identity",
                 (RewritePolicy::Always, Provider::Gemini) => "Gemini",
-                (RewritePolicy::Always, Provider::Local) => "Local",
+                (RewritePolicy::Always, Provider::OpenAiCompatible) => "Local",
                 (RewritePolicy::Auto, Provider::Gemini) => "Auto(Gemini)",
-                (RewritePolicy::Auto, Provider::Local) => "Auto(Local)",
+                (RewritePolicy::Auto, Provider::OpenAiCompatible) => "Auto(Local)",
             });
             generate_with_llm(
                 input_path,
@@ -947,21 +947,14 @@ fn generate_with_llm(
                     &markdown, options, &adapter, &context, &*sink, progress,
                 )
             }
-            Provider::Local => {
-                let adapter = LocalCandidateComposer {
-                    adapters: flowcloze::local_openai_url_candidates(config.base_url.as_deref())
-                        .into_iter()
-                        .map(|url| {
-                            flowcloze::OpenAiCompatibleAdapter::new(
-                                url,
-                                config.model.clone(),
-                                std::env::var(&config.api_key_env).ok(),
-                            )
-                            .with_structured_output(config.structured_output)
-                            .with_transport(retry_transport.clone())
-                        })
-                        .collect(),
-                };
+            Provider::OpenAiCompatible => {
+                let adapter = OpenAiCompatiblePool::from_candidates(
+                    config.base_url.as_deref(),
+                    config.model.clone(),
+                    env::var(&config.api_key_env).ok(),
+                )
+                .with_structured_output(config.structured_output)
+                .with_transport(retry_transport.clone());
                 flowcloze::generate_markdown_with_composer_observed_with_progress(
                     &markdown, options, &adapter, &context, &*sink, progress,
                 )
@@ -1021,31 +1014,6 @@ fn generate_with_llm(
 fn write_stdout_json(mut writer: impl Write, json: &str) -> io::Result<()> {
     writer.write_all(json.as_bytes())?;
     writer.flush()
-}
-
-/// Localの既定候補だけを接続系失敗時に順送りする。
-struct LocalCandidateComposer {
-    adapters: Vec<flowcloze::OpenAiCompatibleAdapter>,
-}
-
-impl flowcloze::QuestionComposer for LocalCandidateComposer {
-    fn compose(
-        &self,
-        request: &flowcloze::ComposeBatchRequest,
-    ) -> Result<flowcloze::ComposeBatchOutput, flowcloze::ComposeError> {
-        for (index, adapter) in self.adapters.iter().enumerate() {
-            match adapter.compose(request) {
-                Ok(output) => return Ok(output),
-                Err(
-                    error @ (flowcloze::ComposeError::Transport | flowcloze::ComposeError::Timeout),
-                ) if index + 1 < self.adapters.len() => {
-                    let _ = error;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Err(flowcloze::ComposeError::Transport)
-    }
 }
 
 /// Markdownからscaffoldを構築し，LLMへ渡す下書きJSONとして出力する．

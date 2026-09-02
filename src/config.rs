@@ -13,7 +13,7 @@ use crate::planner::BatchPolicy;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
     Gemini,
-    Local,
+    OpenAiCompatible,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewritePolicy {
@@ -99,7 +99,7 @@ impl GenerationConfig {
                 max_concurrent_batches: 1,
             },
             (Provider::Gemini, _) => BatchPolicy::gemini_default(),
-            (Provider::Local, _) => BatchPolicy::local_default(),
+            (Provider::OpenAiCompatible, _) => BatchPolicy::local_default(),
         };
         if let Some(value) = self.max_tasks_per_batch {
             policy.max_tasks_per_batch = value;
@@ -139,14 +139,14 @@ pub fn load(cli: CliOverrides) -> Result<GenerationConfig, String> {
         value(&cli.model, "FLOWCLOZE_MODEL", None, file.model.as_deref()).unwrap_or_else(|| {
             match provider {
                 Provider::Gemini => "gemini-2.5-flash".into(),
-                Provider::Local => "gemma4:e2b-it-qat".into(),
+                Provider::OpenAiCompatible => "gemma4:e2b-it-qat".into(),
             }
         });
     let api_key_env = env_value("FLOWCLOZE_API_KEY_ENV")
         .or(file.api_key_env)
         .unwrap_or_else(|| match provider {
             Provider::Gemini => "GEMINI_API_KEY".into(),
-            Provider::Local => "LOCAL_LLM_API_KEY".into(),
+            Provider::OpenAiCompatible => "LOCAL_LLM_API_KEY".into(),
         });
     let base_url = env_value("FLOWCLOZE_BASE_URL")
         .or_else(|| env_value("LOCAL_LLM_BASE_URL"))
@@ -260,8 +260,8 @@ fn number(name: &str, file: Option<usize>) -> Result<Option<usize>, String> {
 fn parse_provider(v: &str) -> Result<Provider, String> {
     match v.trim() {
         "gemini" => Ok(Provider::Gemini),
-        "local" => Ok(Provider::Local),
-        _ => Err("provider は gemini または local を指定してください".into()),
+        "openai-compatible" | "local" => Ok(Provider::OpenAiCompatible),
+        _ => Err("provider は gemini または openai-compatible (local) を指定してください".into()),
     }
 }
 fn parse_batch(v: &str) -> Result<BatchPolicyName, String> {
@@ -326,7 +326,11 @@ mod tests {
 
     #[test]
     fn accepts_only_documented_values_and_positive_numbers() {
-        assert_eq!(parse_provider("local").unwrap(), Provider::Local);
+        assert_eq!(parse_provider("local").unwrap(), Provider::OpenAiCompatible);
+        assert_eq!(
+            parse_provider("openai-compatible").unwrap(),
+            Provider::OpenAiCompatible
+        );
         assert!(parse_provider("openai").is_err());
         assert_eq!(parse_rewrite("auto").unwrap(), RewritePolicy::Auto);
         assert!(parse_fallback("best-effort").is_err());
