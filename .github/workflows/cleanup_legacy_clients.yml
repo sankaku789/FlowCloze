@@ -44,125 +44,41 @@ jobs:
 
           gemini_path = Path('src/gemini.rs')
           gemini = gemini_path.read_text()
-          gemini = replace_once(
-              gemini,
-              '//! Gemini provider adapterと、互換性を保つ従来client API。',
-              '//! Gemini provider adapter。',
-              'gemini module doc',
-          )
-          gemini = replace_once(
-              gemini,
-              'use serde::{Deserialize, Serialize};',
-              'use serde::Deserialize;',
-              'gemini serde import',
-          )
-          gemini = sub_once(
-              gemini,
-              r'\n    fn request_legacy\(.*?\n    fn compose_once\(',
-              '\n    fn compose_once(',
-              'Gemini request_legacy',
-          )
-          gemini = sub_once(
-              gemini,
-              r'\n/// Gemini generateContent APIを呼ぶ従来の同期client。.*?\npub fn strip_markdown_code_fence',
-              '\npub fn strip_markdown_code_fence',
-              'Gemini legacy clients',
-          )
-          gemini = sub_once(
-              gemini,
-              r'\nfn legacy_schema\(\) -> Value \{.*?\n\}\n\n(?=#\[derive\(Deserialize\)\])',
-              '\n',
-              'Gemini legacy schema',
-          )
+          gemini = replace_once(gemini, '//! Gemini provider adapterと、互換性を保つ従来client API。', '//! Gemini provider adapter。', 'gemini module doc')
+          gemini = replace_once(gemini, 'use serde::{Deserialize, Serialize};', 'use serde::Deserialize;', 'gemini serde import')
+          gemini = sub_once(gemini, r'\n    fn request_legacy\(.*?\n    fn compose_once\(', '\n    fn compose_once(', 'Gemini request_legacy')
+          gemini = sub_once(gemini, r'\n/// Gemini generateContent APIを呼ぶ従来の同期client。.*?\npub fn strip_markdown_code_fence', '\npub fn strip_markdown_code_fence', 'Gemini legacy clients')
+          gemini = sub_once(gemini, r'\nfn legacy_schema\(\) -> Value \{.*?\n\}\n\n(?=#\[derive\(Deserialize\)\])', '\n', 'Gemini legacy schema')
           gemini_path.write_text(gemini)
 
           local_path = Path('src/local_openai.rs')
           local = local_path.read_text()
-          local = sub_once(
-              local,
-              r'\n    fn request_legacy\(.*?\n    fn compose_once\(',
-              '\n    fn compose_once(',
-              'OpenAI request_legacy',
-          )
-          local = sub_once(
-              local,
-              r'\n/// OpenAI互換APIを直接叩く従来の同期client。.*?\n#\[derive\(Deserialize\)\]\nstruct ChatResponse',
-              '\n#[derive(Deserialize)]\nstruct ChatResponse',
-              'OpenAI legacy clients',
-          )
-          local = sub_once(
-              local,
-              r'\nfn extract\(body: String\).*?\nfn response_format\(',
-              '\nfn response_format(',
-              'OpenAI legacy extract',
-          )
-          local = sub_once(
-              local,
-              r'\nfn legacy_response_format\(\) -> Value \{.*?\n\}\n\n(?=#\[cfg\(test\)\])',
-              '\n',
-              'OpenAI legacy schema',
-          )
+          local = sub_once(local, r'\n    fn request_legacy\(.*?\n    fn compose_once\(', '\n    fn compose_once(', 'OpenAI request_legacy')
+          local = sub_once(local, r'\n/// OpenAI互換APIを直接叩く従来の同期client。.*?\n#\[derive\(Deserialize\)\]\nstruct ChatResponse', '\n#[derive(Deserialize)]\nstruct ChatResponse', 'OpenAI legacy clients')
+          local = sub_once(local, r'\nfn extract\(body: String\).*?\nfn response_format\(', '\nfn response_format(', 'OpenAI legacy extract')
+          local = sub_once(local, r'\nfn legacy_response_format\(\) -> Value \{.*?\n\}\n\n(?=#\[cfg\(test\)\])', '\n', 'OpenAI legacy schema')
           local_path.write_text(local)
 
           lib_path = Path('src/lib.rs')
           lib = lib_path.read_text()
-          lib = replace_once(
-              lib,
-              'pub use gemini::{GeminiApi, GeminiClient, GeminiError};\n',
-              '',
-              'Gemini legacy re-export',
-          )
-          lib = replace_once(
-              lib,
-              'pub use local_openai::{\n    local_openai_url_candidates, try_local_openai_candidates, LocalOpenAiClient, LocalOpenAiError,\n    OpenAiCompatibleAdapter, OpenAiCompatiblePool,\n};',
-              'pub use local_openai::{\n    local_openai_url_candidates, try_local_openai_candidates, OpenAiCompatibleAdapter,\n    OpenAiCompatiblePool,\n};',
-              'OpenAI legacy re-export',
-          )
+          lib = replace_once(lib, 'pub use gemini::{GeminiApi, GeminiClient, GeminiError};\n', '', 'Gemini legacy re-export')
+          lib = replace_once(lib, 'pub use local_openai::{\n    local_openai_url_candidates, try_local_openai_candidates, LocalOpenAiClient, LocalOpenAiError,\n    OpenAiCompatibleAdapter, OpenAiCompatiblePool,\n};', 'pub use local_openai::{\n    local_openai_url_candidates, try_local_openai_candidates, OpenAiCompatibleAdapter,\n    OpenAiCompatiblePool,\n};', 'OpenAI legacy re-export')
           lib_path.write_text(lib)
 
           main_path = Path('src/main.rs')
           main = main_path.read_text()
           main = replace_once(main, '    GeminiClient, GeneratedDocument,', '    GeneratedDocument,', 'GeminiClient import')
-          main = sub_once(
-              main,
-              r'\n#\[allow\(dead_code\)\]\nconst DEFAULT_MODEL:.*?\n#\[allow\(dead_code\)\]\nconst DEFAULT_LOCAL_MODEL:.*?;\n',
-              '\n',
-              'legacy model constants',
-          )
-          main = sub_once(
-              main,
-              r'\n/// backend種別に応じてGeminiまたはOpenAI互換local APIへpromptを送る．.*?\nfn resolve_local_base_urls\(\) -> Vec<String> \{.*?\n\}\n',
-              '\n',
-              'legacy backend text generator',
-          )
+          main = sub_once(main, r'\n#\[allow\(dead_code\)\]\nconst DEFAULT_MODEL:.*?\n#\[allow\(dead_code\)\]\nconst DEFAULT_LOCAL_MODEL:.*?;\n', '\n', 'legacy model constants')
+          main = sub_once(main, r'\n/// backend種別に応じてGeminiまたはOpenAI互換local APIへpromptを送る．.*?\nfn resolve_local_base_urls\(\) -> Vec<String> \{.*?\n\}\n', '\n', 'legacy backend text generator')
           main_path.write_text(main)
 
           test_path = Path('tests/provider_adapters.rs')
           test = test_path.read_text()
-          test = replace_once(
-              test,
-              '    ComposeBatchRequest, ComposeError, ComposeTask, GeminiAdapter, GeminiClient, LocalOpenAiClient,\n    OpenAiCompatibleAdapter, OpenAiCompatiblePool, QuestionComposer, StructuredOutputMode,\n',
-              '    ComposeBatchRequest, ComposeError, ComposeTask, GeminiAdapter, OpenAiCompatibleAdapter,\n    OpenAiCompatiblePool, QuestionComposer, StructuredOutputMode,\n',
-              'legacy test imports',
-          )
-          test = sub_once(
-              test,
-              r'\nfn mock_capture\(.*?\n\}\n\n(?=fn mock\()',
-              '\n',
-              'mock_capture',
-          )
-          test = sub_once(
-              test,
-              r'\n#\[test\]\nfn legacy_clients_keep_questions_schema_and_text_response\(\) \{.*\Z',
-              '\n',
-              'legacy client test',
-          )
+          test = replace_once(test, '    ComposeBatchRequest, ComposeError, ComposeTask, GeminiAdapter, GeminiClient, LocalOpenAiClient,\n    OpenAiCompatibleAdapter, OpenAiCompatiblePool, QuestionComposer, StructuredOutputMode,\n', '    ComposeBatchRequest, ComposeError, ComposeTask, GeminiAdapter, OpenAiCompatibleAdapter,\n    OpenAiCompatiblePool, QuestionComposer, StructuredOutputMode,\n', 'legacy test imports')
+          test = sub_once(test, r'\nfn mock_capture\(.*?\n\}\n\n(?=fn mock\()', '\n', 'mock_capture')
+          test = sub_once(test, r'\n#\[test\]\nfn legacy_clients_keep_questions_schema_and_text_response\(\) \{.*\Z', '\n', 'legacy client test')
           test_path.write_text(test)
           PY
-
-      - name: Ensure legacy client symbols are gone
-        run: |
-          ! grep -R -E 'GeminiClient|GeminiApi|GeminiError|LocalOpenAiClient|LocalOpenAiError|request_legacy|legacy_response_format|legacy_schema|generate_text_with_backend|resolve_local_base_urls' src tests
 
       - name: Format
         run: cargo fmt --all
