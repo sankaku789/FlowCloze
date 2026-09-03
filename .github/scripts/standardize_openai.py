@@ -1,0 +1,202 @@
+from pathlib import Path
+import re
+
+
+def once(text: str, old: str, new: str, label: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"{label}: expected 1 match, got {count}")
+    return text.replace(old, new, 1)
+
+
+Path("src/local_openai.rs").write_text(
+    """//! 旧module pathの互換re-export。実装はproviders::openai_compatibleに集約する。\n\npub use crate::providers::openai_compatible::{\n    local_openai_url_candidates, try_local_openai_candidates, OpenAiAuth,\n    OpenAiCompatibleAdapter, OpenAiCompatiblePool, OpenAiEndpointConfig,\n};\n"""
+)
+
+Path("src/providers/mod.rs").write_text(
+    """//! LLM provider adapterの公開namespace。\n\npub mod capability;\npub mod openai_compatible;\n\n#[cfg(feature = \"gemini-native\")]\npub mod gemini_native {\n    pub use crate::gemini::GeminiAdapter;\n}\n"""
+)
+
+p = Path("src/providers/openai_compatible/mod.rs")
+text = p.read_text()
+start = text.find("\n    fn auto_compose(")
+end = text.find("\n}\n\nimpl QuestionComposer", start)
+if start == -1 or end == -1:
+    raise SystemExit("openai draft helpers not found")
+text = text[:start] + text[end:]
+text = re.sub(
+    r"\nfn is_unsupported_compose_error\(_error: &ComposeError\) -> bool \{\n    false\n\}\n?",
+    "\n",
+    text,
+)
+p.write_text(text)
+
+p = Path("Cargo.toml")
+text = p.read_text()
+if "[features]" not in text:
+    text = once(
+        text,
+        'license = "MIT OR Apache-2.0"\n\n[dependencies]',
+        'license = "MIT OR Apache-2.0"\n\n[features]\ndefault = []\ngemini-native = []\n\n[dependencies]',
+        "Cargo features",
+    )
+p.write_text(text)
+
+p = Path("src/lib.rs")
+text = p.read_text()
+text = once(
+    text,
+    "pub mod gemini;\n",
+    '#[cfg(feature = "gemini-native")]\npub mod gemini;\n',
+    "gemini module gate",
+)
+text = once(
+    text,
+    "pub use gemini::{GeminiAdapter, StructuredOutputMode};\n",
+    '#[cfg(feature = "gemini-native")]\npub use gemini::GeminiAdapter;\npub use providers::capability::StructuredOutputMode;\n',
+    "gemini exports",
+)
+text = once(
+    text,
+    "pub use local_openai::{\n    local_openai_url_candidates, try_local_openai_candidates, OpenAiCompatibleAdapter,\n    OpenAiCompatiblePool,\n};",
+    "pub use providers::openai_compatible::{\n    local_openai_url_candidates, try_local_openai_candidates, OpenAiAuth,\n    OpenAiCompatibleAdapter, OpenAiCompatiblePool, OpenAiEndpointConfig,\n};",
+    "openai exports",
+)
+p.write_text(text)
+
+p = Path("src/config.rs")
+text = p.read_text()
+text = once(
+    text,
+    "use crate::gemini::StructuredOutputMode;",
+    "use crate::providers::capability::StructuredOutputMode;",
+    "config structured import",
+)
+marker = "use crate::planner::BatchPolicy;\n"
+text = once(
+    text,
+    marker,
+    marker
+    + '\nconst GEMINI_OPENAI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";\n',
+    "gemini compatible base url",
+)
+old = '''    let base_url = env_value("FLOWCLOZE_BASE_URL")
+        .or_else(|| env_value("LOCAL_LLM_BASE_URL"))
+        .or(file.base_url)
+        .filter(|x| !x.trim().is_empty());'''
+new = '''    let base_url = env_value("FLOWCLOZE_BASE_URL")
+        .or_else(|| env_value("LOCAL_LLM_BASE_URL"))
+        .or(file.base_url)
+        .filter(|x| !x.trim().is_empty())
+        .or_else(|| match provider {
+            Provider::Gemini => Some(GEMINI_OPENAI_BASE_URL.into()),
+            Provider::OpenAiCompatible => None,
+        });'''
+text = once(text, old, new, "provider base url defaults")
+p.write_text(text)
+
+p = Path("src/main.rs")
+text = p.read_text()
+text = once(
+    text,
+    "    JsonLinesEventSink, OpenAiCompatiblePool, PdfOptions, PlainProgressSink, ProgressEvent,",
+    "    JsonLinesEventSink, OpenAiCompatibleAdapter, OpenAiCompatiblePool, OpenAiEndpointConfig,\n    PdfOptions, PlainProgressSink, ProgressEvent,",
+    "main openai imports",
+)
+text = text.replace(
+    '(RewritePolicy::Always, Provider::OpenAiCompatible) => "Local",',
+    '(RewritePolicy::Always, Provider::OpenAiCompatible) => "OpenAI-compatible",',
+)
+text = text.replace(
+    '(RewritePolicy::Auto, Provider::OpenAiCompatible) => "Auto(Local)",',
+    '(RewritePolicy::Auto, Provider::OpenAiCompatible) => "Auto(OpenAI-compatible)",',
+)
+old = '''            Provider::Gemini => {
+                let key = config.api_key().unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    progress.emit(ProgressEvent::Failed {
+                        stage: ProgressStage::Config,
+                        class: FailureClass::Authentication,
+                    });
+                    process::exit(2)
+                });
+                let adapter = flowcloze::GeminiAdapter::new(key, config.model.clone())
+                    .with_structured_output(config.structured_output)
+                    .with_transport(retry_transport);
+                flowcloze::generate_markdown_with_composer_observed_with_progress(
+                    &markdown, options, &adapter, &context, &*sink, progress,
+                )
+            }'''
+new = '''            Provider::Gemini => {
+                let key = config.api_key().unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    progress.emit(ProgressEvent::Failed {
+                        stage: ProgressStage::Config,
+                        class: FailureClass::Authentication,
+                    });
+                    process::exit(2)
+                });
+                let base_url = config.base_url.clone().unwrap_or_else(|| {
+                    eprintln!("Gemini OpenAI-compatible endpointが設定されていません");
+                    process::exit(2)
+                });
+                let endpoint = OpenAiEndpointConfig::new(base_url, config.model.clone())
+                    .with_bearer(key)
+                    .with_provider_label("gemini");
+                let adapter = OpenAiCompatibleAdapter::from_endpoint(endpoint)
+                    .with_structured_output(config.structured_output)
+                    .with_transport(retry_transport.clone());
+                flowcloze::generate_markdown_with_composer_observed_with_progress(
+                    &markdown, options, &adapter, &context, &*sink, progress,
+                )
+            }'''
+text = once(text, old, new, "Gemini runtime route")
+p.write_text(text)
+
+p = Path("tests/provider_adapters.rs")
+text = p.read_text()
+text = once(
+    text,
+    "    ComposeBatchRequest, ComposeError, ComposeTask, GeminiAdapter, OpenAiCompatibleAdapter,\n    OpenAiCompatiblePool, QuestionComposer, StructuredOutputMode, WritingStyle,\n};",
+    "    ComposeBatchRequest, ComposeError, ComposeTask, OpenAiCompatibleAdapter,\n    OpenAiCompatiblePool, QuestionComposer, StructuredOutputMode, WritingStyle,\n};\n\n#[cfg(feature = \"gemini-native\")]\nuse flowcloze::GeminiAdapter;",
+    "adapter test imports",
+)
+text = text.replace(
+    "#[test]\nfn both_adapters_use_the_common_fence_parser()",
+    '#[cfg(feature = "gemini-native")]\n#[test]\nfn both_adapters_use_the_common_fence_parser()',
+)
+text = text.replace(
+    "#[test]\nfn auto_downgrades_only_once_and_caches_gemini_schema_rejection()",
+    '#[cfg(feature = "gemini-native")]\n#[test]\nfn auto_downgrades_only_once_and_caches_gemini_schema_rejection()',
+)
+text = text.replace(
+    "fn openai_auto_accepts_compatible_schema_rejection_wording()",
+    "fn openai_auto_falls_back_to_json_object_and_caches_it()",
+)
+text += r'''
+
+#[test]
+fn openai_auto_falls_back_to_prompt_only_and_caches_it() {
+    let body = r#"{"choices":[{"message":{"content":"{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}}]}"#;
+    let (url, calls) = mock(vec![
+        (400, r#"{"error":"response_format json_schema is not supported"}"#),
+        (400, r#"{"error":"response_format json_object is not supported"}"#),
+        (200, body),
+        (200, body),
+    ]);
+    let adapter = OpenAiCompatibleAdapter::new(url, "model", None);
+    adapter.compose(&request()).unwrap();
+    adapter.compose(&request()).unwrap();
+    assert_eq!(*calls.lock().unwrap(), 4);
+}
+
+#[test]
+fn openai_normalizes_content_parts() {
+    let body = r#"{"choices":[{"message":{"content":[{"type":"text","text":"{\"items\":["},{"type":"text","text":"{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}]}}]}"#;
+    let (url, _) = mock(vec![(200, body)]);
+    let adapter = OpenAiCompatibleAdapter::new(url, "model", None)
+        .with_structured_output(StructuredOutputMode::Off);
+    assert_eq!(adapter.compose(&request()).unwrap().items[0].id, "q1");
+}
+'''
+p.write_text(text)
