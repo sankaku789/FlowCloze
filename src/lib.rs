@@ -3,6 +3,7 @@
 pub mod compose;
 pub mod config;
 pub mod csv;
+#[cfg(feature = "gemini-native")]
 pub mod gemini;
 pub mod http;
 pub mod json;
@@ -27,12 +28,9 @@ pub use config::{
     BatchPolicyName, CliOverrides, FallbackPolicy, GenerationConfig, Provider, RewritePolicy,
 };
 pub use csv::to_ankilot_csv;
-pub use gemini::{GeminiAdapter, StructuredOutputMode};
+#[cfg(feature = "gemini-native")]
+pub use gemini::GeminiAdapter;
 pub use json::{to_intermediate_json, IntermediateDocument, IntermediateMeta, IntermediateQBlock};
-pub use local_openai::{
-    local_openai_url_candidates, try_local_openai_candidates, OpenAiCompatibleAdapter,
-    OpenAiCompatiblePool,
-};
 pub use models::{QBlock, Target, ALLOWED_TARGET_TYPES};
 pub use observability::{
     fnv1a_64, ComposeEvent, ComposeEventKind, EventSink, JsonLinesEventSink, MetricsSummary,
@@ -55,6 +53,11 @@ pub use progress::{
     RetryResult,
 };
 pub use prompt::{build_compose_request_prompt, build_generation_prompt};
+pub use providers::capability::StructuredOutputMode;
+pub use providers::openai_compatible::{
+    local_openai_url_candidates, try_local_openai_candidates, OpenAiAuth, OpenAiCompatibleAdapter,
+    OpenAiCompatiblePool, OpenAiEndpointConfig,
+};
 pub use validation::{
     validate_generated_document, validate_generated_json, FixedField, GeneratedDocument,
     ValidationError, ValidationReport,

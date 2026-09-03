@@ -7,8 +7,10 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use serde::Deserialize;
 
-use crate::gemini::StructuredOutputMode;
 use crate::planner::BatchPolicy;
+use crate::providers::capability::StructuredOutputMode;
+
+const GEMINI_OPENAI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
@@ -151,7 +153,11 @@ pub fn load(cli: CliOverrides) -> Result<GenerationConfig, String> {
     let base_url = env_value("FLOWCLOZE_BASE_URL")
         .or_else(|| env_value("LOCAL_LLM_BASE_URL"))
         .or(file.base_url)
-        .filter(|x| !x.trim().is_empty());
+        .filter(|x| !x.trim().is_empty())
+        .or_else(|| match provider {
+            Provider::Gemini => Some(GEMINI_OPENAI_BASE_URL.into()),
+            Provider::OpenAiCompatible => None,
+        });
     let batch = parse_batch(
         value(
             &cli.batch,
