@@ -31,6 +31,7 @@ jobs:
         run: |
           python .github/scripts/standardize_openai.py
           python .github/scripts/gate_native_capability.py
+          python .github/scripts/gate_gemini_test.py
 
       - name: Format
         run: cargo fmt --all
