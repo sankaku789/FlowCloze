@@ -2,8 +2,7 @@ name: Validate OpenAI standardization
 
 on:
   push:
-    branches:
-      - tmp/openai-standardization
+    branches: ["tmp/openai-standardization"]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +10,6 @@ permissions:
 
 jobs:
   refactor:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,58 +53,34 @@ jobs:
                   raise SystemExit(f"{label}: expected 1 match, got {count}")
               return text.replace(old, new, 1)
 
-          # Remove unused draft helper methods left while staging the new adapter.
           p = Path('src/providers/openai_compatible/mod.rs')
           text = p.read_text()
-          text, n = re.subn(r'\n    fn auto_compose\(.*?\n    fn auto_probe\(.*?\n    \}\n(?=\}\n\nimpl QuestionComposer)', '\n', text, count=1, flags=re.S)
-          if n != 1:
-              raise SystemExit(f'openai draft helpers: expected 1 match, got {n}')
+          start = text.find('\n    fn auto_compose(')
+          end = text.find('\n}\n\nimpl QuestionComposer', start)
+          if start == -1 or end == -1:
+              raise SystemExit('openai draft helpers not found')
+          text = text[:start] + text[end:]
           text = re.sub(r'\nfn is_unsupported_compose_error\(_error: &ComposeError\) -> bool \{\n    false\n\}\n?', '\n', text)
           p.write_text(text)
 
           p = Path('Cargo.toml')
           text = p.read_text()
           if '[features]' not in text:
-              text = once(
-                  text,
-                  'license = "MIT OR Apache-2.0"\n\n[dependencies]',
-                  'license = "MIT OR Apache-2.0"\n\n[features]\ndefault = []\ngemini-native = []\n\n[dependencies]',
-                  'Cargo features',
-              )
+              text = once(text, 'license = "MIT OR Apache-2.0"\n\n[dependencies]', 'license = "MIT OR Apache-2.0"\n\n[features]\ndefault = []\ngemini-native = []\n\n[dependencies]', 'Cargo features')
           p.write_text(text)
 
           p = Path('src/lib.rs')
           text = p.read_text()
           text = once(text, 'pub mod gemini;\n', '#[cfg(feature = "gemini-native")]\npub mod gemini;\n', 'gemini module gate')
-          text = once(
-              text,
-              'pub use gemini::{GeminiAdapter, StructuredOutputMode};\n',
-              '#[cfg(feature = "gemini-native")]\npub use gemini::GeminiAdapter;\npub use providers::capability::StructuredOutputMode;\n',
-              'gemini exports',
-          )
-          text = once(
-              text,
-              'pub use local_openai::{\n    local_openai_url_candidates, try_local_openai_candidates, OpenAiCompatibleAdapter,\n    OpenAiCompatiblePool,\n};',
-              'pub use providers::openai_compatible::{\n    local_openai_url_candidates, try_local_openai_candidates, OpenAiAuth,\n    OpenAiCompatibleAdapter, OpenAiCompatiblePool, OpenAiEndpointConfig,\n};',
-              'openai exports',
-          )
+          text = once(text, 'pub use gemini::{GeminiAdapter, StructuredOutputMode};\n', '#[cfg(feature = "gemini-native")]\npub use gemini::GeminiAdapter;\npub use providers::capability::StructuredOutputMode;\n', 'gemini exports')
+          text = once(text, 'pub use local_openai::{\n    local_openai_url_candidates, try_local_openai_candidates, OpenAiCompatibleAdapter,\n    OpenAiCompatiblePool,\n};', 'pub use providers::openai_compatible::{\n    local_openai_url_candidates, try_local_openai_candidates, OpenAiAuth,\n    OpenAiCompatibleAdapter, OpenAiCompatiblePool, OpenAiEndpointConfig,\n};', 'openai exports')
           p.write_text(text)
 
           p = Path('src/config.rs')
           text = p.read_text()
-          text = once(
-              text,
-              'use crate::gemini::StructuredOutputMode;',
-              'use crate::providers::capability::StructuredOutputMode;',
-              'config structured import',
-          )
+          text = once(text, 'use crate::gemini::StructuredOutputMode;', 'use crate::providers::capability::StructuredOutputMode;', 'config structured import')
           marker = 'use crate::planner::BatchPolicy;\n'
-          text = once(
-              text,
-              marker,
-              marker + '\nconst GEMINI_OPENAI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";\n',
-              'gemini compatible base url',
-          )
+          text = once(text, marker, marker + '\nconst GEMINI_OPENAI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";\n', 'gemini compatible base url')
           old = '''    let base_url = env_value("FLOWCLOZE_BASE_URL")
         .or_else(|| env_value("LOCAL_LLM_BASE_URL"))
         .or(file.base_url)
@@ -124,12 +98,7 @@ jobs:
 
           p = Path('src/main.rs')
           text = p.read_text()
-          text = once(
-              text,
-              '    JsonLinesEventSink, OpenAiCompatiblePool, PdfOptions, PlainProgressSink, ProgressEvent,',
-              '    JsonLinesEventSink, OpenAiCompatibleAdapter, OpenAiCompatiblePool, OpenAiEndpointConfig,\n    PdfOptions, PlainProgressSink, ProgressEvent,',
-              'main openai imports',
-          )
+          text = once(text, '    JsonLinesEventSink, OpenAiCompatiblePool, PdfOptions, PlainProgressSink, ProgressEvent,', '    JsonLinesEventSink, OpenAiCompatibleAdapter, OpenAiCompatiblePool, OpenAiEndpointConfig,\n    PdfOptions, PlainProgressSink, ProgressEvent,', 'main openai imports')
           text = text.replace('(RewritePolicy::Always, Provider::OpenAiCompatible) => "Local",', '(RewritePolicy::Always, Provider::OpenAiCompatible) => "OpenAI-compatible",')
           text = text.replace('(RewritePolicy::Auto, Provider::OpenAiCompatible) => "Auto(Local)",', '(RewritePolicy::Auto, Provider::OpenAiCompatible) => "Auto(OpenAI-compatible)",')
           old = '''            Provider::Gemini => {
@@ -176,12 +145,7 @@ jobs:
 
           p = Path('tests/provider_adapters.rs')
           text = p.read_text()
-          text = once(
-              text,
-              '    ComposeBatchRequest, ComposeError, ComposeTask, GeminiAdapter, OpenAiCompatibleAdapter,\n    OpenAiCompatiblePool, QuestionComposer, StructuredOutputMode, WritingStyle,\n};',
-              '    ComposeBatchRequest, ComposeError, ComposeTask, OpenAiCompatibleAdapter,\n    OpenAiCompatiblePool, QuestionComposer, StructuredOutputMode, WritingStyle,\n};\n\n#[cfg(feature = "gemini-native")]\nuse flowcloze::GeminiAdapter;',
-              'adapter test imports',
-          )
+          text = once(text, '    ComposeBatchRequest, ComposeError, ComposeTask, GeminiAdapter, OpenAiCompatibleAdapter,\n    OpenAiCompatiblePool, QuestionComposer, StructuredOutputMode, WritingStyle,\n};', '    ComposeBatchRequest, ComposeError, ComposeTask, OpenAiCompatibleAdapter,\n    OpenAiCompatiblePool, QuestionComposer, StructuredOutputMode, WritingStyle,\n};\n\n#[cfg(feature = "gemini-native")]\nuse flowcloze::GeminiAdapter;', 'adapter test imports')
           text = text.replace('#[test]\nfn both_adapters_use_the_common_fence_parser()', '#[cfg(feature = "gemini-native")]\n#[test]\nfn both_adapters_use_the_common_fence_parser()')
           text = text.replace('#[test]\nfn auto_downgrades_only_once_and_caches_gemini_schema_rejection()', '#[cfg(feature = "gemini-native")]\n#[test]\nfn auto_downgrades_only_once_and_caches_gemini_schema_rejection()')
           text = text.replace('fn openai_auto_accepts_compatible_schema_rejection_wording()', 'fn openai_auto_falls_back_to_json_object_and_caches_it()')
@@ -215,12 +179,7 @@ fn openai_normalizes_content_parts() {
 
           p = Path('.github/workflows/ci.yml')
           text = p.read_text()
-          text = once(
-              text,
-              '      - name: Run tests\n        run: cargo test\n',
-              '      - name: Run tests\n        run: cargo test\n\n      - name: Check optional Gemini native adapter\n        run: |\n          cargo clippy --all-targets --features gemini-native -- -D warnings\n          cargo test --features gemini-native\n',
-              'native feature CI',
-          )
+          text = once(text, '      - name: Run tests\n        run: cargo test\n', '      - name: Run tests\n        run: cargo test\n\n      - name: Check optional Gemini native adapter\n        run: |\n          cargo clippy --all-targets --features gemini-native -- -D warnings\n          cargo test --features gemini-native\n', 'native feature CI')
           p.write_text(text)
           PY
 
@@ -244,5 +203,5 @@ fn openai_normalizes_content_parts() {
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add Cargo.toml src tests .github/workflows/ci.yml
           git diff --cached --check
-          git commit -m 'OpenAI互換adapterを標準経路に統合'
+          git commit -m 'OpenAI互換adapterを標準経路に統合 [skip ci]'
           git push origin HEAD:tmp/openai-standardization
