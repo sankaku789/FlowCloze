@@ -7,6 +7,10 @@ readme = "README.md"
 repository = "https://github.com/sankaku789/FlowCloze"
 license = "MIT OR Apache-2.0"
 
+[features]
+default = []
+gemini-native = []
+
 [dependencies]
 crossterm = "0.27"
 dotenvy = "0.15"

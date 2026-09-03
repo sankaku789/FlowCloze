@@ -67,10 +67,8 @@ mod tests {
 
     #[test]
     fn extracts_string_and_parts_content() {
-        let plain: ChatResponse = serde_json::from_str(
-            r#"{"choices":[{"message":{"content":"hello"}}]}"#,
-        )
-        .unwrap();
+        let plain: ChatResponse =
+            serde_json::from_str(r#"{"choices":[{"message":{"content":"hello"}}]}"#).unwrap();
         assert_eq!(extract_text(plain).unwrap(), "hello");
 
         let parts: ChatResponse = serde_json::from_str(

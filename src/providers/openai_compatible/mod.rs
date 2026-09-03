@@ -158,76 +158,6 @@ impl OpenAiCompatibleAdapter {
         };
         Ok(output)
     }
-
-    fn auto_compose(&self, request: &ComposeBatchRequest) -> Result<ComposeBatchOutput, ComposeError> {
-        if let Some(strategy) = self.capability.strategy() {
-            return self.compose_once(request, strategy);
-        }
-
-        let _guard = self
-            .capability
-            .lock()
-            .map_err(|_| ComposeError::Transport)?;
-
-        if let Some(strategy) = self.capability.strategy() {
-            return self.compose_once(request, strategy);
-        }
-
-        for strategy in [
-            StructuredStrategy::JsonSchema,
-            StructuredStrategy::JsonObject,
-            StructuredStrategy::PromptOnly,
-        ] {
-            match self.compose_once(request, strategy) {
-                Ok(output) => {
-                    self.capability.mark(strategy);
-                    return Ok(output);
-                }
-                Err(error)
-                    if strategy != StructuredStrategy::PromptOnly
-                        && is_unsupported_compose_error(&error) =>
-                {
-                    // compose errorだけではbodyが失われるのでrequestを直接再実行する経路は使わない。
-                    // unsupported判定は下のstrategy probeで扱う。
-                    return self.auto_probe(request, strategy);
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Err(ComposeError::InvalidResponse)
-    }
-
-    fn auto_probe(
-        &self,
-        request: &ComposeBatchRequest,
-        failed_strategy: StructuredStrategy,
-    ) -> Result<ComposeBatchOutput, ComposeError> {
-        let prompt =
-            build_compose_request_prompt(request).map_err(|_| ComposeError::Configuration)?;
-        let remaining = match failed_strategy {
-            StructuredStrategy::JsonSchema => &[
-                StructuredStrategy::JsonObject,
-                StructuredStrategy::PromptOnly,
-            ][..],
-            StructuredStrategy::JsonObject => &[StructuredStrategy::PromptOnly][..],
-            StructuredStrategy::PromptOnly => &[][..],
-        };
-
-        for strategy in remaining {
-            match self.request(&prompt, *strategy) {
-                Ok(raw) => {
-                    let output = self.parse_response(&raw)?;
-                    self.capability.mark(*strategy);
-                    return Ok(output);
-                }
-                Err(error)
-                    if *strategy != StructuredStrategy::PromptOnly
-                        && unsupported_response_format(&error) => {}
-                Err(error) => return Err(map_http(error)),
-            }
-        }
-        Err(ComposeError::InvalidResponse)
-    }
 }
 
 impl QuestionComposer for OpenAiCompatibleAdapter {
@@ -364,8 +294,4 @@ fn map_http(error: HttpError) -> ComposeError {
             status, retryable, ..
         } => ComposeError::Api { status, retryable },
     }
-}
-
-fn is_unsupported_compose_error(_error: &ComposeError) -> bool {
-    false
 }

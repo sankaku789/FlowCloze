@@ -1,14 +1,9 @@
-//! LLM provider adapterの整理された公開namespace。
+//! LLM provider adapterの公開namespace。
 
-pub(crate) mod capability;
+pub mod capability;
+pub mod openai_compatible;
 
-pub mod gemini {
-    pub use crate::gemini::{GeminiAdapter, StructuredOutputMode};
-}
-
-pub mod openai_compatible {
-    pub use crate::local_openai::{
-        local_openai_url_candidates, try_local_openai_candidates, OpenAiCompatibleAdapter,
-        OpenAiCompatiblePool,
-    };
+#[cfg(feature = "gemini-native")]
+pub mod gemini_native {
+    pub use crate::gemini::GeminiAdapter;
 }

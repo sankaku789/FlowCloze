@@ -4,9 +4,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use flowcloze::{
-    ComposeBatchRequest, ComposeError, ComposeTask, GeminiAdapter, OpenAiCompatibleAdapter,
-    OpenAiCompatiblePool, QuestionComposer, StructuredOutputMode, WritingStyle,
+    ComposeBatchRequest, ComposeError, ComposeTask, OpenAiCompatibleAdapter, OpenAiCompatiblePool,
+    QuestionComposer, StructuredOutputMode, WritingStyle,
 };
+
+#[cfg(feature = "gemini-native")]
+use flowcloze::GeminiAdapter;
 
 fn request() -> ComposeBatchRequest {
     ComposeBatchRequest {
@@ -51,6 +54,7 @@ fn mock(responses: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<usize>>) {
     (format!("http://{address}"), calls)
 }
 
+#[cfg(feature = "gemini-native")]
 #[test]
 fn both_adapters_use_the_common_fence_parser() {
     let gemini_body = r#"{"candidates":[{"content":{"parts":[{"text":"```json\n{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}\n```"}]}}]}"#;
@@ -67,6 +71,7 @@ fn both_adapters_use_the_common_fence_parser() {
     assert_eq!(openai.compose(&request()).unwrap().items[0].id, "q1");
 }
 
+#[cfg(feature = "gemini-native")]
 #[test]
 fn auto_downgrades_only_once_and_caches_gemini_schema_rejection() {
     let body = r#"{"candidates":[{"content":{"parts":[{"text":"{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}]}}]}"#;
@@ -85,7 +90,7 @@ fn auto_downgrades_only_once_and_caches_gemini_schema_rejection() {
 }
 
 #[test]
-fn openai_auto_accepts_compatible_schema_rejection_wording() {
+fn openai_auto_falls_back_to_json_object_and_caches_it() {
     let body = r#"{"choices":[{"message":{"content":"{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}}]}"#;
     let (url, calls) = mock(vec![
         (
@@ -108,4 +113,34 @@ fn empty_openai_pool_is_configuration_error() {
         pool.compose(&request()),
         Err(ComposeError::Configuration)
     ));
+}
+
+#[test]
+fn openai_auto_falls_back_to_prompt_only_and_caches_it() {
+    let body = r#"{"choices":[{"message":{"content":"{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}}]}"#;
+    let (url, calls) = mock(vec![
+        (
+            400,
+            r#"{"error":"response_format json_schema is not supported"}"#,
+        ),
+        (
+            400,
+            r#"{"error":"response_format json_object is not supported"}"#,
+        ),
+        (200, body),
+        (200, body),
+    ]);
+    let adapter = OpenAiCompatibleAdapter::new(url, "model", None);
+    adapter.compose(&request()).unwrap();
+    adapter.compose(&request()).unwrap();
+    assert_eq!(*calls.lock().unwrap(), 4);
+}
+
+#[test]
+fn openai_normalizes_content_parts() {
+    let body = r#"{"choices":[{"message":{"content":[{"type":"text","text":"{\"items\":["},{"type":"text","text":"{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}]}}]}"#;
+    let (url, _) = mock(vec![(200, body)]);
+    let adapter = OpenAiCompatibleAdapter::new(url, "model", None)
+        .with_structured_output(StructuredOutputMode::Off);
+    assert_eq!(adapter.compose(&request()).unwrap().items[0].id, "q1");
 }

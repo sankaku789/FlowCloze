@@ -11,8 +11,9 @@ use flowcloze::{
     compile_pdf, default_pdf_output_path, parse_markdown, to_ankilot_csv, to_intermediate_json,
     validate_generated_json, CliOverrides, ComposeEvent, ComposeEventKind, EventSink, FailureClass,
     GeneratedDocument, GenerationConfig, IdentityComposer, IntermediateDocument,
-    JsonLinesEventSink, OpenAiCompatiblePool, PdfOptions, PlainProgressSink, ProgressEvent,
-    ProgressSink, ProgressStage, Provider, RewritePolicy, RunContext,
+    JsonLinesEventSink, OpenAiCompatibleAdapter, OpenAiCompatiblePool, OpenAiEndpointConfig,
+    PdfOptions, PlainProgressSink, ProgressEvent, ProgressSink, ProgressStage, Provider,
+    RewritePolicy, RunContext,
 };
 
 mod view;
@@ -102,9 +103,9 @@ fn main() {
             progress.set_label(match (config.rewrite, config.provider) {
                 (RewritePolicy::Never, _) => "Identity",
                 (RewritePolicy::Always, Provider::Gemini) => "Gemini",
-                (RewritePolicy::Always, Provider::OpenAiCompatible) => "Local",
+                (RewritePolicy::Always, Provider::OpenAiCompatible) => "OpenAI-compatible",
                 (RewritePolicy::Auto, Provider::Gemini) => "Auto(Gemini)",
-                (RewritePolicy::Auto, Provider::OpenAiCompatible) => "Auto(Local)",
+                (RewritePolicy::Auto, Provider::OpenAiCompatible) => "Auto(OpenAI-compatible)",
             });
             generate_with_llm(
                 input_path,
@@ -933,9 +934,16 @@ fn generate_with_llm(
                     });
                     process::exit(2)
                 });
-                let adapter = flowcloze::GeminiAdapter::new(key, config.model.clone())
+                let base_url = config.base_url.clone().unwrap_or_else(|| {
+                    eprintln!("Gemini OpenAI-compatible endpointが設定されていません");
+                    process::exit(2)
+                });
+                let endpoint = OpenAiEndpointConfig::new(base_url, config.model.clone())
+                    .with_bearer(key)
+                    .with_provider_label("gemini");
+                let adapter = OpenAiCompatibleAdapter::from_endpoint(endpoint)
                     .with_structured_output(config.structured_output)
-                    .with_transport(retry_transport);
+                    .with_transport(retry_transport.clone());
                 flowcloze::generate_markdown_with_composer_observed_with_progress(
                     &markdown, options, &adapter, &context, &*sink, progress,
                 )
