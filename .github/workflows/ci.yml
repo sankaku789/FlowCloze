@@ -28,7 +28,9 @@ jobs:
         run: rustup component add rustfmt clippy
 
       - name: Apply refactor
-        run: python .github/scripts/standardize_openai.py
+        run: |
+          python .github/scripts/standardize_openai.py
+          python .github/scripts/gate_native_capability.py
 
       - name: Format
         run: cargo fmt --all
