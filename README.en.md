@@ -16,25 +16,10 @@ Markdown note
 
 ## Documentation
 
-Background, syntax, generation rules, and the OpenAPI definition are organized under `docs/` for GitHub Pages.
+Background, syntax, and generation rules are kept as static documents under `docs/`.
 
 - `docs/index.html`: background and overview
 - `docs/specification.html`: Markdown syntax and generation rules
-- `docs/api.html`: OpenAPI documentation
-- `docs/openapi.yaml`: HTTP API contract
-
-Regenerate the OpenAPI documentation with:
-
-```bash
-npm install
-npm run docs:api
-```
-
-Validate the definition only:
-
-```bash
-npm run docs:api:lint
-```
 
 ## Setup
 
@@ -209,8 +194,6 @@ flowcloze csv -o sample/sample.csv sample/generated.json
 flowcloze --help
 flowcloze --version
 cargo test
-npm run docs:api:lint
-npm run docs:api
 ```
 
 ## Editor Support
@@ -243,7 +226,7 @@ src/gemini.rs      Gemini API client
 src/validation.rs  generated JSON validator
 src/csv.rs         Ankilot CSV exporter
 src/pdf.rs         Typst PDF adapter
-docs/              Pages documentation and OpenAPI definition
+docs/              static background and generation-specification documents
 templates/         Typst templates
 sample/            sample note and outputs
 tests/             parser / JSON / validation tests
