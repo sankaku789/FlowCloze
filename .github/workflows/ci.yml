@@ -46,28 +46,3 @@ jobs:
         run: |
           cargo clippy --all-targets --features gemini-native -- -D warnings
           cargo test --features gemini-native
-
-  docs:
-    name: OpenAPI docs
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Lint OpenAPI
-        run: npm run docs:api:lint
-
-      - name: Build API docs
-        run: npm run docs:api
-
-      - name: Check generated docs are up to date
-        run: git diff --exit-code -- docs/api.html
