@@ -1,0 +1,12 @@
+# 許可される設定キーのみを記載しています。秘密値本体は保存せず、環境変数名を指定します。
+provider = "gemini"
+model = "gemini-2.5-flash"
+api_key_env = "GEMINI_API_KEY"
+# base_url = "http://localhost:11434/v1"
+batch = "auto"
+max_tasks_per_batch = 8
+max_input_tokens = 12000
+max_concurrent_batches = 3
+rewrite = "always"
+fallback = "error"
+structured_output = "auto"

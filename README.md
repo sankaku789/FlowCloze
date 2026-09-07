@@ -3,8 +3,7 @@
 日本語 | [English](README.en.md)
 
 FlowClozeは，Markdownで書いた学習ノートから文章補完問題を生成するCLIツールです．
-
-ノート本文はそのまま読み物として残し，問題にしたい範囲だけを `#qblock{ ... }` で囲みます．答えにしたい語句は `[答え]` として明示します．FlowClozeはその指定を中間JSONへ変換し，Geminiによる問題文生成，生成結果の検証，TypstによるPDF化までを扱います．
+問題にしたい範囲を `#qblock{ ... }` で囲み，答えにしたい語句を `[答え]` または `[答え]{type}` で指定します．FlowClozeはMarkdownを中間JSONへ変換し，Geminiによる問題生成，検証，PDF/CSV出力までを扱います．
 
 ```text
 Markdown note
@@ -12,524 +11,227 @@ Markdown note
   -> intermediate JSON
   -> Gemini question generation
   -> generated JSON validation
-  -> Typst PDF
+  -> PDF / CSV / TUI
 ```
 
-## 背景
+## ドキュメント
 
-試験などの勉強をするとき，ノートにまとめたり暗記シートを作成したりすると思います．私もこれまで，主に次の2つの方法で勉強していました．
+背景，記法，生成仕様，OpenAPI定義はGitHub Pages向けの `docs/` に整理しています．
 
-1. Markdown形式のノート
-2. 手作りの暗記シート（EXCEL-PDF）
+- `docs/index.html`: 背景と概要
+- `docs/specification.html`: Markdown記法と生成仕様
+- `docs/api.html`: OpenAPIドキュメント
+- `docs/openapi.yaml`: HTTP API契約
 
-1つ目は，資料を読みながら内容を自分の言葉でまとめていく方法です．後から見返しやすい一方で，内容を抽象的に覚えてしまい，具体的な用語や定義を問われたときに対応しづらいことがありました．
+OpenAPIドキュメントは次のコマンドで再生成できます．
 
-2つ目は，資料を読みながら要点を整理し，覚えたい語句を空欄にした**文章補完問題**を自分で作る方法です．作成した問題はEXCELに入力して暗記シートの形に整え，PDFとして出力したあと，ノートアプリに取り込んで使っていました．1問1答ではなく文章補完問題にしていたのは，前後の文脈から語句の定義や意味を思い出せるため，単語だけを切り出して覚えるよりも印象に残りやすかったからです．
-
-ただし，この方法では問題文を考えるだけでなく，EXCELへ転記し，PDFとして使える形に整える作業も必要になります．その結果，実際に暗記を始める前の準備段階でかなりのリソースを使ってしまっていました．
-
-そこで，Markdownノートの書きやすさと，文章補完問題の覚えやすさを両立できないかと考えました．そのために作ったのがFlowClozeです．
-
-## システム構成
-FlowClozeは，Markdownノートから問題範囲を抽出し，LLMで問題文を生成したあと，生成結果を検証します．生成した問題はJSONとして保存できるほか，TypstによるPDF出力や，Ankilotへ取り込むためのCSV出力にも対応しています．
-
-システム構成は次の通りです．
-
-```mermaid
-flowchart LR
-    note[Markdown note<br/>#qblock / targets] --> cli[FlowCloze CLI]
-    cli --> gemini[Gemini API]
-    gemini --> cli
-    cli --> json[Generated JSON]
-    cli --> pdf[PDF<br/>via Typst]
-    cli --> csv[Ankilot CSV]
-    cli --> tui[TUI viewer]
+```bash
+npm install
+npm run docs:api
 ```
 
-## 主な機能
+定義だけ検証する場合:
 
-主な機能は次の通りです．
-
-- Markdown内の `#qblock{ ... }` を問題化範囲として抽出
-- `[答え]` または `[答え]{type}` で指定した語句だけを解答対象にする
-- `# 見出し1` を単元名として扱い，生成JSONとPDFに反映
-- qblock IDは出現順に `qblock-001` 形式で自動採番
-- Gemini APIで文章補完問題JSONを生成
-- 中間JSONと生成JSONを照合し，余分な答えや空欄数のずれを検出
-- 出力前に，TUI上で生成された問題を確認可能
-- Typstで「解答ページ -> 問題ページ」の順にA4横PDFを出力
-- AnkilotにインポートできるようCSV出力に対応
-- VS Code用の簡易シンタックスハイライト拡張を同梱
+```bash
+npm run docs:api:lint
+```
 
 ## セットアップ
 
-### 必要なもの
+必要なもの:
 
 - Rust / Cargo
 - Typst CLI（PDF出力を使う場合）
-- Gemini API key（`generate` コマンドを使う場合）
+- 日本語フォント（PDF出力で日本語を表示する場合）
+- Gemini API key（Geminiで書き換え生成する場合）
 
-### インストール
+Ubuntu / WSLでは，PDFの日本語表示用にNoto CJKフォントを入れてください．
+
+```bash
+sudo apt update
+sudo apt install -y fonts-noto-cjk
+fc-cache -fv
+```
+
+Typstから見えているか確認する場合:
+
+```bash
+typst fonts | grep "Noto Sans CJK"
+```
+
+ビルドだけ行う場合:
+
+```bash
+cargo build --release
+```
+
+### コマンドとしてインストールする
+
+このリポジトリをcloneしたディレクトリで次を実行すると，`flowcloze` コマンドとして使えるようになります．
 
 ```bash
 cargo install --path .
 ```
 
-`~/.cargo/bin` が `PATH` に入っていない場合は，シェル設定に追加してください．
+インストール先は通常 `~/.cargo/bin/flowcloze` です．`~/.cargo/bin` が `PATH` に入っていない場合は，シェル設定に追加してください．
 
-動作確認には次のコマンドを使います．
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+確認:
 
 ```bash
 flowcloze --version
 ```
 
-### 開発用ビルド
-
-リポジトリ上で開発する場合は，通常のdebugビルドとテストを使います．
+releaseビルド済みバイナリへシンボリックリンクを張る方法でも使えます．
 
 ```bash
-cargo build
-cargo test
+mkdir -p ~/.local/bin
+ln -sfn "$PWD/target/release/flowcloze" ~/.local/bin/flowcloze
 ```
 
-インストールせずにローカルのコードを実行する場合は，`cargo run -- ...` を使います．
+一時的に試すだけなら，インストールせずに `cargo run -- ...` でも実行できます．
+
+## 生成設定
+
+`.env` を使う場合:
 
 ```bash
-cargo run -- sample/sample.md
+cp .env.example .env
 ```
 
-このREADMEでは，以降のコマンド例は `cargo install --path .` を実行し，`flowcloze` コマンドとして実行できる前提で書いています．
+`.env` には実際のAPIキーを保存できます。一方、`config.toml`には秘密値を保存せず、`api_key_env`で環境変数名だけを指定します。設定ファイルを使う場合だけ、別途 `cp config.toml.example config.toml` を実行してください。`api set`は非推奨です。全項目と旧名の対応は [`.env.example`](.env.example) を参照してください。
+
+```env
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+FLOWCLOZE_PROVIDER=gemini
+```
+
+`generate` は `--provider gemini|local` でプロバイダを選びます。`--backend` は互換用の別名です。`--model`、`--rewrite always|never|auto`、`--fallback error|draft`、`--structured-output auto|on|off`、`--verbose` も指定できます。
 
 ```bash
-flowcloze sample/sample.md
+flowcloze generate --provider gemini --model gemini-2.5-flash \
+  --rewrite auto --fallback draft --structured-output auto --verbose \
+  -o sample/generated.json sample/sample.md
 ```
 
-## Markdown形式
+`--rewrite never` はIdentity生成を使うためAPIキーやプロバイダ接続を必要としません。`auto` はリスト、複数行、終端記号なし、または短い本文だけを書き換え、その他はIdentity生成します。`--fallback error`（既定値）は失敗をそのまま返します。`--fallback draft` は通信系または内容検証系の失敗時に、失敗したtaskだけをIdentity下書きへ戻します。ただしID・固定フィールド・順序の対応付けが不正な場合は下書きに戻しません。
 
-### qblock指定
+設定値の優先順位は、CLI、canonical環境変数、（ある場合のみ）legacy環境変数、`config.toml`、既定値です。空の環境変数は未指定として扱います。`FLOWCLOZE_CONFIG` で設定ファイルのパスを変更できます。設定ファイルの例は [`config.toml.example`](config.toml.example) を参照してください。
 
-問題化したい範囲を `#qblock{ ... }` で囲みます．
+`generate` はstderrへ解析・batch・検証・保存の人間向け進捗を表示します。`--verbose` または `FLOWCLOZE_LOG=debug` では、その表示に加えて観測用JSON Linesもstderrに出力します。いずれにもMarkdown本文、prompt、プロバイダ応答、認証情報は含まれません。`max_concurrent_batches` は入力検証と観測に使われますが、現在の実行は逐次です。
 
-```md
-# ソフトウェア工学の概論
-
-#qblock{
-- [QCD]{term-name}は[品質]{meaning}，[コスト]{meaning}，[納期]{meaning}
-}
-```
-
-qblock IDは書きません．出現順に `qblock-001`，`qblock-002` のようなIDが自動で付きます．
-
-```md
-#qblock{
-- [情報システム]{term-name}は，人，機械，コンピュータが協調して目的を達成する仕組みである．
-}
-```
-
-### target指定
-
-答えにしたい語句は `[答え]` で書きます．必要な場合は `[答え]{type}` として出題観点を明示できます．
-
-```md
-[要求定義]は，[要求獲得]，[要求分析]，[要求仕様化]，[検証]からなる．
-```
-
-`[]` の中が解答文字列です．`{}` を付けた場合は出題観点として扱います．typeを省略した場合は `term-name` として扱います．Geminiには，ここで指定したtargets以外を答えにしないよう指示します．
-
-### 単元見出し
-
-PDF上の単元見出しとして使うのはMarkdownの見出し1だけです．
-
-```md
-# 要求定義
-```
-
-`##` や `###` はノート内の構造として残せますが，PDFの単元見出しには使いません．
-
-### target type一覧
-
-typeは任意です．指定する場合，現在，警告なしで使えるtypeは以下です．typeは「その語句をどの観点で問いたいか」を示すラベルです．
-
-| type | 説明 |
-|---|---|
-| `term-name` | 用語名そのものを問う |
-| `meaning` | 意味，定義，性質，目的などを問う |
-| `process` | 手順，工程，動作，状態変化などを問う |
-| `relation` | 構成，比較，分類，関係，対応などを問う |
-
-未定義typeも抽出されますが，中間JSONの `warnings` に警告が付きます．
-
-## CLIの使い方
-
-### API設定
-
-`generate`コマンドを使用するためには，Gemini APIキーを `.env` に保存します．モデル指定は省略できます．
+互換性のためのCLI保存機能:
 
 ```bash
 flowcloze api set --key your_api_key_here
 ```
 
-モデルを更新する場合:
+## 最小例
 
-```bash
-flowcloze api set --key your_api_key_here --model gemini-2.5-flash
+入力Markdown:
+
+```md
+# ソフトウェア工学の概論
+
+#qblock{
+[QCD]{term-name}は[品質]{meaning}，[コスト]{meaning}，[納期]{meaning}を表す．
+}
 ```
 
-
-### Markdownを解析する
-
-抽出されたqblock IDとtargetsをテキストで確認します．
+抽出結果を確認:
 
 ```bash
 flowcloze sample/sample.md
 ```
 
-### 中間JSONを書き出す
-
-Markdownから中間JSONを生成します．
+中間JSONを書き出す:
 
 ```bash
 flowcloze --json -o sample/sample.json sample/sample.md
 ```
 
-`-o` を省略すると標準出力へ出します．
+Geminiで問題を生成:
 
 ```bash
-flowcloze --json sample/sample.md
+flowcloze generate -s -o sample/generated.json sample/sample.md
 ```
 
-`-o` を指定した通常parseは，自動的にJSON出力として扱われます．
+LLMに渡すscaffoldを確認:
 
 ```bash
-flowcloze -o sample/sample.json sample/sample.md
+flowcloze inspect-scaffold sample/sample.md
 ```
 
-### 問題を生成する
-
-Geminiで文章補完問題を生成します．生成後，FlowClozeは中間JSONと照合し，検証に通ったJSONだけを保存します．検証に失敗した場合は，検証エラーをGeminiに渡して最大3回まで再生成します．
+batch policyを指定して生成:
 
 ```bash
-flowcloze generate -o sample/sample.json sample/sample.md
+flowcloze generate --batch small -s -o sample/generated.json sample/sample.md
 ```
 
-`generate` 実行時に追加制約を入力できます．空行で終了します．
+OllamaまたはLM StudioのOpenAI互換サーバでローカルLLMを使って生成:
 
-追加制約の入力をスキップする場合:
+標準ローカルモデルを取得し，OllamaまたはLM Studioのローカルサーバを起動してから実行します。URLは `FLOWCLOZE_BASE_URL`、互換用の `LOCAL_LLM_BASE_URL`、`config.toml`、既定候補の順で解決します。未設定時はOllama (`http://localhost:11434/v1`) を先に試し，失敗したらLM Studio (`http://localhost:1234/v1`) を試します。
+
+Ollamaを使う場合:
 
 ```bash
-flowcloze generate -s -o sample/sample.json sample/sample.md
+ollama pull gemma4:e2b-it-qat
 ```
 
-モデルを明示する場合:
+LM Studioを使う場合は，LM Studio上で`gemma4:e2b-it-qat`を取得・ロードし，Local Serverを起動します。
 
 ```bash
-flowcloze generate --model gemini-2.5-flash -o sample/sample.json sample/sample.md
+flowcloze local check
 ```
-
-### 生成JSONを検証する
-
-中間JSONと生成JSONを手動で検証します．
 
 ```bash
-flowcloze validate sample/sample.json sample/sample.json
+flowcloze generate --provider local -s -o sample/generated.json sample/sample.md
 ```
 
-成功時は `validation ok` を出力します．失敗時は検証エラーを表示して終了コード `1` で終了します．
-
-### 生成JSONを表示する
-
-生成JSONをTUIで確認することができます．
+PDFを作る:
 
 ```bash
-flowcloze view sample/sample.json
+flowcloze pdf -o sample/sample.pdf sample/generated.json
 ```
 
-![tui example](fig/image.png)
-
-### Ankilot CSVを書き出す
-
-生成JSONからAnkilot取り込み用CSVを作ります．CSVはUTF-8のヘッダーなし2列形式です．
-
-1. 表: question
-2. 裏: answers
+Ankilot向けCSVを書き出す:
 
 ```bash
-flowcloze csv -o sample/sample.csv sample/sample.json
+flowcloze csv -o sample/sample.csv sample/generated.json
 ```
 
-`-o` を省略すると標準出力へ出します．
-
-
-### PDFを作成する
-
-生成JSONからPDFを作ります．デフォルトでは `templates/cloze.typ` を使い，入力JSONと同じ場所に `.pdf` を出力します．
-
-```bash
-flowcloze pdf sample/sample.json
-```
-
-出力先やテンプレートを指定できます．
-
-```bash
-flowcloze pdf -o sample/sample.pdf --template templates/cloze.typ sample/sample.json
-```
-
-PDFは各ページを「解答」「問題」の順に出力します．解答ページには答えを赤字で表示し，問題ページでは同じ位置を空欄にします．
-
-### ヘルプとバージョン
-
-ヘルプとバージョンを表示します．
+## よく使うコマンド
 
 ```bash
 flowcloze --help
 flowcloze --version
+cargo test
+npm run docs:api:lint
+npm run docs:api
 ```
-
-
-
-## JSON形式
-
-中間JSONは，Markdownから抽出した事実だけを保持します．
-
-```json
-{
-  "meta": {
-    "source": "sample/sample.md"
-  },
-  "qblocks": [
-    {
-      "id": "qblock-001",
-      "section": "要求定義",
-      "source_text": "要求定義は，「顧客が欲しいモノ」から要求仕様書をまとめる工程である．",
-      "targets": [
-        { "answer": "要求定義", "type": "term-name" },
-        { "answer": "要求仕様書", "type": "relation" }
-      ]
-    }
-  ]
-}
-```
-
-生成JSONは，Typstテンプレートと検証器が読む形式です．
-
-```json
-{
-  "questions": [
-    {
-      "id": "qblock-001",
-      "section": "要求定義",
-      "type": "context-cloze",
-      "targets": [
-        { "answer": "要求定義", "type": "term-name" },
-        { "answer": "要求仕様書", "type": "relation" }
-      ],
-      "question": "＿＿＿は，顧客が欲しいモノから＿＿＿をまとめる工程である．",
-      "answers": ["要求定義", "要求仕様書"],
-      "source_text": "要求定義は，「顧客が欲しいモノ」から要求仕様書をまとめる工程である．",
-      "explanation": "",
-      "tags": [],
-      "warnings": []
-    }
-  ]
-}
-```
-
-## 責務分担
-
-現在の生成フローでは，GeminiにJSON全体の正しさを任せません．各部分の責務は次の通りです．
-
-- `parser.rs`: Markdownから `#qblock`，target，section，target位置を抽出する
-- `json.rs`: 中間JSONを作る．`blocks`，`cloze_text`，`cloze_template`，`targets`，`answers` を確定する
-- `prompt.rs`: 中間JSONから `id` / `cloze_template` / `blank_count` / `answers` だけを抽出し，Geminiへ「question本文だけを編集する」ための短い指示を作る
-- `gemini.rs`: Gemini APIを呼び，`id` と `question` の最小JSONを受け取る
-- `main.rs`: Gemini出力を中間JSONで正規化し，`section` / `type` / `targets` / `answers` / `source_text` / 段落境界を補完する
-- `validation.rs`: 空欄数，解答順，target対応，段落境界を検証する
-- `templates/cloze.typ`: 生成JSONからPDFを組版する
-
-## 現在の設計詳細
-
-### 基本方針
-
-FlowClozeでは，LLMに構造化データの正しさを任せない設計にしています．Geminiの責務は，qblock内のバラバラなノート文を，1つの自然な文章補完問題の本文へ編集することだけです．
-
-次の情報はRust側で決定します．
-
-- qblock ID
-- section
-- target一覧
-- answers配列
-- source_text
-- 空欄の数
-- 解答順
-- 段落境界
-- PDF上の解答欄
-
-Geminiへ送る入力は，実質的に `id`，`cloze_template`，`blank_count`，`answers` だけです．Geminiが返すJSONは `id` と `question` だけです．最終的な生成JSONは，Gemini出力を中間JSONで正規化して作ります．
-
-### Markdown解析
-
-Markdownでは，問題化したい範囲を `#qblock{ ... }` で囲みます．qblockの中にある `[答え]` または `[答え]{type}` がtargetです．
-
-sectionは次の優先順で決まります．
-
-1. qblock直前の `# 見出し1`
-2. qblock内の先頭 `# 見出し1`
-3. どちらもなければ空文字列
-
-`##` や `###` はsectionにはしません．qblock内の `##` / `###` は段落境界として扱います．見出し文字列そのものは `blocks[].text` や `blocks[].cloze_text` には含めません．
-
-### 中間JSON
-
-中間JSONは，Markdownから抽出した事実を保持するRust側の生成タスクです．主なフィールドの役割は次の通りです．Geminiへ渡すための入力ではなく，後段の正規化と検証で使う完全な基準データです．
-
-- `schema_version`: 中間JSONのバージョン
-- `meta.source`: 元Markdownファイルのパス
-- `meta.format.blank`: 空欄文字列．現在は `＿＿＿`
-- `meta.format.block_separator`: block結合時の区切り．現在は `\n\n`
-- `meta.format.paragraph_indent`: 段落先頭の字下げ．現在は全角スペース
-- `tasks[]`: qblockごとの生成タスク
-- `tasks[].id`: `qblock-001` 形式のID
-- `tasks[].section`: PDFや表示で使う単元名
-- `tasks[].source.raw`: target markup付きの元本文
-- `tasks[].source.plain`: target markupを外した本文
-- `tasks[].blocks[]`: 段落単位の構造
-- `blocks[].text`: target markupを外したblock本文
-- `blocks[].cloze_text`: target部分を `＿＿＿` に置換したblock本文
-- `blocks[].starts_new_paragraph`: このblockの前に段落境界を置くかどうか
-- `blocks[].target_refs`: block内に含まれるtarget index
-- `tasks[].cloze_template`: Gemini用入力へ抽出する「元の文章」と「穴埋め下書き」
-- `tasks[].targets`: index，answer，type，block_idを持つtarget一覧
-- `tasks[].answers`: target順に並べたanswer文字列
-
-`cloze_template` は次の形です．
-
-```text
-元の文章:
-...
-
-穴埋め下書き:
-...
-```
-
-Gemini用入力は，中間JSONから次の4項目だけを取り出して作ります．
-
-```json
-{
-  "tasks": [
-    {
-      "id": "qblock-001",
-      "cloze_template": "元の文章:\n...\n\n穴埋め下書き:\n...",
-      "blank_count": 2,
-      "answers": ["要求定義", "要求仕様書"]
-    }
-  ]
-}
-```
-
-Geminiは「元の文章」で文脈を読み，「穴埋め下書き」の空欄数と順序を保ったまま，question本文だけを整えます．`blank_count` は，question内の `＿＿＿` の数を合わせるためのチェック情報です．`answers` は，空欄へ戻したときに体言止めや語尾欠落にならないかを確認するための補助情報です．
-
-### Geminiプロンプト
-
-Geminiへの指示は短く保っています．現在のプロンプトで強調しているのは次の点です．
-
-- Geminiの責務はquestion本文の編集だけ
-- Geminiへ渡すJSONには `id` / `cloze_template` / `blank_count` / `answers` だけを含める
-- `section` / `type` / `targets` / `answers` / `source_text` はRust側で補完する
-- `＿＿＿` の数と順序を変えない
-- `＿＿＿` に対応する答え語句をquestion本文に残さない
-- targetでない説明・条件・例・比較はなるべく残す
-- 常体（だ・である調）で書く
-- 各段落は全角スペースで始める
-- 元ノートにない知識は足さない
-
-Geminiから期待する生出力は次の最小形です．
-
-```json
-{
-  "questions": [
-    {
-      "id": "qblock-001",
-      "question": "　＿＿＿は，顧客が欲しいモノから＿＿＿をまとめる工程である．"
-    }
-  ]
-}
-```
-
-### 生成JSON正規化
-
-Geminiの生出力はそのまま保存しません．`main.rs` の正規化処理で，中間JSONをもとに最終的な生成JSONへ変換します．
-
-正規化で行うことは次の通りです．
-
-- `tasks` の順序に合わせて `questions` を並べ直す
-- `id` は中間JSONの `task.id` を使う
-- `section` は中間JSONの `task.section` を使う
-- `type` は `context-cloze` にする
-- `targets` は中間JSONの `targets` から `answer` と `type` だけをコピーする
-- `answers` は中間JSONの `answers` をコピーする
-- `source_text` は中間JSONの `source.plain` をコピーする
-- `question` だけGemini出力を使う
-- `##` / `###` 由来の段落境界が不足していれば，対応する空欄を含む文の前に `\n\n` を補う
-- `。　次段落` のように全角スペースだけで段落が始まっている場合は，`。\n\n　次段落` に直す
-- 各段落の先頭に全角スペースがなければ付与する
-
-このため，Geminiが `targets` や `answers` を返さなくても，最終生成JSONには必ず中間JSON由来の値が入ります．
-
-### 検証
-
-検証器は，中間JSONと生成JSONを照合します．主に次を確認します．
-
-- qblockごとのquestionが存在するか
-- questionが空でないか
-- `＿＿＿` の数と `answers` の数が一致するか
-- targetがあるのに空欄がない生成結果になっていないか
-- `answers` の順序が中間JSONと一致するか
-- `answers` にtarget外の語句が混ざっていないか
-- targetが `answers` から抜けていないか
-- 必要な段落改行数が満たされているか
-
-検証に失敗した場合，`generate` は検証エラーをGeminiへ返し，最大3回まで再生成します．
-
-### PDF出力
-
-PDFは `templates/cloze.typ` で組版します．生成JSONの `questions[]` を読み，解答ページと問題ページを交互に出力します．
-
-PDF表示の現在の方針は次の通りです．
-
-- sectionが変わったときだけ見出し帯を表示する
-- question本文はJSON内の改行を反映する
-- 段落間の余分な空白は作らず，全角スペースで段落開始を示す
-- 解答ページでは `answers` を赤字で表示する
-- 問題ページでは同じ位置を空欄として表示する
-- 長い解答は文字サイズと欄の高さを調整して収める
-
-### 設計上の意図
-
-この設計の狙いは，LLMの自由生成を文章編集に限定し，構造化データの正しさをRust側で担保することです．
-
-Geminiに任せると揺れやすいもの，たとえば `targets`，`answers`，section，source_text，解答順は中間JSONから機械的に作ります．一方で，箇条書きや断片的なメモを自然な文章補完問題に整える部分だけはGeminiに任せます．
 
 ## エディタサポート
 
 `editors/vscode-flowcloze-syntax` に，`#qblock` と `[答え]` / `[答え]{type}` を見やすくするVS Code用の簡易拡張があります．
 
-### ローカルにインストールする
-
-WSL上のVS Codeを使用している場合は，VS Code Serverの拡張ディレクトリにシンボリックリンクを作成します．
+WSL上のVS Codeを使用している場合:
 
 ```sh
 mkdir -p ~/.vscode-server/extensions
 ln -sfn "$PWD/editors/vscode-flowcloze-syntax" ~/.vscode-server/extensions/flowcloze.flowcloze-syntax-0.0.1
 ```
 
-その後，VS Codeで `Developer: Reload Window` を実行し，`sample/sample.md` などのMarkdownファイルを開いてください．
-
-WSL以外のLinux環境の場合は，代わりに `~/.vscode/extensions` を使用します．
+WSL以外のLinux環境の場合:
 
 ```sh
 mkdir -p ~/.vscode/extensions
 ln -sfn "$PWD/editors/vscode-flowcloze-syntax" ~/.vscode/extensions/flowcloze.flowcloze-syntax-0.0.1
 ```
+
+その後，VS Codeで `Developer: Reload Window` を実行してください．
 
 ## リポジトリ構成
 
@@ -541,14 +243,11 @@ src/gemini.rs      Gemini APIクライアント
 src/validation.rs  生成JSONバリデータ
 src/csv.rs         Ankilot CSVエクスポータ
 src/pdf.rs         Typst PDFアダプタ
+docs/              Pages向けドキュメントとOpenAPI定義
 templates/         Typstテンプレート
 sample/            サンプルノートと出力例
 tests/             パーサ / JSON / 検証のテスト
 ```
-
-## 開発について
-
-このプログラムの開発には，バイブコーディングを利用しています．そのため，利用中にバグや重大な問題を見つけた場合は，Issueに内容を書いてください．修正できる場合は，ブランチを切って変更を入れ，Pull Requestを送ってください．ご協力よろしくお願いします．
 
 ## ライセンス
 

@@ -10,10 +10,12 @@ pub fn to_ankilot_csv(document: &GeneratedDocument) -> String {
     csv
 }
 
+/// Ankilotの2列形式に合わせ，表面にquestion，裏面にanswersを入れる．
 fn question_to_row(question: &GeneratedQuestion) -> [String; 2] {
     [question.question.clone(), question.answers.join("\n")]
 }
 
+/// 1行分のCSVを追記する．各fieldのescapeはwrite_csv_fieldへ委譲する．
 fn write_csv_row(csv: &mut String, row: &[String; 2]) {
     for (index, field) in row.iter().enumerate() {
         if index > 0 {
@@ -24,6 +26,7 @@ fn write_csv_row(csv: &mut String, row: &[String; 2]) {
     csv.push('\n');
 }
 
+/// CSV仕様に合わせてquoteを二重化し，常にdouble quoteで囲む．
 fn write_csv_field(csv: &mut String, field: &str) {
     if !field
         .bytes()

@@ -1,0 +1,1 @@
+Rust 2021 CLI/library (`flowcloze` beta) with serde/serde_json, reqwest blocking + rustls, TOML config, ratatui/crossterm TUI, Typst PDF integration, dotenvy. Node/npm is only for Redocly OpenAPI docs (`package.json`). Main source responsibilities are mapped in README; provider and generation boundaries: `mem:generation_architecture`.

@@ -1,3 +1,5 @@
+#![cfg(feature = "gemini-native")]
+
 use flowcloze::gemini::strip_markdown_code_fence;
 
 #[test]
