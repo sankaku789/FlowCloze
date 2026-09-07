@@ -10,5 +10,6 @@ rewrite = "always"
 fallback = "error"
 structured_output = "auto"
 
-# install.sh places the bundled template here by default.
-typst_template = "~/.config/flowcloze/templates/cloze.typ"
+# The bundled Typst template is materialized automatically when PDF output is used.
+# Set this only to override it with your own template.
+# typst_template = "/path/to/custom.typ"

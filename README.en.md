@@ -65,16 +65,16 @@ cd FlowCloze
 cargo build --release
 ```
 
-Install `flowcloze` with the bundled installer:
+Install `flowcloze` as a command:
 
 ```bash
-./install.sh
+cargo install --path . --force
 flowcloze --version
 ```
 
-`install.sh` runs `cargo install --path . --force`, copies the bundled Typst template to `~/.config/flowcloze/templates/cloze.typ` (or under `XDG_CONFIG_HOME`), and updates `typst_template` in `config.toml` automatically.
+The standard Typst template is embedded in the binary. When PDF output is used for the first time, FlowCloze materializes it at `~/.config/flowcloze/templates/cloze.typ` (or under `XDG_CONFIG_HOME`). Installation therefore does not depend on an OS- or shell-specific installer script.
 
-The binary is usually installed to `~/.cargo/bin/flowcloze`. Running `cargo install --path .` directly installs only the binary and does not inject the Typst template.
+The binary is usually installed to `~/.cargo/bin/flowcloze`.
 
 For a temporary run without installing, use `cargo run -- ...`.
 
@@ -155,7 +155,7 @@ flowcloze view sample/generated.json
 flowcloze pdf -o sample/sample.pdf sample/generated.json
 ```
 
-When installed with `./install.sh`, the default template is placed at `~/.config/flowcloze/templates/cloze.typ` and configured automatically.
+The standard template is embedded in the binary and materialized at `~/.config/flowcloze/templates/cloze.typ` when PDF output is used. A configured `typst_template` overrides it.
 For a one-off override, use:
 
 ```bash
@@ -184,7 +184,7 @@ When `XDG_CONFIG_HOME` is set, FlowCloze uses `$XDG_CONFIG_HOME/flowcloze/`. For
 export XDG_CONFIG_HOME="$PWD/.dev-config"
 ```
 
-A normal `./install.sh` installation creates or updates the config directory, bundled Typst template, and `config.toml` automatically.
+The bundled Typst template is materialized automatically when PDF output is used, so no extra template-install step is required.
 
 Store the Gemini API key in the dedicated `credentials.toml`, not in `config.toml`:
 
@@ -203,10 +203,10 @@ rewrite = "always"
 fallback = "error"
 structured_output = "auto"
 batch = "auto"
-typst_template = "~/.config/flowcloze/templates/cloze.typ"
+# typst_template = "/path/to/custom.typ"
 ```
 
-`typst_template` is the default template for PDF generation. `flowcloze pdf --template ...` overrides it for one invocation.
+`typst_template` is only needed to replace the bundled default. If omitted, FlowCloze materializes the embedded template automatically. `flowcloze pdf --template ...` overrides it for one invocation.
 
 Main `generate` options:
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.1.2-beta - 2026-09-07
+
+### Fixed
+
+- Remove the shell-specific installation requirement introduced in 2.1.1-beta.
+- Embed the standard Typst template in the FlowCloze binary and materialize it automatically for PDF output.
+
+### Changed
+
+- Restore `cargo install --path . --force` as the cross-platform installation path.
+- Keep `typst_template` as an optional custom-template override instead of requiring installer-written configuration.
+
 ## 2.1.1-beta - 2026-09-07
 
 ### Fixed

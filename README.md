@@ -65,16 +65,16 @@ cd FlowCloze
 cargo build --release
 ```
 
-`flowcloze` コマンドとしてインストールする場合は、付属インストーラを使います:
+`flowcloze` コマンドとしてインストールする場合:
 
 ```bash
-./install.sh
+cargo install --path . --force
 flowcloze --version
 ```
 
-`install.sh` は `cargo install --path . --force` を実行したあと、Typstテンプレートを `~/.config/flowcloze/templates/cloze.typ`（`XDG_CONFIG_HOME` 設定時はその配下）へ配置し、`config.toml` の `typst_template` も自動設定します。
+標準Typstテンプレートはバイナリに内包されています。PDF出力を初めて使うと、FlowCloze自身が `~/.config/flowcloze/templates/cloze.typ`（`XDG_CONFIG_HOME` 設定時はその配下）へ自動展開します。そのため、インストール手順はシェルやOS固有のスクリプトに依存しません。
 
-インストール先は通常 `~/.cargo/bin/flowcloze` です。`cargo install --path .` を直接使うとバイナリだけが入り、Typstテンプレートの注入は行われません。
+インストール先は通常 `~/.cargo/bin/flowcloze` です。
 
 一時的に試すだけなら、インストールせずに `cargo run -- ...` でも実行できます。
 
@@ -155,7 +155,7 @@ flowcloze view sample/generated.json
 flowcloze pdf -o sample/sample.pdf sample/generated.json
 ```
 
-`./install.sh` で導入した場合、標準テンプレートは `~/.config/flowcloze/templates/cloze.typ` に配置され、`config.toml` へ自動設定されます。
+標準テンプレートはバイナリに内包され、PDF出力時に `~/.config/flowcloze/templates/cloze.typ` へ自動展開されます。`typst_template` を設定した場合は、そのカスタムテンプレートを優先します。
 一時的に別のTypstテンプレートを使う場合:
 
 ```bash
@@ -184,7 +184,7 @@ FlowCloze 2.1では、設定をユーザー単位の標準ディレクトリへ�
 export XDG_CONFIG_HOME="$PWD/.dev-config"
 ```
 
-通常のインストールでは `./install.sh` が設定ディレクトリ、Typstテンプレート、`config.toml` を自動作成・更新します。
+標準TypstテンプレートはPDF出力時に自動展開されるため、テンプレート配置のための追加インストール操作は不要です。
 
 Gemini APIキーは `config.toml` ではなく、専用の `credentials.toml` に保存します。
 
@@ -203,10 +203,10 @@ rewrite = "always"
 fallback = "error"
 structured_output = "auto"
 batch = "auto"
-typst_template = "~/.config/flowcloze/templates/cloze.typ"
+# typst_template = "/path/to/custom.typ"
 ```
 
-`typst_template` がPDF生成時の標準テンプレートになります。`flowcloze pdf --template ...` を指定した場合はCLI指定を優先します。
+`typst_template` は標準テンプレートを差し替えたい場合だけ指定します。未指定時は内蔵テンプレートを自動展開します。`flowcloze pdf --template ...` を指定した場合はCLI指定を優先します。
 
 主な `generate` オプション:
 

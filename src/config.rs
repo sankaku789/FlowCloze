@@ -12,6 +12,7 @@ use crate::planner::BatchPolicy;
 use crate::providers::capability::StructuredOutputMode;
 
 const GEMINI_OPENAI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+const BUNDLED_TYPST_TEMPLATE: &str = include_str!("../templates/cloze.typ");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
@@ -241,13 +242,56 @@ pub fn load(cli: CliOverrides) -> Result<GenerationConfig, String> {
     })
 }
 
-/// PDF の既定 Typst テンプレートを標準 config.toml から解決する。
+/// PDF のTypstテンプレートを解決する。
+///
+/// `typst_template` が未指定なら、バイナリへ埋め込んだ標準テンプレートを
+/// ユーザー設定ディレクトリへ展開して利用する。
 pub fn typst_template_path() -> Result<PathBuf, String> {
     let file = load_file()?;
+    let managed = config_dir()?.join("templates").join("cloze.typ");
     match file.typst_template {
-        Some(value) if !value.trim().is_empty() => Ok(expand_home(&value)),
-        _ => Ok(config_dir()?.join("templates").join("cloze.typ")),
+        Some(value) if !value.trim().is_empty() => {
+            let selected = expand_home(&value);
+            if selected == managed {
+                ensure_bundled_typst_template(&managed)?;
+            }
+            Ok(selected)
+        }
+        _ => {
+            ensure_bundled_typst_template(&managed)?;
+            Ok(managed)
+        }
     }
+}
+
+fn ensure_bundled_typst_template(path: &Path) -> Result<(), String> {
+    let directory = config_dir()?;
+    let template_directory = path
+        .parent()
+        .ok_or_else(|| "Typstテンプレートの保存先が不正です".to_string())?;
+    fs::create_dir_all(template_directory).map_err(|error| {
+        format!(
+            "{} を作成できませんでした: {error}",
+            template_directory.display()
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            format!(
+                "{} の権限を設定できませんでした: {error}",
+                directory.display()
+            )
+        })?;
+    }
+
+    let current = fs::read_to_string(path).ok();
+    if current.as_deref() == Some(BUNDLED_TYPST_TEMPLATE) {
+        return Ok(());
+    }
+    fs::write(path, BUNDLED_TYPST_TEMPLATE)
+        .map_err(|error| format!("{} を書き込めませんでした: {error}", path.display()))
 }
 
 /// Gemini API キーを標準 credentials.toml に保存する。
@@ -495,18 +539,28 @@ mod tests {
     }
 
     #[test]
-    fn default_typst_template_uses_config_directory() {
+    fn default_typst_template_is_materialized_from_binary() {
         let _lock = environment_test_lock();
         let _xdg = EnvironmentVariable::new("XDG_CONFIG_HOME");
         let directory = temporary_home("default-template");
         env::set_var("XDG_CONFIG_HOME", &directory);
+        let expected = directory
+            .join("flowcloze")
+            .join("templates")
+            .join("cloze.typ");
+        assert_eq!(typst_template_path().unwrap(), expected);
         assert_eq!(
-            typst_template_path().unwrap(),
-            directory
-                .join("flowcloze")
-                .join("templates")
-                .join("cloze.typ")
+            fs::read_to_string(&expected).unwrap(),
+            BUNDLED_TYPST_TEMPLATE
         );
+
+        fs::write(&expected, "stale template").unwrap();
+        assert_eq!(typst_template_path().unwrap(), expected);
+        assert_eq!(
+            fs::read_to_string(&expected).unwrap(),
+            BUNDLED_TYPST_TEMPLATE
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
