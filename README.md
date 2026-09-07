@@ -16,25 +16,10 @@ Markdown note
 
 ## ドキュメント
 
-背景，記法，生成仕様，OpenAPI定義はGitHub Pages向けの `docs/` に整理しています．
+背景と記法・生成仕様は `docs/` に静的ドキュメントとして整理しています．
 
 - `docs/index.html`: 背景と概要
 - `docs/specification.html`: Markdown記法と生成仕様
-- `docs/api.html`: OpenAPIドキュメント
-- `docs/openapi.yaml`: HTTP API契約
-
-OpenAPIドキュメントは次のコマンドで再生成できます．
-
-```bash
-npm install
-npm run docs:api
-```
-
-定義だけ検証する場合:
-
-```bash
-npm run docs:api:lint
-```
 
 ## セットアップ
 
@@ -209,8 +194,6 @@ flowcloze csv -o sample/sample.csv sample/generated.json
 flowcloze --help
 flowcloze --version
 cargo test
-npm run docs:api:lint
-npm run docs:api
 ```
 
 ## エディタサポート
@@ -243,7 +226,7 @@ src/gemini.rs      Gemini APIクライアント
 src/validation.rs  生成JSONバリデータ
 src/csv.rs         Ankilot CSVエクスポータ
 src/pdf.rs         Typst PDFアダプタ
-docs/              Pages向けドキュメントとOpenAPI定義
+docs/              背景と生成仕様の静的ドキュメント
 templates/         Typstテンプレート
 sample/            サンプルノートと出力例
 tests/             パーサ / JSON / 検証のテスト
