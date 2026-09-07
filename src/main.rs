@@ -19,8 +19,6 @@ use flowcloze::{
 mod view;
 
 fn main() {
-    let _ = dotenvy::dotenv();
-
     let args = match Args::parse(env::args().skip(1)) {
         Ok(args) => args,
         Err(message) => {
@@ -47,14 +45,14 @@ fn main() {
             return;
         }
         Command::ApiSet { api_key } => {
-            eprintln!(
-                "warning: api set は非推奨です。api_key_env が示す環境変数を設定してください。"
-            );
             if let Err(error) = save_api_settings(api_key) {
                 eprintln!("{error}");
                 process::exit(1);
             }
-            println!(".env を更新しました．");
+            let path = flowcloze::config::credentials_path()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|_| "credentials.toml".to_string());
+            println!("{path} を更新しました．");
             return;
         }
         Command::View { generated_path } => {
@@ -591,7 +589,7 @@ fn print_help() {
     eprintln!("  view                   生成JSONをTUIで表示します / View generated JSON in TUI");
     eprintln!("  csv                    生成JSONからAnkilot用CSVを作成します / Export Ankilot CSV");
     eprintln!("  pdf                    生成JSONからPDFを作成します / Build PDF from JSON");
-    eprintln!("  api set                APIキーを.envに保存します / Save API key to .env");
+    eprintln!("  api set                APIキーを標準credentials.tomlに保存します / Save API key to the standard credentials.toml");
     eprintln!("\nMarkdown記法 / Markdown Syntax:");
     eprintln!("  #qblock{{ ... }}        問題化範囲を囲みます / Mark a question range");
     eprintln!("  [答え]                 解答対象を指定します / Mark an answer target");
@@ -669,136 +667,9 @@ fn export_ankilot_csv(generated_path: &str, output_path: Option<&str>) {
     }
 }
 
-/// Gemini API keyを.envへ保存する．
+/// Gemini API keyを標準 credentials.toml へ保存する．
 fn save_api_settings(api_key: &str) -> Result<(), String> {
-    if api_key.contains(['\r', '\n', '\0']) {
-        return Err("APIキーに改行またはNULを含めることはできません".to_string());
-    }
-    let env_path = PathBuf::from(".env");
-    let existing = fs::read_to_string(&env_path).unwrap_or_default();
-    let mut lines = Vec::new();
-    let mut has_key = false;
-
-    for line in existing.lines() {
-        if line.trim_start().starts_with("GEMINI_API_KEY=") {
-            lines.push(format!("GEMINI_API_KEY={api_key}"));
-            has_key = true;
-        } else if !line.trim_start().starts_with("GEMINI_MODEL=") {
-            lines.push(line.to_string());
-        }
-    }
-
-    if !has_key {
-        lines.push(format!("GEMINI_API_KEY={api_key}"));
-    }
-
-    let mut body = lines.join("\n");
-    if !body.ends_with('\n') {
-        body.push('\n');
-    }
-    atomic_write_env(&env_path, &body)
-}
-
-fn atomic_write_env(env_path: &std::path::Path, body: &str) -> Result<(), String> {
-    let (temporary, mut temporary_file) = open_secure_temp(env_path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        temporary_file
-            .set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|_| ".env を更新できませんでした".to_string())?;
-    }
-    let write_result = temporary_file
-        .write_all(body.as_bytes())
-        .and_then(|_| temporary_file.sync_all());
-    if write_result.is_err() {
-        drop(temporary_file);
-        let _ = fs::remove_file(&temporary);
-        return Err(".env を更新できませんでした".to_string());
-    }
-    drop(temporary_file);
-    if fs::rename(&temporary, env_path).is_err() {
-        let _ = fs::remove_file(&temporary);
-        return Err(".env を更新できませんでした".to_string());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(env_path, fs::Permissions::from_mode(0o600))
-            .map_err(|_| ".env を更新できませんでした".to_string())?;
-    }
-    Ok(())
-}
-
-fn open_secure_temp(env_path: &std::path::Path) -> Result<(PathBuf, fs::File), String> {
-    use std::fs::OpenOptions;
-    #[cfg(unix)]
-    use std::os::unix::fs::OpenOptionsExt;
-    let parent = env_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-    for _ in 0..16 {
-        let mut random = [0u8; 16];
-        getrandom::getrandom(&mut random).map_err(|_| ".env を更新できませんでした".to_string())?;
-        let path = parent.join(format!(
-            ".{}.{}.tmp",
-            env_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("env"),
-            random
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        ));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        match options.open(&path) {
-            Ok(file) => return Ok((path, file)),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(_) => return Err(".env を更新できませんでした".to_string()),
-        }
-    }
-    Err(".env を更新できませんでした".to_string())
-}
-
-#[cfg(test)]
-#[allow(clippy::items_after_test_module)]
-mod api_set_tests {
-    use super::*;
-
-    #[test]
-    fn atomic_env_write_uses_private_permissions_and_redacts_failures() {
-        let mut random = [0u8; 8];
-        getrandom::getrandom(&mut random).unwrap();
-        let directory = std::env::temp_dir().join(format!(
-            "flowcloze-api-set-{}",
-            random
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        ));
-        fs::create_dir(&directory).unwrap();
-        let path = directory.join(".env");
-        atomic_write_env(&path, "GEMINI_API_KEY=secret-marker\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "GEMINI_API_KEY=secret-marker\n"
-        );
-        let error = atomic_write_env(&directory.join("missing/.env"), "secret-marker").unwrap_err();
-        assert!(!error.contains("secret-marker"));
-        fs::remove_dir_all(directory).unwrap();
-    }
+    flowcloze::config::save_gemini_api_key(api_key)
 }
 
 /// local backendのセットアップ補助を実行する．
@@ -846,10 +717,18 @@ fn compile_pdf_file(generated_json_path: &str, output_path: Option<&str>, templa
     let output_pdf_path = output_path
         .map(PathBuf::from)
         .unwrap_or_else(|| default_pdf_output_path(generated_json_path));
+    let template_path = if template_path == "templates/cloze.typ" {
+        flowcloze::config::typst_template_path().unwrap_or_else(|error| {
+            eprintln!("{error}");
+            process::exit(2)
+        })
+    } else {
+        PathBuf::from(template_path)
+    };
     let options = PdfOptions {
         generated_json_path: PathBuf::from(generated_json_path),
         output_pdf_path: output_pdf_path.clone(),
-        template_path: PathBuf::from(template_path),
+        template_path,
     };
 
     if let Err(error) = compile_pdf(&options) {
@@ -949,10 +828,14 @@ fn generate_with_llm(
                 )
             }
             Provider::OpenAiCompatible => {
+                let api_key = config.optional_api_key().unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    process::exit(2)
+                });
                 let adapter = OpenAiCompatiblePool::from_candidates(
                     config.base_url.as_deref(),
                     config.model.clone(),
-                    env::var(&config.api_key_env).ok(),
+                    api_key,
                 )
                 .with_structured_output(config.structured_output)
                 .with_transport(retry_transport.clone());

@@ -153,7 +153,8 @@ flowcloze view sample/generated.json
 flowcloze pdf -o sample/sample.pdf sample/generated.json
 ```
 
-別のTypstテンプレートを使う場合:
+標準テンプレートは `~/.config/flowcloze/config.toml` の `typst_template` で指定します。
+一時的に別のTypstテンプレートを使う場合:
 
 ```bash
 flowcloze pdf --template path/to/template.typ \
@@ -168,26 +169,47 @@ flowcloze csv -o sample/sample.csv sample/generated.json
 
 ## 生成設定
 
-`.env` を使う場合:
+FlowCloze 2.1では、設定をユーザー単位の標準ディレクトリへ集約します。
+
+```text
+~/.config/flowcloze/config.toml
+~/.config/flowcloze/credentials.toml
+```
+
+`XDG_CONFIG_HOME` が設定されている場合は、`$XDG_CONFIG_HOME/flowcloze/` を使います。開発時は例えば次のように分離できます。
 
 ```bash
-cp .env.example .env
+export XDG_CONFIG_HOME="$PWD/.dev-config"
 ```
 
-Geminiの例:
-
-```env
-GEMINI_API_KEY=YOUR_GEMINI_API_KEY
-FLOWCLOZE_PROVIDER=gemini
-```
-
-設定ファイルを使う場合:
+通常設定を作る例:
 
 ```bash
-cp config.toml.example config.toml
+mkdir -p ~/.config/flowcloze
+cp config.toml.example ~/.config/flowcloze/config.toml
 ```
 
-秘密値は `config.toml` に直接保存せず、`api_key_env` でAPIキーを持つ環境変数名を指定してください。
+Gemini APIキーは `config.toml` ではなく、専用の `credentials.toml` に保存します。
+
+```bash
+flowcloze api set --key "YOUR_GEMINI_API_KEY"
+```
+
+Unix系OSでは `credentials.toml` を `0600`、設定ディレクトリを `0700` で作成します。
+
+`config.toml` の例:
+
+```toml
+provider = "gemini"
+model = "gemini-2.5-flash"
+rewrite = "always"
+fallback = "error"
+structured_output = "auto"
+batch = "auto"
+typst_template = "/absolute/path/to/cloze.typ"
+```
+
+`typst_template` がPDF生成時の標準テンプレートになります。`flowcloze pdf --template ...` を指定した場合はCLI指定を優先します。
 
 主な `generate` オプション:
 
@@ -227,8 +249,8 @@ flowcloze generate \
 - `error`: 失敗をそのままエラーにする
 - `draft`: 通信または内容検証に失敗したtaskをIdentity下書きへ戻す
 
-設定値は、CLI、canonical環境変数、legacy環境変数（対応している場合）、`config.toml`、既定値の順に解決されます。
-`FLOWCLOZE_CONFIG` で設定ファイルのパスを変更できます。
+設定値は **CLI > `~/.config/flowcloze/config.toml` > 組み込み既定値** の順に解決されます。
+`.env`、カレントディレクトリの `config.toml`、旧設定用環境変数は自動では読みません。
 
 ## ローカルLLM
 

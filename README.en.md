@@ -153,7 +153,8 @@ flowcloze view sample/generated.json
 flowcloze pdf -o sample/sample.pdf sample/generated.json
 ```
 
-Use another Typst template:
+Set the default template with `typst_template` in `~/.config/flowcloze/config.toml`.
+For a one-off override, use:
 
 ```bash
 flowcloze pdf --template path/to/template.typ \
@@ -168,26 +169,47 @@ flowcloze csv -o sample/sample.csv sample/generated.json
 
 ## Generation Settings
 
-Create a local `.env` file:
+FlowCloze 2.1 keeps user-level settings in the standard config directory:
+
+```text
+~/.config/flowcloze/config.toml
+~/.config/flowcloze/credentials.toml
+```
+
+When `XDG_CONFIG_HOME` is set, FlowCloze uses `$XDG_CONFIG_HOME/flowcloze/`. For development, you can isolate settings like this:
 
 ```bash
-cp .env.example .env
+export XDG_CONFIG_HOME="$PWD/.dev-config"
 ```
 
-Gemini example:
-
-```env
-GEMINI_API_KEY=YOUR_GEMINI_API_KEY
-FLOWCLOZE_PROVIDER=gemini
-```
-
-Create a config file when needed:
+Create the normal config:
 
 ```bash
-cp config.toml.example config.toml
+mkdir -p ~/.config/flowcloze
+cp config.toml.example ~/.config/flowcloze/config.toml
 ```
 
-Do not store secrets directly in `config.toml`. Use `api_key_env` to name the environment variable that holds the API key.
+Store the Gemini API key in the dedicated `credentials.toml`, not in `config.toml`:
+
+```bash
+flowcloze api set --key "YOUR_GEMINI_API_KEY"
+```
+
+On Unix-like systems, FlowCloze creates `credentials.toml` with mode `0600` and the config directory with mode `0700`.
+
+Example `config.toml`:
+
+```toml
+provider = "gemini"
+model = "gemini-2.5-flash"
+rewrite = "always"
+fallback = "error"
+structured_output = "auto"
+batch = "auto"
+typst_template = "/absolute/path/to/cloze.typ"
+```
+
+`typst_template` is the default template for PDF generation. `flowcloze pdf --template ...` overrides it for one invocation.
 
 Main `generate` options:
 
@@ -227,8 +249,8 @@ flowcloze generate \
 - `error`: return the failure as an error
 - `draft`: fall back failed transport/content-validation tasks to Identity drafts
 
-Settings resolve in this order: CLI, canonical environment variable, supported legacy environment variable, `config.toml`, then defaults.
-Set `FLOWCLOZE_CONFIG` to choose a different config file.
+Settings resolve in this order: **CLI > `~/.config/flowcloze/config.toml` > built-in defaults**.
+FlowCloze no longer automatically reads `.env`, a current-directory `config.toml`, or the legacy configuration environment variables.
 
 ## Local LLM
 

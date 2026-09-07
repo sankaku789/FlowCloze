@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.1.0-beta - 2026-09-07
+
+### Added
+
+- Add user-level FlowCloze configuration under `~/.config/flowcloze/` with `XDG_CONFIG_HOME` support.
+- Add private `credentials.toml` storage for Gemini API keys through `flowcloze api set`.
+- Add `typst_template` as the default PDF template setting.
+
+### Changed
+
+- Resolve generation settings from CLI, the standard user config, then built-in defaults.
+
+### Removed
+
+- Remove automatic `.env`, current-directory `config.toml`, and legacy configuration environment-variable loading.
+
 ## 2.0.0-beta - 2026-09-07
 
 ### Added

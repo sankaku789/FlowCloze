@@ -1,33 +1,38 @@
-//! CLI と設定ファイルの生成設定を一箇所で解決する。
+//! FlowCloze の標準設定と秘密情報を解決する。
 
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::planner::BatchPolicy;
 use crate::providers::capability::StructuredOutputMode;
 
 const GEMINI_OPENAI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+const DEFAULT_TYPST_TEMPLATE: &str = "templates/cloze.typ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
     Gemini,
     OpenAiCompatible,
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewritePolicy {
     Always,
     Never,
     Auto,
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FallbackPolicy {
     Error,
     Draft,
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchPolicyName {
     Auto,
@@ -40,7 +45,6 @@ pub enum BatchPolicyName {
 struct FileConfig {
     provider: Option<String>,
     model: Option<String>,
-    api_key_env: Option<String>,
     base_url: Option<String>,
     batch: Option<String>,
     max_tasks_per_batch: Option<usize>,
@@ -49,6 +53,16 @@ struct FileConfig {
     rewrite: Option<String>,
     fallback: Option<String>,
     structured_output: Option<String>,
+    typst_template: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Credentials {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gemini_api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_llm_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -65,7 +79,6 @@ pub struct CliOverrides {
 pub struct GenerationConfig {
     pub provider: Provider,
     pub model: String,
-    pub api_key_env: String,
     pub base_url: Option<String>,
     pub batch: BatchPolicyName,
     pub max_tasks_per_batch: Option<usize>,
@@ -77,12 +90,35 @@ pub struct GenerationConfig {
 }
 
 /// プロセス環境を変更するテストで共有するロック。
-///
-/// `main` など別crateのテストも同じ環境変数を触る場合にこの関数を使う。
 #[doc(hidden)]
 pub fn environment_test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
+
+/// 標準の FlowCloze 設定ディレクトリを返す。
+///
+/// `XDG_CONFIG_HOME` があれば `$XDG_CONFIG_HOME/flowcloze`、なければ
+/// `~/.config/flowcloze` を使う。
+pub fn config_dir() -> Result<PathBuf, String> {
+    if let Some(xdg) = nonempty_env_path("XDG_CONFIG_HOME") {
+        return Ok(xdg.join("flowcloze"));
+    }
+    if let Some(home) = nonempty_env_path("HOME") {
+        return Ok(home.join(".config").join("flowcloze"));
+    }
+    if let Some(appdata) = nonempty_env_path("APPDATA") {
+        return Ok(appdata.join("flowcloze"));
+    }
+    Err("FlowCloze の設定ディレクトリを決定できません。HOME または XDG_CONFIG_HOME を設定してください".into())
+}
+
+pub fn config_path() -> Result<PathBuf, String> {
+    Ok(config_dir()?.join("config.toml"))
+}
+
+pub fn credentials_path() -> Result<PathBuf, String> {
+    Ok(config_dir()?.join("credentials.toml"))
 }
 
 impl GenerationConfig {
@@ -115,186 +151,267 @@ impl GenerationConfig {
         policy
     }
 
-    /// APIキーは必要になる直前まで読まない。
+    /// provider に対応する API キーを秘密設定から読む。
+    pub fn optional_api_key(&self) -> Result<Option<String>, String> {
+        let credentials = load_credentials()?;
+        let value = match self.provider {
+            Provider::Gemini => credentials.gemini_api_key,
+            Provider::OpenAiCompatible => credentials.local_llm_api_key,
+        };
+        Ok(value.filter(|value| !value.trim().is_empty()))
+    }
+
+    /// API キーが必須の provider 用。
     pub fn api_key(&self) -> Result<String, String> {
-        env::var(&self.api_key_env)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| format!("{} が未設定です", self.api_key_env))
+        self.optional_api_key()?.ok_or_else(|| {
+            let location = credentials_path()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|_| "credentials.toml".to_string());
+            match self.provider {
+                Provider::Gemini => format!(
+                    "Gemini APIキーが未設定です。`flowcloze api set --key <API_KEY>` を実行してください ({location})"
+                ),
+                Provider::OpenAiCompatible => {
+                    format!("ローカルLLM APIキーが未設定です ({location})")
+                }
+            }
+        })
     }
 }
 
+/// CLI > 標準 config.toml > 組み込み既定値の順に生成設定を解決する。
 pub fn load(cli: CliOverrides) -> Result<GenerationConfig, String> {
     let file = load_file()?;
-    // canonical > legacy > file > default. 空の環境変数は未指定として扱う。
     let provider = parse_provider(
-        value(
-            &cli.provider,
-            "FLOWCLOZE_PROVIDER",
-            Some("FLOWCLOZE_LLM_BACKEND"),
-            file.provider.as_deref(),
-        )
-        .as_deref()
-        .unwrap_or("gemini"),
+        cli.provider
+            .as_deref()
+            .or(file.provider.as_deref())
+            .unwrap_or("gemini"),
     )?;
-    let model =
-        value(&cli.model, "FLOWCLOZE_MODEL", None, file.model.as_deref()).unwrap_or_else(|| {
-            match provider {
-                Provider::Gemini => "gemini-2.5-flash".into(),
-                Provider::OpenAiCompatible => "gemma4:e2b-it-qat".into(),
-            }
-        });
-    let api_key_env = env_value("FLOWCLOZE_API_KEY_ENV")
-        .or(file.api_key_env)
+    let model = cli
+        .model
+        .filter(|value| !value.trim().is_empty())
+        .or(file.model)
         .unwrap_or_else(|| match provider {
-            Provider::Gemini => "GEMINI_API_KEY".into(),
-            Provider::OpenAiCompatible => "LOCAL_LLM_API_KEY".into(),
+            Provider::Gemini => "gemini-2.5-flash".into(),
+            Provider::OpenAiCompatible => "gemma4:e2b-it-qat".into(),
         });
-    let base_url = env_value("FLOWCLOZE_BASE_URL")
-        .or_else(|| env_value("LOCAL_LLM_BASE_URL"))
-        .or(file.base_url)
-        .filter(|x| !x.trim().is_empty())
+    let base_url = file
+        .base_url
+        .filter(|value| !value.trim().is_empty())
         .or_else(|| match provider {
             Provider::Gemini => Some(GEMINI_OPENAI_BASE_URL.into()),
             Provider::OpenAiCompatible => None,
         });
     let batch = parse_batch(
-        value(
-            &cli.batch,
-            "FLOWCLOZE_BATCH_POLICY",
-            None,
-            file.batch.as_deref(),
-        )
-        .as_deref()
-        .unwrap_or("auto"),
+        cli.batch
+            .as_deref()
+            .or(file.batch.as_deref())
+            .unwrap_or("auto"),
     )?;
     let rewrite = parse_rewrite(
-        value(
-            &cli.rewrite,
-            "FLOWCLOZE_REWRITE",
-            None,
-            file.rewrite.as_deref(),
-        )
-        .as_deref()
-        .unwrap_or("always"),
+        cli.rewrite
+            .as_deref()
+            .or(file.rewrite.as_deref())
+            .unwrap_or("always"),
     )?;
     let fallback = parse_fallback(
-        value(
-            &cli.fallback,
-            "FLOWCLOZE_FALLBACK",
-            None,
-            file.fallback.as_deref(),
-        )
-        .as_deref()
-        .unwrap_or("error"),
+        cli.fallback
+            .as_deref()
+            .or(file.fallback.as_deref())
+            .unwrap_or("error"),
     )?;
     let structured_output = parse_structured(
-        value(
-            &cli.structured_output,
-            "FLOWCLOZE_STRUCTURED_OUTPUT",
-            None,
-            file.structured_output.as_deref(),
-        )
-        .as_deref()
-        .unwrap_or("auto"),
+        cli.structured_output
+            .as_deref()
+            .or(file.structured_output.as_deref())
+            .unwrap_or("auto"),
     )?;
+
     Ok(GenerationConfig {
         provider,
         model,
-        api_key_env,
         base_url,
         batch,
-        max_tasks_per_batch: number("FLOWCLOZE_MAX_TASKS_PER_BATCH", file.max_tasks_per_batch)?,
-        max_input_tokens: number("FLOWCLOZE_MAX_INPUT_TOKENS", file.max_input_tokens)?,
-        max_concurrent_batches: number(
-            "FLOWCLOZE_MAX_CONCURRENT_BATCHES",
-            file.max_concurrent_batches,
-        )?,
+        max_tasks_per_batch: positive("max_tasks_per_batch", file.max_tasks_per_batch)?,
+        max_input_tokens: positive("max_input_tokens", file.max_input_tokens)?,
+        max_concurrent_batches: positive("max_concurrent_batches", file.max_concurrent_batches)?,
         rewrite,
         fallback,
         structured_output,
     })
 }
 
+/// PDF の既定 Typst テンプレートを標準 config.toml から解決する。
+pub fn typst_template_path() -> Result<PathBuf, String> {
+    let file = load_file()?;
+    Ok(expand_home(
+        file.typst_template
+            .as_deref()
+            .unwrap_or(DEFAULT_TYPST_TEMPLATE),
+    ))
+}
+
+/// Gemini API キーを標準 credentials.toml に保存する。
+pub fn save_gemini_api_key(api_key: &str) -> Result<(), String> {
+    if api_key.trim().is_empty() {
+        return Err("APIキーを空にはできません".into());
+    }
+    if api_key.contains(['\r', '\n', '\0']) {
+        return Err("APIキーに改行またはNULを含めることはできません".into());
+    }
+
+    let directory = config_dir()?;
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("{} を作成できませんでした: {error}", directory.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            format!(
+                "{} の権限を設定できませんでした: {error}",
+                directory.display()
+            )
+        })?;
+    }
+
+    let mut credentials = load_credentials()?;
+    credentials.gemini_api_key = Some(api_key.to_string());
+    let body = toml::to_string_pretty(&credentials)
+        .map_err(|_| "credentials.toml を作成できませんでした".to_string())?;
+    write_private_file(&credentials_path()?, body.as_bytes())
+}
+
 fn load_file() -> Result<FileConfig, String> {
-    // 空値は他の設定環境変数と同様に未指定として扱う。
-    let explicit_path = env::var_os("FLOWCLOZE_CONFIG")
-        .filter(|value| !value.to_string_lossy().trim().is_empty())
-        .map(PathBuf::from);
-    let path = explicit_path
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("config.toml"));
+    let path = config_path()?;
     match fs::read_to_string(&path) {
-        Ok(text) => {
-            toml::from_str(&text).map_err(|e| format!("{} の設定が不正です: {e}", path.display()))
-        }
-        // cwd の既定設定だけは任意だが、明示指定の打ち間違いは隠さない。
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && explicit_path.is_none() => {
-            Ok(FileConfig::default())
-        }
-        Err(e) => Err(format!("{} を読めませんでした: {e}", path.display())),
+        Ok(text) => toml::from_str(&text)
+            .map_err(|error| format!("{} の設定が不正です: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FileConfig::default()),
+        Err(error) => Err(format!("{} を読めませんでした: {error}", path.display())),
     }
 }
-fn env_value(name: &str) -> Option<String> {
-    env::var(name).ok().filter(|x| !x.trim().is_empty())
+
+fn load_credentials() -> Result<Credentials, String> {
+    let path = credentials_path()?;
+    match fs::read_to_string(&path) {
+        Ok(text) => toml::from_str(&text)
+            .map_err(|error| format!("{} の設定が不正です: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Credentials::default()),
+        Err(error) => Err(format!("{} を読めませんでした: {error}", path.display())),
+    }
 }
-fn value(
-    cli: &Option<String>,
-    canonical: &str,
-    legacy: Option<&str>,
-    file: Option<&str>,
-) -> Option<String> {
-    cli.clone()
-        .filter(|x| !x.trim().is_empty())
-        .or_else(|| env_value(canonical))
-        .or_else(|| legacy.and_then(env_value))
-        .or_else(|| file.map(str::to_string))
+
+fn nonempty_env_path(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|value| !value.to_string_lossy().trim().is_empty())
+        .map(PathBuf::from)
 }
-fn number(name: &str, file: Option<usize>) -> Result<Option<usize>, String> {
-    let value = env_value(name)
-        .map(|x| {
-            x.parse::<usize>()
-                .map_err(|_| format!("{name} には1以上の整数を指定してください"))
-        })
-        .transpose()?
-        .or(file);
+
+fn expand_home(value: &str) -> PathBuf {
+    if value == "~" {
+        return nonempty_env_path("HOME").unwrap_or_else(|| PathBuf::from(value));
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        if let Some(home) = nonempty_env_path("HOME") {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(value)
+}
+
+fn write_private_file(path: &Path, body: &[u8]) -> Result<(), String> {
+    use std::fs::OpenOptions;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| "credentials.toml の保存先が不正です".to_string())?;
+    for _ in 0..16 {
+        let mut random = [0u8; 16];
+        getrandom::getrandom(&mut random)
+            .map_err(|_| "credentials.toml を更新できませんでした".to_string())?;
+        let suffix = random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let temporary = parent.join(format!(".credentials.{suffix}.tmp"));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&temporary) {
+            Ok(mut file) => {
+                let write_result = file.write_all(body).and_then(|_| file.sync_all());
+                if write_result.is_err() {
+                    drop(file);
+                    let _ = fs::remove_file(&temporary);
+                    return Err("credentials.toml を更新できませんでした".into());
+                }
+                drop(file);
+                if fs::rename(&temporary, path).is_err() {
+                    let _ = fs::remove_file(&temporary);
+                    return Err("credentials.toml を更新できませんでした".into());
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                        .map_err(|_| "credentials.toml の権限を設定できませんでした".to_string())?;
+                }
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err("credentials.toml を更新できませんでした".into()),
+        }
+    }
+    Err("credentials.toml を更新できませんでした".into())
+}
+
+fn positive(name: &str, value: Option<usize>) -> Result<Option<usize>, String> {
     match value {
         Some(0) => Err(format!("{name} は1以上にしてください")),
-        x => Ok(x),
+        value => Ok(value),
     }
 }
-fn parse_provider(v: &str) -> Result<Provider, String> {
-    match v.trim() {
+
+fn parse_provider(value: &str) -> Result<Provider, String> {
+    match value.trim() {
         "gemini" => Ok(Provider::Gemini),
         "openai-compatible" | "local" => Ok(Provider::OpenAiCompatible),
         _ => Err("provider は gemini または openai-compatible (local) を指定してください".into()),
     }
 }
-fn parse_batch(v: &str) -> Result<BatchPolicyName, String> {
-    match v.trim() {
+
+fn parse_batch(value: &str) -> Result<BatchPolicyName, String> {
+    match value.trim() {
         "auto" => Ok(BatchPolicyName::Auto),
         "small" => Ok(BatchPolicyName::Small),
         "one-task" => Ok(BatchPolicyName::OneTask),
         _ => Err("batch は auto, small, one-task のいずれかを指定してください".into()),
     }
 }
-fn parse_rewrite(v: &str) -> Result<RewritePolicy, String> {
-    match v.trim() {
+
+fn parse_rewrite(value: &str) -> Result<RewritePolicy, String> {
+    match value.trim() {
         "always" => Ok(RewritePolicy::Always),
         "never" => Ok(RewritePolicy::Never),
         "auto" => Ok(RewritePolicy::Auto),
         _ => Err("rewrite は always, never, auto のいずれかを指定してください".into()),
     }
 }
-fn parse_fallback(v: &str) -> Result<FallbackPolicy, String> {
-    match v.trim() {
+
+fn parse_fallback(value: &str) -> Result<FallbackPolicy, String> {
+    match value.trim() {
         "error" => Ok(FallbackPolicy::Error),
         "draft" => Ok(FallbackPolicy::Draft),
         _ => Err("fallback は error, draft のいずれかを指定してください".into()),
     }
 }
-fn parse_structured(v: &str) -> Result<StructuredOutputMode, String> {
-    match v.trim() {
+
+fn parse_structured(value: &str) -> Result<StructuredOutputMode, String> {
+    match value.trim() {
         "auto" => Ok(StructuredOutputMode::Auto),
         "on" => Ok(StructuredOutputMode::On),
         "off" => Ok(StructuredOutputMode::Off),
@@ -316,7 +433,7 @@ mod tests {
         fn new(name: &'static str) -> Self {
             Self {
                 name,
-                original: std::env::var_os(name),
+                original: env::var_os(name),
             }
         }
     }
@@ -324,10 +441,22 @@ mod tests {
     impl Drop for EnvironmentVariable {
         fn drop(&mut self) {
             match &self.original {
-                Some(value) => std::env::set_var(self.name, value),
-                None => std::env::remove_var(self.name),
+                Some(value) => env::set_var(self.name, value),
+                None => env::remove_var(self.name),
             }
         }
+    }
+
+    fn temporary_home(label: &str) -> PathBuf {
+        let mut random = [0u8; 8];
+        getrandom::getrandom(&mut random).unwrap();
+        env::temp_dir().join(format!(
+            "flowcloze-{label}-{}",
+            random
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ))
     }
 
     #[test]
@@ -341,36 +470,74 @@ mod tests {
         assert_eq!(parse_rewrite("auto").unwrap(), RewritePolicy::Auto);
         assert!(parse_fallback("best-effort").is_err());
         assert!(parse_structured("json").is_err());
-        assert!(number("FLOWCLOZE_TEST_ZERO", Some(0)).is_err());
+        assert!(positive("value", Some(0)).is_err());
     }
 
     #[test]
-    fn unknown_config_key_is_rejected_including_secret_lookalikes() {
+    fn unknown_config_and_credential_keys_are_rejected() {
         assert!(toml::from_str::<FileConfig>("api_key = 'secret'").is_err());
         assert!(toml::from_str::<FileConfig>("provider = 'gemini'\nunknown = 1").is_err());
+        assert!(toml::from_str::<Credentials>("unknown = 'secret'").is_err());
     }
 
     #[test]
-    fn explicit_missing_config_is_an_error() {
+    fn standard_config_uses_xdg_config_home() {
         let _lock = environment_test_lock();
-        let _config = EnvironmentVariable::new("FLOWCLOZE_CONFIG");
-        let path =
-            std::env::temp_dir().join(format!("flowcloze-missing-config-{}", std::process::id()));
-        std::env::set_var("FLOWCLOZE_CONFIG", &path);
-        let result = load_file();
-        assert!(result.is_err());
+        let _xdg = EnvironmentVariable::new("XDG_CONFIG_HOME");
+        let directory = temporary_home("xdg");
+        env::set_var("XDG_CONFIG_HOME", &directory);
+        assert_eq!(
+            config_path().unwrap(),
+            directory.join("flowcloze").join("config.toml")
+        );
+        assert_eq!(
+            credentials_path().unwrap(),
+            directory.join("flowcloze").join("credentials.toml")
+        );
     }
 
     #[test]
-    fn empty_config_environment_uses_the_implicit_default() {
+    fn loads_standard_config_and_typst_template() {
         let _lock = environment_test_lock();
-        let _config = EnvironmentVariable::new("FLOWCLOZE_CONFIG");
-        for value in [None, Some(""), Some(" \t ")] {
-            match value {
-                Some(value) => std::env::set_var("FLOWCLOZE_CONFIG", value),
-                None => std::env::remove_var("FLOWCLOZE_CONFIG"),
-            }
-            assert!(load_file().is_ok());
+        let _xdg = EnvironmentVariable::new("XDG_CONFIG_HOME");
+        let directory = temporary_home("config");
+        env::set_var("XDG_CONFIG_HOME", &directory);
+        let flowcloze = directory.join("flowcloze");
+        fs::create_dir_all(&flowcloze).unwrap();
+        let template = directory.join("custom.typ");
+        fs::write(
+            flowcloze.join("config.toml"),
+            format!(
+                "provider = 'local'\nmodel = 'test-model'\ntypst_template = '{}'\n",
+                template.display()
+            ),
+        )
+        .unwrap();
+        let config = load(CliOverrides::default()).unwrap();
+        assert_eq!(config.provider, Provider::OpenAiCompatible);
+        assert_eq!(config.model, "test-model");
+        assert_eq!(typst_template_path().unwrap(), template);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn saves_gemini_credentials_privately() {
+        let _lock = environment_test_lock();
+        let _xdg = EnvironmentVariable::new("XDG_CONFIG_HOME");
+        let directory = temporary_home("credentials");
+        env::set_var("XDG_CONFIG_HOME", &directory);
+        save_gemini_api_key("secret-marker").unwrap();
+        let path = credentials_path().unwrap();
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(body.contains("gemini_api_key = \"secret-marker\""));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
+        fs::remove_dir_all(directory).unwrap();
     }
 }
