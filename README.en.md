@@ -14,13 +14,6 @@ Markdown note
   -> PDF / CSV / TUI
 ```
 
-## Documentation
-
-Background, syntax, and generation rules are kept as static documents under `docs/`.
-
-- `docs/index.html`: background and overview
-- `docs/specification.html`: Markdown syntax and generation rules
-
 ## Setup
 
 Requirements:
@@ -226,7 +219,6 @@ src/gemini.rs      Gemini API client
 src/validation.rs  generated JSON validator
 src/csv.rs         Ankilot CSV exporter
 src/pdf.rs         Typst PDF adapter
-docs/              static background and generation-specification documents
 templates/         Typst templates
 sample/            sample note and outputs
 tests/             parser / JSON / validation tests

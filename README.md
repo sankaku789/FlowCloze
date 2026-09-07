@@ -14,13 +14,6 @@ Markdown note
   -> PDF / CSV / TUI
 ```
 
-## ドキュメント
-
-背景と記法・生成仕様は `docs/` に静的ドキュメントとして整理しています．
-
-- `docs/index.html`: 背景と概要
-- `docs/specification.html`: Markdown記法と生成仕様
-
 ## セットアップ
 
 必要なもの:
@@ -226,7 +219,6 @@ src/gemini.rs      Gemini APIクライアント
 src/validation.rs  生成JSONバリデータ
 src/csv.rs         Ankilot CSVエクスポータ
 src/pdf.rs         Typst PDFアダプタ
-docs/              背景と生成仕様の静的ドキュメント
 templates/         Typstテンプレート
 sample/            サンプルノートと出力例
 tests/             パーサ / JSON / 検証のテスト

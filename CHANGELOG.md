@@ -4,13 +4,11 @@
 
 ### Added
 
-- Add static documentation for overview and generation specification.
 - Add GitHub Actions CI workflow.
 
 ### Changed
 
 - Refactor Gemini API request handling into a reusable request layer.
-- Simplify README files now that detailed documentation lives under `docs/`.
 - Document local command installation with `cargo install --path .`.
 
 ## 0.1.0 - 2026-05-15
