@@ -4,10 +4,8 @@
 
 ### Added
 
-- Add OpenAPI definition for parse, generate, and validate endpoints.
-- Add Redoc API documentation generation.
-- Add GitHub Pages documentation for overview, specification, and API docs.
-- Add GitHub Actions workflows for CI and Pages deployment.
+- Add static documentation for overview and generation specification.
+- Add GitHub Actions CI workflow.
 
 ### Changed
 
