@@ -2,28 +2,48 @@
 
 日本語 | [English](README.en.md)
 
-FlowClozeは，Markdownで書いた学習ノートから文章補完問題を生成するCLIツールです．
-問題にしたい範囲を `#qblock{ ... }` で囲み，答えにしたい語句を `[答え]` または `[答え]{type}` で指定します．FlowClozeはMarkdownを中間JSONへ変換し，Geminiによる問題生成，検証，PDF/CSV出力までを扱います．
+FlowClozeは、Markdownで書いた学習ノートから文章補完問題を生成するRust製CLIツールです。
+`#qblock{ ... }` で問題化する範囲を囲み、`[答え]` または `[答え]{type}` で解答対象を指定します。
+
+Gemini、Ollama / LM StudioなどのOpenAI互換ローカルLLM、LLMを呼ばないIdentity生成に対応し、生成結果の検証、TUI表示、PDF / CSV出力までを1つのCLIで扱えます。
+
+![FlowCloze TUI](fig/image.png)
+
+## 主な機能
+
+- Markdownから `qblock` / targetを抽出
+- 中間JSONを生成
+- GeminiまたはOpenAI互換ローカルLLMで問題文を生成
+- `--rewrite never` によるオフラインIdentity生成
+- target、answer、空欄、ID、順序などを検証
+- 生成結果をTUIで確認
+- TypstによるPDF出力
+- Ankilot向けCSV出力
 
 ```text
-Markdown note
-  -> qblock / target extraction
+Markdown
+  -> parse
   -> intermediate JSON
-  -> Gemini question generation
-  -> generated JSON validation
-  -> PDF / CSV / TUI
+  -> compose / rewrite
+  -> validate
+  -> JSON
+  -> TUI / PDF / CSV
 ```
 
-## セットアップ
+## 必要なもの
 
-必要なもの:
+基本機能:
 
 - Rust / Cargo
-- Typst CLI（PDF出力を使う場合）
-- 日本語フォント（PDF出力で日本語を表示する場合）
-- Gemini API key（Geminiで書き換え生成する場合）
 
-Ubuntu / WSLでは，PDFの日本語表示用にNoto CJKフォントを入れてください．
+必要な機能に応じて:
+
+- Gemini API key: Geminiで書き換え生成する場合
+- OllamaまたはLM Studio: ローカルLLMを使う場合
+- Typst CLI: PDF出力を使う場合
+- 日本語フォント: PDFで日本語を表示する場合
+
+Ubuntu / WSLでPDFを使う場合はNoto CJKフォントを推奨します。
 
 ```bash
 sudo apt update
@@ -31,95 +51,55 @@ sudo apt install -y fonts-noto-cjk
 fc-cache -fv
 ```
 
-Typstから見えているか確認する場合:
+Typstから確認する場合:
 
 ```bash
 typst fonts | grep "Noto Sans CJK"
 ```
 
-ビルドだけ行う場合:
+## ビルド / インストール
 
 ```bash
+git clone https://github.com/sankaku789/FlowCloze.git
+cd FlowCloze
 cargo build --release
 ```
 
-### コマンドとしてインストールする
-
-このリポジトリをcloneしたディレクトリで次を実行すると，`flowcloze` コマンドとして使えるようになります．
+`flowcloze` コマンドとしてインストールする場合:
 
 ```bash
 cargo install --path .
-```
-
-インストール先は通常 `~/.cargo/bin/flowcloze` です．`~/.cargo/bin` が `PATH` に入っていない場合は，シェル設定に追加してください．
-
-```bash
-export PATH="$HOME/.cargo/bin:$PATH"
-```
-
-確認:
-
-```bash
 flowcloze --version
 ```
 
-releaseビルド済みバイナリへシンボリックリンクを張る方法でも使えます．
+インストール先は通常 `~/.cargo/bin/flowcloze` です。
 
-```bash
-mkdir -p ~/.local/bin
-ln -sfn "$PWD/target/release/flowcloze" ~/.local/bin/flowcloze
-```
+一時的に試すだけなら、インストールせずに `cargo run -- ...` でも実行できます。
 
-一時的に試すだけなら，インストールせずに `cargo run -- ...` でも実行できます．
-
-## 生成設定
-
-`.env` を使う場合:
-
-```bash
-cp .env.example .env
-```
-
-`.env` には実際のAPIキーを保存できます。一方、`config.toml`には秘密値を保存せず、`api_key_env`で環境変数名だけを指定します。設定ファイルを使う場合だけ、別途 `cp config.toml.example config.toml` を実行してください。`api set`は非推奨です。全項目と旧名の対応は [`.env.example`](.env.example) を参照してください。
-
-```env
-GEMINI_API_KEY=YOUR_GEMINI_API_KEY
-FLOWCLOZE_PROVIDER=gemini
-```
-
-`generate` は `--provider gemini|local` でプロバイダを選びます。`--backend` は互換用の別名です。`--model`、`--rewrite always|never|auto`、`--fallback error|draft`、`--structured-output auto|on|off`、`--verbose` も指定できます。
-
-```bash
-flowcloze generate --provider gemini --model gemini-2.5-flash \
-  --rewrite auto --fallback draft --structured-output auto --verbose \
-  -o sample/generated.json sample/sample.md
-```
-
-`--rewrite never` はIdentity生成を使うためAPIキーやプロバイダ接続を必要としません。`auto` はリスト、複数行、終端記号なし、または短い本文だけを書き換え、その他はIdentity生成します。`--fallback error`（既定値）は失敗をそのまま返します。`--fallback draft` は通信系または内容検証系の失敗時に、失敗したtaskだけをIdentity下書きへ戻します。ただしID・固定フィールド・順序の対応付けが不正な場合は下書きに戻しません。
-
-設定値の優先順位は、CLI、canonical環境変数、（ある場合のみ）legacy環境変数、`config.toml`、既定値です。空の環境変数は未指定として扱います。`FLOWCLOZE_CONFIG` で設定ファイルのパスを変更できます。設定ファイルの例は [`config.toml.example`](config.toml.example) を参照してください。
-
-`generate` はstderrへ解析・batch・検証・保存の人間向け進捗を表示します。`--verbose` または `FLOWCLOZE_LOG=debug` では、その表示に加えて観測用JSON Linesもstderrに出力します。いずれにもMarkdown本文、prompt、プロバイダ応答、認証情報は含まれません。`max_concurrent_batches` は入力検証と観測に使われますが、現在の実行は逐次です。
-
-互換性のためのCLI保存機能:
-
-```bash
-flowcloze api set --key your_api_key_here
-```
-
-## 最小例
-
-入力Markdown:
+## Markdown記法
 
 ```md
 # ソフトウェア工学の概論
 
 #qblock{
-[QCD]{term-name}は[品質]{meaning}，[コスト]{meaning}，[納期]{meaning}を表す．
+[QCD]{term-name}は[品質]{meaning}、[コスト]{meaning}、[納期]{meaning}を表す。
 }
 ```
 
-抽出結果を確認:
+- `#qblock{ ... }`: 問題化する範囲
+- `[答え]`: 解答対象
+- `[答え]{type}`: 解答対象と任意の出題観点
+
+代表的なtype:
+
+- `term-name`: 用語名
+- `meaning`: 意味・定義・性質
+- `process`: 手順・工程・動作
+- `relation`: 構成・比較・分類・関係
+
+## 基本的な使い方
+
+### Markdownを解析
 
 ```bash
 flowcloze sample/sample.md
@@ -131,99 +111,223 @@ flowcloze sample/sample.md
 flowcloze --json -o sample/sample.json sample/sample.md
 ```
 
-Geminiで問題を生成:
+### 問題を生成
+
+Geminiを使う場合:
 
 ```bash
-flowcloze generate -s -o sample/generated.json sample/sample.md
+flowcloze generate --provider gemini \
+  -o sample/generated.json sample/sample.md
 ```
 
-LLMに渡すscaffoldを確認:
+LLMを呼ばずに生成する場合:
 
 ```bash
-flowcloze inspect-scaffold sample/sample.md
+flowcloze generate --rewrite never \
+  -o sample/generated.json sample/sample.md
 ```
 
-batch policyを指定して生成:
-
-```bash
-flowcloze generate --batch small -s -o sample/generated.json sample/sample.md
-```
-
-OllamaまたはLM StudioのOpenAI互換サーバでローカルLLMを使って生成:
-
-標準ローカルモデルを取得し，OllamaまたはLM Studioのローカルサーバを起動してから実行します。URLは `FLOWCLOZE_BASE_URL`、互換用の `LOCAL_LLM_BASE_URL`、`config.toml`、既定候補の順で解決します。未設定時はOllama (`http://localhost:11434/v1`) を先に試し，失敗したらLM Studio (`http://localhost:1234/v1`) を試します。
-
-Ollamaを使う場合:
-
-```bash
-ollama pull gemma4:e2b-it-qat
-```
-
-LM Studioを使う場合は，LM Studio上で`gemma4:e2b-it-qat`を取得・ロードし，Local Serverを起動します。
+ローカルLLMを使う場合:
 
 ```bash
 flowcloze local check
+flowcloze generate --provider local \
+  -o sample/generated.json sample/sample.md
 ```
+
+### 生成結果を検証
 
 ```bash
-flowcloze generate --provider local -s -o sample/generated.json sample/sample.md
+flowcloze validate sample/sample.json sample/generated.json
 ```
 
-PDFを作る:
+### TUIで確認
+
+```bash
+flowcloze view sample/generated.json
+```
+
+### PDFを生成
 
 ```bash
 flowcloze pdf -o sample/sample.pdf sample/generated.json
 ```
 
-Ankilot向けCSVを書き出す:
+別のTypstテンプレートを使う場合:
+
+```bash
+flowcloze pdf --template path/to/template.typ \
+  -o sample/sample.pdf sample/generated.json
+```
+
+### CSVを生成
 
 ```bash
 flowcloze csv -o sample/sample.csv sample/generated.json
 ```
 
-## よく使うコマンド
+## 生成設定
+
+`.env` を使う場合:
 
 ```bash
-flowcloze --help
-flowcloze --version
+cp .env.example .env
+```
+
+Geminiの例:
+
+```env
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+FLOWCLOZE_PROVIDER=gemini
+```
+
+設定ファイルを使う場合:
+
+```bash
+cp config.toml.example config.toml
+```
+
+秘密値は `config.toml` に直接保存せず、`api_key_env` でAPIキーを持つ環境変数名を指定してください。
+
+主な `generate` オプション:
+
+```text
+--provider gemini|local
+--model <model>
+--rewrite always|never|auto
+--fallback error|draft
+--structured-output auto|on|off
+--batch auto|small|one-task
+--verbose
+-s, --skip-constraints
+```
+
+例:
+
+```bash
+flowcloze generate \
+  --provider gemini \
+  --model gemini-2.5-flash \
+  --rewrite auto \
+  --fallback draft \
+  --structured-output auto \
+  --verbose \
+  -o sample/generated.json \
+  sample/sample.md
+```
+
+`rewrite`:
+
+- `always`: providerで書き換える
+- `never`: providerを呼ばずIdentity生成する
+- `auto`: 入力内容に応じて書き換えの要否を選ぶ
+
+`fallback`:
+
+- `error`: 失敗をそのままエラーにする
+- `draft`: 通信または内容検証に失敗したtaskをIdentity下書きへ戻す
+
+設定値は、CLI、canonical環境変数、legacy環境変数（対応している場合）、`config.toml`、既定値の順に解決されます。
+`FLOWCLOZE_CONFIG` で設定ファイルのパスを変更できます。
+
+## ローカルLLM
+
+OllamaまたはLM StudioのOpenAI互換サーバを利用できます。
+
+既定ではOllama (`http://localhost:11434/v1`) を先に試し、接続できない場合はLM Studio (`http://localhost:1234/v1`) を試します。
+`FLOWCLOZE_BASE_URL` で接続先を明示できます。
+
+既定のローカルモデルは `gemma4:e2b-it-qat` です。
+
+Ollamaの場合:
+
+```bash
+ollama pull gemma4:e2b-it-qat
+flowcloze local check
+```
+
+LM Studioの場合は、同じモデルをロードしてLocal Serverを起動したあと `flowcloze local check` を実行してください。
+
+## Scaffold確認
+
+LLMへ渡すscaffold JSONを確認できます。
+
+```bash
+flowcloze inspect-scaffold sample/sample.md
+```
+
+ファイルへ保存する場合:
+
+```bash
+flowcloze inspect-scaffold \
+  -o sample/scaffold.json sample/sample.md
+```
+
+## ログ / 観測
+
+`generate` は解析、batch、検証、保存の進捗をstderrへ表示します。
+
+`--verbose` または `FLOWCLOZE_LOG=debug` を指定すると、観測用JSON Linesもstderrへ出力します。Markdown本文、prompt、provider応答、認証情報はログに含めません。
+
+## 開発
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
 cargo test
+```
+
+Gemini native adapterも確認する場合:
+
+```bash
+cargo clippy --all-targets --features gemini-native -- -D warnings
+cargo test --features gemini-native
 ```
 
 ## エディタサポート
 
-`editors/vscode-flowcloze-syntax` に，`#qblock` と `[答え]` / `[答え]{type}` を見やすくするVS Code用の簡易拡張があります．
+`editors/vscode-flowcloze-syntax` に、`#qblock` と `[答え]` / `[答え]{type}` を見やすくするVS Code用の簡易拡張があります。
 
-WSL上のVS Codeを使用している場合:
+WSL上のVS Code:
 
-```sh
+```bash
 mkdir -p ~/.vscode-server/extensions
-ln -sfn "$PWD/editors/vscode-flowcloze-syntax" ~/.vscode-server/extensions/flowcloze.flowcloze-syntax-0.0.1
+ln -sfn "$PWD/editors/vscode-flowcloze-syntax" \
+  ~/.vscode-server/extensions/flowcloze.flowcloze-syntax-0.0.1
 ```
 
-WSL以外のLinux環境の場合:
+WSL以外のLinux:
 
-```sh
+```bash
 mkdir -p ~/.vscode/extensions
-ln -sfn "$PWD/editors/vscode-flowcloze-syntax" ~/.vscode/extensions/flowcloze.flowcloze-syntax-0.0.1
+ln -sfn "$PWD/editors/vscode-flowcloze-syntax" \
+  ~/.vscode/extensions/flowcloze.flowcloze-syntax-0.0.1
 ```
 
-その後，VS Codeで `Developer: Reload Window` を実行してください．
+その後、VS Codeで `Developer: Reload Window` を実行してください。
 
 ## リポジトリ構成
 
 ```text
-src/parser.rs      Markdown qblockパーサ
-src/json.rs        中間JSON変換
-src/prompt.rs      Geminiプロンプト生成
-src/gemini.rs      Gemini APIクライアント
-src/validation.rs  生成JSONバリデータ
-src/csv.rs         Ankilot CSVエクスポータ
-src/pdf.rs         Typst PDFアダプタ
-templates/         Typstテンプレート
-sample/            サンプルノートと出力例
-tests/             パーサ / JSON / 検証のテスト
+src/parser.rs          Markdown parser
+src/json.rs            intermediate JSON
+src/planner.rs         generation planning
+src/compose.rs         question composition core
+src/orchestration.rs   generation orchestration
+src/config.rs          configuration resolution
+src/gemini.rs          Gemini adapter
+src/local_openai.rs    local OpenAI-compatible adapter
+src/validation.rs      generated JSON validation
+src/observability.rs   structured events / logging
+src/csv.rs             Ankilot CSV export
+src/pdf.rs             Typst PDF adapter
+src/main.rs            CLI entry point
+templates/             Typst templates
+sample/                sample inputs / outputs
+editors/               editor support
+tests/                 integration tests
 ```
 
 ## ライセンス
 
-Apache License, Version 2.0 または MIT license のいずれかを選択して利用できます．
+Apache License, Version 2.0 または MIT License のいずれかを選択して利用できます。
