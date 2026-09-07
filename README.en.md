@@ -65,14 +65,16 @@ cd FlowCloze
 cargo build --release
 ```
 
-Install `flowcloze` as a command:
+Install `flowcloze` with the bundled installer:
 
 ```bash
-cargo install --path .
+./install.sh
 flowcloze --version
 ```
 
-The binary is usually installed to `~/.cargo/bin/flowcloze`.
+`install.sh` runs `cargo install --path . --force`, copies the bundled Typst template to `~/.config/flowcloze/templates/cloze.typ` (or under `XDG_CONFIG_HOME`), and updates `typst_template` in `config.toml` automatically.
+
+The binary is usually installed to `~/.cargo/bin/flowcloze`. Running `cargo install --path .` directly installs only the binary and does not inject the Typst template.
 
 For a temporary run without installing, use `cargo run -- ...`.
 
@@ -153,7 +155,7 @@ flowcloze view sample/generated.json
 flowcloze pdf -o sample/sample.pdf sample/generated.json
 ```
 
-Set the default template with `typst_template` in `~/.config/flowcloze/config.toml`.
+When installed with `./install.sh`, the default template is placed at `~/.config/flowcloze/templates/cloze.typ` and configured automatically.
 For a one-off override, use:
 
 ```bash
@@ -182,12 +184,7 @@ When `XDG_CONFIG_HOME` is set, FlowCloze uses `$XDG_CONFIG_HOME/flowcloze/`. For
 export XDG_CONFIG_HOME="$PWD/.dev-config"
 ```
 
-Create the normal config:
-
-```bash
-mkdir -p ~/.config/flowcloze
-cp config.toml.example ~/.config/flowcloze/config.toml
-```
+A normal `./install.sh` installation creates or updates the config directory, bundled Typst template, and `config.toml` automatically.
 
 Store the Gemini API key in the dedicated `credentials.toml`, not in `config.toml`:
 
@@ -206,7 +203,7 @@ rewrite = "always"
 fallback = "error"
 structured_output = "auto"
 batch = "auto"
-typst_template = "/absolute/path/to/cloze.typ"
+typst_template = "~/.config/flowcloze/templates/cloze.typ"
 ```
 
 `typst_template` is the default template for PDF generation. `flowcloze pdf --template ...` overrides it for one invocation.

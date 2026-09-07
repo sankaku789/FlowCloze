@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.1.1-beta - 2026-09-07
+
+### Fixed
+
+- Install the bundled Typst template into the standard FlowCloze config directory through `install.sh`.
+- Make the default PDF template path resolve from `XDG_CONFIG_HOME` / `~/.config/flowcloze` instead of the current working directory.
+
+### Changed
+
+- Use `./install.sh` as the documented installation path so binary installation and template/config injection happen together.
+
 ## 2.1.0-beta - 2026-09-07
 
 ### Added

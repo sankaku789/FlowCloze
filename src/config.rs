@@ -12,7 +12,6 @@ use crate::planner::BatchPolicy;
 use crate::providers::capability::StructuredOutputMode;
 
 const GEMINI_OPENAI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
-const DEFAULT_TYPST_TEMPLATE: &str = "templates/cloze.typ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
@@ -245,11 +244,10 @@ pub fn load(cli: CliOverrides) -> Result<GenerationConfig, String> {
 /// PDF の既定 Typst テンプレートを標準 config.toml から解決する。
 pub fn typst_template_path() -> Result<PathBuf, String> {
     let file = load_file()?;
-    Ok(expand_home(
-        file.typst_template
-            .as_deref()
-            .unwrap_or(DEFAULT_TYPST_TEMPLATE),
-    ))
+    match file.typst_template {
+        Some(value) if !value.trim().is_empty() => Ok(expand_home(&value)),
+        _ => Ok(config_dir()?.join("templates").join("cloze.typ")),
+    }
 }
 
 /// Gemini API キーを標準 credentials.toml に保存する。
@@ -493,6 +491,21 @@ mod tests {
         assert_eq!(
             credentials_path().unwrap(),
             directory.join("flowcloze").join("credentials.toml")
+        );
+    }
+
+    #[test]
+    fn default_typst_template_uses_config_directory() {
+        let _lock = environment_test_lock();
+        let _xdg = EnvironmentVariable::new("XDG_CONFIG_HOME");
+        let directory = temporary_home("default-template");
+        env::set_var("XDG_CONFIG_HOME", &directory);
+        assert_eq!(
+            typst_template_path().unwrap(),
+            directory
+                .join("flowcloze")
+                .join("templates")
+                .join("cloze.typ")
         );
     }
 

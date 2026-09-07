@@ -10,5 +10,5 @@ rewrite = "always"
 fallback = "error"
 structured_output = "auto"
 
-# Use an absolute path when FlowCloze is installed globally.
-typst_template = "/absolute/path/to/cloze.typ"
+# install.sh places the bundled template here by default.
+typst_template = "~/.config/flowcloze/templates/cloze.typ"
