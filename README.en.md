@@ -2,28 +2,48 @@
 
 [日本語](README.md) | English
 
-FlowCloze is a CLI tool that generates context cloze questions from study notes written in Markdown.
-Wrap the range you want to turn into questions with `#qblock{ ... }`, and mark answer targets with `[answer]` or `[answer]{type}`. FlowCloze converts the Markdown into intermediate JSON, generates questions with Gemini, validates the result, and exports PDF/CSV output.
+FlowCloze is a Rust CLI that generates context-cloze questions from study notes written in Markdown.
+Wrap a question range with `#qblock{ ... }`, and mark answer targets with `[answer]` or `[answer]{type}`.
+
+It supports Gemini, OpenAI-compatible local LLMs such as Ollama / LM Studio, and offline Identity generation without calling an LLM. The same CLI also validates generated output and exports it to TUI, PDF, and CSV formats.
+
+![FlowCloze TUI](fig/image.png)
+
+## Features
+
+- Extract `qblock` ranges and targets from Markdown
+- Emit intermediate JSON
+- Generate questions with Gemini or an OpenAI-compatible local LLM
+- Run offline Identity generation with `--rewrite never`
+- Validate targets, answers, blanks, IDs, and ordering
+- Inspect generated questions in a TUI
+- Export PDF through Typst
+- Export Ankilot-compatible CSV
 
 ```text
-Markdown note
-  -> qblock / target extraction
+Markdown
+  -> parse
   -> intermediate JSON
-  -> Gemini question generation
-  -> generated JSON validation
-  -> PDF / CSV / TUI
+  -> compose / rewrite
+  -> validate
+  -> JSON
+  -> TUI / PDF / CSV
 ```
 
-## Setup
+## Requirements
 
-Requirements:
+Core:
 
 - Rust / Cargo
-- Typst CLI (required for PDF output)
-- Japanese fonts (required for Japanese PDF output)
-- Gemini API key (required when Gemini performs rewrite generation)
 
-On Ubuntu / WSL, install Noto CJK fonts for Japanese PDF output:
+Depending on the features you use:
+
+- Gemini API key: for Gemini rewrite generation
+- Ollama or LM Studio: for local LLM generation
+- Typst CLI: for PDF output
+- Japanese fonts: for Japanese text in PDF output
+
+On Ubuntu / WSL, Noto CJK fonts are recommended for PDF output:
 
 ```bash
 sudo apt update
@@ -31,85 +51,32 @@ sudo apt install -y fonts-noto-cjk
 fc-cache -fv
 ```
 
-To check whether Typst can see the font:
+Check whether Typst can see the font:
 
 ```bash
 typst fonts | grep "Noto Sans CJK"
 ```
 
-Build only:
+## Build / Install
 
 ```bash
+git clone https://github.com/sankaku789/FlowCloze.git
+cd FlowCloze
 cargo build --release
 ```
 
-### Install as a Command
-
-Run this from the cloned repository to install `flowcloze` as a command:
+Install `flowcloze` as a command:
 
 ```bash
 cargo install --path .
-```
-
-The binary is usually installed to `~/.cargo/bin/flowcloze`. If `~/.cargo/bin` is not in your `PATH`, add it to your shell configuration:
-
-```bash
-export PATH="$HOME/.cargo/bin:$PATH"
-```
-
-Verify the install:
-
-```bash
 flowcloze --version
 ```
 
-You can also symlink the release binary:
+The binary is usually installed to `~/.cargo/bin/flowcloze`.
 
-```bash
-mkdir -p ~/.local/bin
-ln -sfn "$PWD/target/release/flowcloze" ~/.local/bin/flowcloze
-```
+For a temporary run without installing, use `cargo run -- ...`.
 
-For a temporary local run without installing, use `cargo run -- ...`.
-
-## Generation Settings
-
-Using `.env`:
-
-```bash
-cp .env.example .env
-```
-
-You may store the actual API key in `.env`. Do not store secrets in `config.toml`; use `api_key_env` there to name the environment variable. If you want a config file, separately run `cp config.toml.example config.toml`. `api set` is deprecated. See [`.env.example`](.env.example) for every setting and its legacy alias.
-
-```env
-GEMINI_API_KEY=YOUR_GEMINI_API_KEY
-FLOWCLOZE_PROVIDER=gemini
-```
-
-Use `generate --provider gemini|local` to select a provider; `--backend` is its compatibility alias. `--model`, `--rewrite always|never|auto`, `--fallback error|draft`, `--structured-output auto|on|off`, and `--verbose` are also available.
-
-```bash
-flowcloze generate --provider gemini --model gemini-2.5-flash \
-  --rewrite auto --fallback draft --structured-output auto --verbose \
-  -o sample/generated.json sample/sample.md
-```
-
-`--rewrite never` uses Identity generation, so it needs neither an API key nor a provider connection. `auto` rewrites only list, multiline, unterminated, or short source text, and uses Identity generation otherwise. `--fallback error` (the default) returns failures. With `--fallback draft`, only a task that fails due to transport or content validation falls back to an Identity draft; invalid ID, fixed-field, or ordering correspondence never does.
-
-Settings resolve in this order: CLI, canonical environment variable, legacy environment variable where supported, `config.toml`, then the default. Empty environment variables are unspecified. Set `FLOWCLOZE_CONFIG` to choose another config file; see [`config.toml.example`](config.toml.example).
-
-`generate` writes human-readable parse, batch, validation, and save progress to stderr. `--verbose` or `FLOWCLOZE_LOG=debug` additionally writes observability JSON Lines to stderr. Neither stream includes Markdown bodies, prompts, provider responses, or credentials. `max_concurrent_batches` is validated and observed, but execution is currently sequential.
-
-For compatibility, the CLI can save a key:
-
-```bash
-flowcloze api set --key your_api_key_here
-```
-
-## Minimal Example
-
-Input Markdown:
+## Markdown Syntax
 
 ```md
 # Software Engineering Overview
@@ -119,7 +86,20 @@ Input Markdown:
 }
 ```
 
-Inspect extracted qblocks:
+- `#qblock{ ... }`: range to turn into questions
+- `[answer]`: answer target
+- `[answer]{type}`: answer target with an optional question perspective
+
+Common target types:
+
+- `term-name`: term name
+- `meaning`: meaning, definition, or property
+- `process`: process, procedure, or action
+- `relation`: structure, comparison, classification, or relation
+
+## Basic Usage
+
+### Parse Markdown
 
 ```bash
 flowcloze sample/sample.md
@@ -131,80 +111,197 @@ Write intermediate JSON:
 flowcloze --json -o sample/sample.json sample/sample.md
 ```
 
-Generate questions with Gemini:
+### Generate Questions
+
+With Gemini:
 
 ```bash
-flowcloze generate -s -o sample/generated.json sample/sample.md
+flowcloze generate --provider gemini \
+  -o sample/generated.json sample/sample.md
 ```
 
-Inspect the scaffold sent to the LLM:
+Without calling an LLM:
 
 ```bash
-flowcloze inspect-scaffold sample/sample.md
+flowcloze generate --rewrite never \
+  -o sample/generated.json sample/sample.md
 ```
 
-Generate with a specific batch policy:
-
-```bash
-flowcloze generate --batch small -s -o sample/generated.json sample/sample.md
-```
-
-Generate with a local LLM through Ollama or LM Studio's OpenAI-compatible server:
-
-Install the default local model, then start either the Ollama or LM Studio local server before running FlowCloze. The URL resolves through `FLOWCLOZE_BASE_URL`, the legacy `LOCAL_LLM_BASE_URL`, `config.toml`, then the defaults. When unset, FlowCloze tries Ollama (`http://localhost:11434/v1`) first, then falls back to LM Studio (`http://localhost:1234/v1`).
-
-For Ollama:
-
-```bash
-ollama pull gemma4:e2b-it-qat
-```
-
-For LM Studio, download and load `gemma4:e2b-it-qat` in LM Studio, then start the Local Server.
+With a local LLM:
 
 ```bash
 flowcloze local check
+flowcloze generate --provider local \
+  -o sample/generated.json sample/sample.md
 ```
+
+### Validate Output
 
 ```bash
-flowcloze generate --provider local -s -o sample/generated.json sample/sample.md
+flowcloze validate sample/sample.json sample/generated.json
 ```
 
-Build a PDF:
+### View in the TUI
+
+```bash
+flowcloze view sample/generated.json
+```
+
+### Build a PDF
 
 ```bash
 flowcloze pdf -o sample/sample.pdf sample/generated.json
 ```
 
-Export CSV for Ankilot:
+Use another Typst template:
+
+```bash
+flowcloze pdf --template path/to/template.typ \
+  -o sample/sample.pdf sample/generated.json
+```
+
+### Export CSV
 
 ```bash
 flowcloze csv -o sample/sample.csv sample/generated.json
 ```
 
-## Common Commands
+## Generation Settings
+
+Create a local `.env` file:
 
 ```bash
-flowcloze --help
-flowcloze --version
+cp .env.example .env
+```
+
+Gemini example:
+
+```env
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+FLOWCLOZE_PROVIDER=gemini
+```
+
+Create a config file when needed:
+
+```bash
+cp config.toml.example config.toml
+```
+
+Do not store secrets directly in `config.toml`. Use `api_key_env` to name the environment variable that holds the API key.
+
+Main `generate` options:
+
+```text
+--provider gemini|local
+--model <model>
+--rewrite always|never|auto
+--fallback error|draft
+--structured-output auto|on|off
+--batch auto|small|one-task
+--verbose
+-s, --skip-constraints
+```
+
+Example:
+
+```bash
+flowcloze generate \
+  --provider gemini \
+  --model gemini-2.5-flash \
+  --rewrite auto \
+  --fallback draft \
+  --structured-output auto \
+  --verbose \
+  -o sample/generated.json \
+  sample/sample.md
+```
+
+`rewrite`:
+
+- `always`: rewrite through the selected provider
+- `never`: use Identity generation without calling a provider
+- `auto`: choose whether rewriting is needed from the input
+
+`fallback`:
+
+- `error`: return the failure as an error
+- `draft`: fall back failed transport/content-validation tasks to Identity drafts
+
+Settings resolve in this order: CLI, canonical environment variable, supported legacy environment variable, `config.toml`, then defaults.
+Set `FLOWCLOZE_CONFIG` to choose a different config file.
+
+## Local LLM
+
+FlowCloze can use an OpenAI-compatible server from Ollama or LM Studio.
+
+By default, it tries Ollama (`http://localhost:11434/v1`) first and then LM Studio (`http://localhost:1234/v1`) if Ollama is unavailable.
+Set `FLOWCLOZE_BASE_URL` to choose the endpoint explicitly.
+
+The default local model is `gemma4:e2b-it-qat`.
+
+With Ollama:
+
+```bash
+ollama pull gemma4:e2b-it-qat
+flowcloze local check
+```
+
+With LM Studio, load the same model, start Local Server, and then run `flowcloze local check`.
+
+## Inspect the Scaffold
+
+Inspect the scaffold JSON sent to the LLM:
+
+```bash
+flowcloze inspect-scaffold sample/sample.md
+```
+
+Save it to a file:
+
+```bash
+flowcloze inspect-scaffold \
+  -o sample/scaffold.json sample/sample.md
+```
+
+## Logging / Observability
+
+`generate` writes parse, batch, validation, and save progress to stderr.
+
+With `--verbose` or `FLOWCLOZE_LOG=debug`, it also emits observability JSON Lines to stderr. Markdown bodies, prompts, provider responses, and credentials are not included in the logs.
+
+## Development
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
 cargo test
+```
+
+Also check the Gemini native adapter:
+
+```bash
+cargo clippy --all-targets --features gemini-native -- -D warnings
+cargo test --features gemini-native
 ```
 
 ## Editor Support
 
-`editors/vscode-flowcloze-syntax` contains a small VS Code extension that highlights `#qblock`, `[answer]`, and `[answer]{type}`.
+`editors/vscode-flowcloze-syntax` contains a small VS Code extension for highlighting `#qblock`, `[answer]`, and `[answer]{type}`.
 
-When using VS Code on WSL:
+VS Code on WSL:
 
-```sh
+```bash
 mkdir -p ~/.vscode-server/extensions
-ln -sfn "$PWD/editors/vscode-flowcloze-syntax" ~/.vscode-server/extensions/flowcloze.flowcloze-syntax-0.0.1
+ln -sfn "$PWD/editors/vscode-flowcloze-syntax" \
+  ~/.vscode-server/extensions/flowcloze.flowcloze-syntax-0.0.1
 ```
 
-For non-WSL Linux environments:
+Non-WSL Linux:
 
-```sh
+```bash
 mkdir -p ~/.vscode/extensions
-ln -sfn "$PWD/editors/vscode-flowcloze-syntax" ~/.vscode/extensions/flowcloze.flowcloze-syntax-0.0.1
+ln -sfn "$PWD/editors/vscode-flowcloze-syntax" \
+  ~/.vscode/extensions/flowcloze.flowcloze-syntax-0.0.1
 ```
 
 Then run `Developer: Reload Window` in VS Code.
@@ -212,18 +309,25 @@ Then run `Developer: Reload Window` in VS Code.
 ## Repository Layout
 
 ```text
-src/parser.rs      Markdown qblock parser
-src/json.rs        intermediate JSON conversion
-src/prompt.rs      Gemini prompt builder
-src/gemini.rs      Gemini API client
-src/validation.rs  generated JSON validator
-src/csv.rs         Ankilot CSV exporter
-src/pdf.rs         Typst PDF adapter
-templates/         Typst templates
-sample/            sample note and outputs
-tests/             parser / JSON / validation tests
+src/parser.rs          Markdown parser
+src/json.rs            intermediate JSON
+src/planner.rs         generation planning
+src/compose.rs         question composition core
+src/orchestration.rs   generation orchestration
+src/config.rs          configuration resolution
+src/gemini.rs          Gemini adapter
+src/local_openai.rs    local OpenAI-compatible adapter
+src/validation.rs      generated JSON validation
+src/observability.rs   structured events / logging
+src/csv.rs             Ankilot CSV export
+src/pdf.rs             Typst PDF adapter
+src/main.rs            CLI entry point
+templates/             Typst templates
+sample/                sample inputs / outputs
+editors/               editor support
+tests/                 integration tests
 ```
 
 ## License
 
-Licensed under either Apache License, Version 2.0 or the MIT license, at your option.
+Licensed under either Apache License, Version 2.0 or the MIT License, at your option.
