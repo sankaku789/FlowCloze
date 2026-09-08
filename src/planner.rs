@@ -134,7 +134,7 @@ pub(crate) enum TerminalCause {
     RateLimited,
     Timeout,
     Transport,
-    Api,
+    Api { status: u16 },
 }
 
 impl std::fmt::Display for ComposePlanError {
@@ -145,7 +145,7 @@ impl std::fmt::Display for ComposePlanError {
             Self::Llm(_) => write!(f, "compose error: llm"),
             Self::Json(_) => write!(f, "compose error: json"),
             Self::Validation { id, .. } => write!(f, "compose error: validation task={id}"),
-            Self::Partial { .. } => write!(f, "compose error: partial validation"),
+            Self::Partial { .. } => write!(f, "compose error: generation incomplete"),
         }
     }
 }
@@ -216,6 +216,14 @@ impl ComposeExecutionError {
 
     pub(crate) fn terminal_cause(&self) -> Option<TerminalCause> {
         self.terminal_cause
+    }
+
+    pub(crate) fn provider_status(&self) -> Option<u16> {
+        match self.terminal_cause {
+            Some(TerminalCause::RateLimited) => Some(429),
+            Some(TerminalCause::Api { status }) => Some(status),
+            _ => None,
+        }
     }
 
     pub(crate) fn as_public(&self) -> &ComposePlanError {
@@ -1085,7 +1093,7 @@ fn terminal_cause_for_error(error: &ComposeError) -> TerminalCause {
         ComposeError::RateLimited => TerminalCause::RateLimited,
         ComposeError::Timeout => TerminalCause::Timeout,
         ComposeError::Transport => TerminalCause::Transport,
-        ComposeError::Api { .. } => TerminalCause::Api,
+        ComposeError::Api { status, .. } => TerminalCause::Api { status: *status },
     }
 }
 

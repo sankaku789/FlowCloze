@@ -360,9 +360,16 @@ pub fn generate_markdown_with_composer_observed_with_progress(
                 }
             }
             Err(error) => {
+                let class = failure_class_for_execution(&error);
+                if error.terminal_cause().is_some() {
+                    progress.emit(ProgressEvent::ProviderError {
+                        class,
+                        status: error.provider_status(),
+                    });
+                }
                 progress.emit(ProgressEvent::Failed {
                     stage: crate::progress::ProgressStage::Generate,
-                    class: failure_class_for_execution(&error),
+                    class,
                 });
                 return Err(GenerateMarkdownError::Compose(error.into_public()));
             }
@@ -489,7 +496,7 @@ fn failure_class_for_terminal_cause(cause: crate::planner::TerminalCause) -> Fai
         crate::planner::TerminalCause::RateLimited => FailureClass::RateLimited,
         crate::planner::TerminalCause::Timeout => FailureClass::Timeout,
         crate::planner::TerminalCause::Transport => FailureClass::Transport,
-        crate::planner::TerminalCause::Api => FailureClass::Api,
+        crate::planner::TerminalCause::Api { .. } => FailureClass::Api,
     }
 }
 
