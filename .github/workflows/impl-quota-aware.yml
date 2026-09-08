@@ -19,7 +19,10 @@ jobs:
           fetch-depth: 0
 
       - name: Apply implementation
-        run: python3 .github/scripts/impl_quota_aware.py
+        shell: bash
+        run: |
+          python3 .github/scripts/impl_quota_aware.py
+          sed -i 's/remaining\.min(1_000)\.max(1)/remaining.clamp(1, 1_000)/' src/planner.rs
 
       - name: Format
         run: cargo fmt
