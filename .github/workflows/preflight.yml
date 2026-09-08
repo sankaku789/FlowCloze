@@ -17,7 +17,8 @@ jobs:
         run: rustup component add rustfmt clippy
       - name: Apply staged implementation
         run: |
-          cat .preflight/patch.* > /tmp/flowcloze.patch
+          base64 --decode .preflight/implementation.patch.gz.b64 > /tmp/flowcloze.patch.gz
+          gzip --decompress --stdout /tmp/flowcloze.patch.gz > /tmp/flowcloze.patch
           git apply --check /tmp/flowcloze.patch
           git apply /tmp/flowcloze.patch
       - name: Check formatting
