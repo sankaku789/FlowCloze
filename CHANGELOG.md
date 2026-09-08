@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.1.5-beta - 2026-09-09
+
+### Added
+
+- Add config-defined quota profiles with model-specific overrides, with example profiles for Gemini, OpenAI, and Mistral.
+
+### Changed
+
+- Adapt `batch = "auto"` within configured quality limits so initial batch plans can fit daily request budgets while reserving requests for retries.
+- Pace provider HTTP attempts against configured RPM and TPM limits, including transport retries.
+- Re-batch failed content tasks on the first retry and use single-task retries only for the final retry attempt.
+
 ## 2.1.4-beta - 2026-09-08
 
 ### Fixed
