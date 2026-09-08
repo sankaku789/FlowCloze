@@ -49,7 +49,7 @@ index 4bb0507..668c9d4 100644
  description = "Markdown qblock parser for context cloze question generation."
  readme = "README.md"
 diff --git a/README.en.md b/README.en.md
-index a6e42da..fa4f013 100644
+index a6e42da..434e29b 100644
 --- a/README.en.md
 +++ b/README.en.md
 @@ -181,7 +181,7 @@ flowcloze csv -o sample/sample.csv sample/generated.json
@@ -61,7 +61,7 @@ index a6e42da..fa4f013 100644
  
  ```text
  ~/.config/flowcloze/config.toml
-@@ -213,10 +213,16 @@ rewrite = "always"
+@@ -213,11 +213,17 @@ rewrite = "always"
  fallback = "error"
  structured_output = "auto"
  batch = "auto"
@@ -73,13 +73,14 @@ index a6e42da..fa4f013 100644
  ```
  
  `typst_template` is only needed to replace the bundled default. If omitted, FlowCloze materializes the embedded template automatically. `flowcloze pdf --template ...` overrides it for one invocation.
+ 
 +With `batch = "auto"`, FlowCloze evaluates each qblock independently by estimated input tokens, estimated output tokens, and blank count rather than by qblock number. Light qblocks are repacked into the same request, while a qblock that consumes a large share of any budget is sent alone. Final output is restored to source qblock order. A batch-level malformed response causes the next retry batch to shrink, while qblock-specific validation failures retry only the failed qblocks and preserve successful results.
 +
- 
  Main `generate` options:
  
+ ```text
 diff --git a/README.md b/README.md
-index 7b833bc..a77cf5d 100644
+index 7b833bc..db24648 100644
 --- a/README.md
 +++ b/README.md
 @@ -181,7 +181,7 @@ flowcloze csv -o sample/sample.csv sample/generated.json
@@ -91,7 +92,7 @@ index 7b833bc..a77cf5d 100644
  
  ```text
  ~/.config/flowcloze/config.toml
-@@ -213,10 +213,16 @@ rewrite = "always"
+@@ -213,11 +213,17 @@ rewrite = "always"
  fallback = "error"
  structured_output = "auto"
  batch = "auto"
@@ -103,11 +104,12 @@ index 7b833bc..a77cf5d 100644
  ```
  
  `typst_template` は標準テンプレートを差し替えたい場合だけ指定します。未指定時は内蔵テンプレートを自動展開します。`flowcloze pdf --template ...` を指定した場合はCLI指定を優先します。
+ 
 +`batch = "auto"` では、qblock番号ではなく各qblockの推定入力token・推定出力token・blank数を独立したbudgetとして評価します。軽いqblockは同じrequestへ再packingし、いずれかのbudgetを大きく消費するqblockは単独requestにします。最終出力は元のqblock順へ戻します。batch全体の出力が壊れた場合は次回batchを縮小し、qblock固有の検証失敗は成功済みqblockを保持したまま失敗分だけ再試行します。
 +
- 
  主な `generate` オプション:
  
+ ```text
 diff --git a/config.toml.example b/config.toml.example
 index cc4a89d..803b815 100644
 --- a/config.toml.example
@@ -163,7 +165,7 @@ index cc4a89d..803b815 100644
  # rpm = 60
  # tpm = 500000
  # rpd = 1000
- diff --git a/src/compose.rs b/src/compose.rs
+diff --git a/src/compose.rs b/src/compose.rs
 index f23d9e7..aadbb01 100644
 --- a/src/compose.rs
 +++ b/src/compose.rs
@@ -194,7 +196,7 @@ index f23d9e7..aadbb01 100644
              Self::Transport => "transport",
              Self::Api {
 diff --git a/src/config.rs b/src/config.rs
-index bfe70fd..daa8408 100644
+index bfe70fd..11b02b9 100644
 --- a/src/config.rs
 +++ b/src/config.rs
 @@ -54,6 +54,8 @@ struct FileConfig {
@@ -219,7 +221,7 @@ index bfe70fd..daa8408 100644
              (_, BatchPolicyName::Small) => BatchPolicy {
                  max_tasks_per_batch: 2,
                  max_estimated_input_tokens: 4_000,
-+                max_estimated_output_tokens: 2_000,
++                max_estimated_output_tokens: 1_500,
 +                max_blanks_per_batch: 8,
                  max_retry_count: 2,
                  max_concurrent_batches: 1,
@@ -296,55 +298,3 @@ index 534ff3b..5a0d8c6 100644
          if structured {
              config["responseMimeType"] = json!("application/json");
 -            config["responseJsonSchema"] = compose_schema();
-+            config["responseJsonSchema"] = compose_schema(request);
-         }
-         let body = json!({
-             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-@@ -96,7 +101,9 @@ impl GeminiAdapter {
-     ) -> Result<ComposeBatchOutput, ComposeError> {
-         let prompt =
-             build_compose_request_prompt(request).map_err(|_| ComposeError::Configuration)?;
--        let raw = self.request(&prompt, structured).map_err(map_http_error)?;
-+        let raw = self
-+            .request(&prompt, structured, request)
-+            .map_err(map_http_error)?;
-         parse_response(&raw, &self.model)
-     }
- 
-@@ -140,7 +147,7 @@ impl QuestionComposer for GeminiAdapter {
- 
-                 let prompt = build_compose_request_prompt(request)
-                     .map_err(|_| ComposeError::Configuration)?;
--                match self.request(&prompt, true) {
-+                match self.request(&prompt, true, request) {
-                     Ok(raw) => {
-                         self.capability.mark_supported();
-                         parse_response(&raw, &self.model)
-@@ -178,7 +185,7 @@ fn map_http_error(error: HttpError) -> ComposeError {
-     match error {
-         HttpError::Configuration => ComposeError::Configuration,
-         HttpError::Authentication { .. } => ComposeError::Authentication,
--        HttpError::RateLimited { .. } => ComposeError::RateLimited,
-+        HttpError::RateLimited { kind, .. } => ComposeError::RateLimited { kind },
-         HttpError::Timeout => ComposeError::Timeout,
-         HttpError::Transport => ComposeError::Transport,
-         HttpError::Api {
-@@ -191,23 +198,33 @@ pub fn strip_markdown_code_fence(text: &str) -> String {
-     crate::compose::extract_json_candidate(text).to_string()
- }
- 
--fn compose_schema() -> Value {
-+fn compose_schema(request: &ComposeBatchRequest) -> Value {
-+    let expected_ids = request
-+        .tasks
-+        .iter()
-+        .map(|task| task.id.clone())
-+        .collect::<Vec<_>>();
-+    let expected_items = request.tasks.len();
-     json!({
-         "type": "object",
-         "properties": {
-             "items": {
-                 "type": "array",
-+                "minItems": expected_items,
-+                "maxItems": expected_items,
