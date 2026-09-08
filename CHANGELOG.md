@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.1.3-beta - 2026-09-08
+
+### Added
+
+- Add interactive provider selection to `flowcloze api set` and read API keys without echoing them.
+- Add dedicated OpenAI-compatible API key storage in `credentials.toml`, while accepting the previous `local_llm_api_key` key when reading existing credentials.
+
+### Fixed
+
+- Support Gemini 3 models, including `gemini-3.8-flash`, by omitting deprecated sampling parameters from OpenAI-compatible requests.
+
 ## 2.1.2-beta - 2026-09-07
 
 ### Fixed
