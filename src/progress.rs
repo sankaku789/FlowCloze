@@ -65,6 +65,22 @@ impl FailureClass {
             Self::Io => "io",
         }
     }
+
+    const fn detail(self) -> &'static str {
+        match self {
+            Self::Configuration => "invalid configuration",
+            Self::Authentication => "authentication failed",
+            Self::RateLimited => "provider rate limit reached",
+            Self::Timeout => "provider request timed out",
+            Self::Transport => "provider connection failed",
+            Self::Api => "provider API request failed",
+            Self::Content => "provider output was invalid or failed content checks",
+            Self::Validation => "generated content failed validation",
+            Self::InvalidInput => "input could not be parsed or validated",
+            Self::Serialization => "output serialization failed",
+            Self::Io => "file or stream I/O failed",
+        }
+    }
 }
 
 /// progress sink に渡す、本文を持たないイベント。
@@ -193,28 +209,41 @@ impl ProgressSink for PlainProgressSink {
                 total,
                 successes,
                 retries,
-            } => format!("      batch {number}/{total}: {successes}成功, {retries} retry"),
+            } => {
+                let retry_detail = if retries == 0 {
+                    String::new()
+                } else {
+                    " (cause=content_validation)".to_string()
+                };
+                format!(
+                    "      batch {number}/{total}: {successes}成功, {retries} retry{retry_detail}"
+                )
+            }
             ProgressEvent::Retry {
                 task_id,
                 attempt,
                 result,
             } => format!(
-                "      retry: task={} attempt={attempt} result={}",
+                "      retry: task={} attempt={attempt} cause=content_validation result={}",
                 escape(&task_id),
                 result.as_str()
             ),
             ProgressEvent::Fallback { task_id, reason } => format!(
-                "      fallback: task={} reason={}",
+                "      fallback: task={} reason={} detail={}",
                 escape(&task_id),
-                reason.as_str()
+                reason.as_str(),
+                reason.detail()
             ),
             ProgressEvent::Validated { tasks } => format!("[3/4] 検証完了: {tasks}/{tasks}"),
             ProgressEvent::Saved { path } => format!("[4/4] 保存完了: {}", escape(&path)),
             ProgressEvent::Stdout => "[4/4] stdout出力完了".to_string(),
             ProgressEvent::ProviderError { class, status } => format_provider_error(class, status),
-            ProgressEvent::Failed { stage, class } => {
-                format!("[failed] stage={} class={}", stage.as_str(), class.as_str())
-            }
+            ProgressEvent::Failed { stage, class } => format!(
+                "[failed] stage={} class={} detail={}",
+                stage.as_str(),
+                class.as_str(),
+                class.detail()
+            ),
         };
         if let Ok(mut writer) = self.writer.lock() {
             let _ = writeln!(writer, "{line}");
@@ -226,24 +255,23 @@ fn format_provider_error(class: FailureClass, status: Option<u16>) -> String {
     if let Some(status) = status {
         if let Some(reason) = http_status_reason(status) {
             return format!(
-                "Provider error: HTTP {status} {reason} (class={})",
-                class.as_str()
+                "Provider error: HTTP {status} {reason} (class={}, detail={})",
+                class.as_str(),
+                class.detail()
             );
         }
-        return format!("Provider error: HTTP {status} (class={})", class.as_str());
+        return format!(
+            "Provider error: HTTP {status} (class={}, detail={})",
+            class.as_str(),
+            class.detail()
+        );
     }
 
-    let detail = match class {
-        FailureClass::Configuration => "provider configuration error",
-        FailureClass::Authentication => "authentication failed",
-        FailureClass::RateLimited => "rate limited",
-        FailureClass::Timeout => "request timed out",
-        FailureClass::Transport => "connection failed",
-        FailureClass::Api => "API request failed",
-        FailureClass::Content => "invalid or empty response",
-        _ => "request failed",
-    };
-    format!("Provider error: {detail} (class={})", class.as_str())
+    format!(
+        "Provider error: {} (class={})",
+        class.detail(),
+        class.as_str()
+    )
 }
 
 fn http_status_reason(status: u16) -> Option<&'static str> {
@@ -309,6 +337,28 @@ mod tests {
     }
 
     #[test]
+    fn retry_output_explains_content_validation_cause() {
+        let writer = SharedWriter::default();
+        let sink = PlainProgressSink::with_writer(writer.clone(), "Gemini");
+        sink.emit(ProgressEvent::BatchComplete {
+            number: 1,
+            total: 2,
+            successes: 2,
+            retries: 1,
+        });
+        sink.emit(ProgressEvent::Retry {
+            task_id: "qblock-003".to_string(),
+            attempt: 1,
+            result: RetryResult::Success,
+        });
+
+        assert_eq!(
+            String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
+            "      batch 1/2: 2成功, 1 retry (cause=content_validation)\n      retry: task=qblock-003 attempt=1 cause=content_validation result=success\n"
+        );
+    }
+
+    #[test]
     fn provider_error_renders_http_status_and_reason() {
         let writer = SharedWriter::default();
         let sink = PlainProgressSink::with_writer(writer.clone(), "Gemini");
@@ -319,7 +369,7 @@ mod tests {
 
         assert_eq!(
             String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
-            "Provider error: HTTP 429 Too Many Requests (class=rate_limited)\n"
+            "Provider error: HTTP 429 Too Many Requests (class=rate_limited, detail=provider rate limit reached)\n"
         );
     }
 
@@ -334,7 +384,22 @@ mod tests {
 
         assert_eq!(
             String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
-            "Provider error: request timed out (class=timeout)\n"
+            "Provider error: provider request timed out (class=timeout)\n"
+        );
+    }
+
+    #[test]
+    fn failed_output_includes_sanitized_detail() {
+        let writer = SharedWriter::default();
+        let sink = PlainProgressSink::with_writer(writer.clone(), "Gemini");
+        sink.emit(ProgressEvent::Failed {
+            stage: ProgressStage::Generate,
+            class: FailureClass::Content,
+        });
+
+        assert_eq!(
+            String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
+            "[failed] stage=generate class=content detail=provider output was invalid or failed content checks\n"
         );
     }
 
