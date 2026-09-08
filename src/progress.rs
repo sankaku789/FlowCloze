@@ -100,6 +100,10 @@ pub enum ProgressEvent {
         path: String,
     },
     Stdout,
+    ProviderError {
+        class: FailureClass,
+        status: Option<u16>,
+    },
     Failed {
         stage: ProgressStage,
         class: FailureClass,
@@ -207,6 +211,7 @@ impl ProgressSink for PlainProgressSink {
             ProgressEvent::Validated { tasks } => format!("[3/4] 検証完了: {tasks}/{tasks}"),
             ProgressEvent::Saved { path } => format!("[4/4] 保存完了: {}", escape(&path)),
             ProgressEvent::Stdout => "[4/4] stdout出力完了".to_string(),
+            ProgressEvent::ProviderError { class, status } => format_provider_error(class, status),
             ProgressEvent::Failed { stage, class } => {
                 format!("[failed] stage={} class={}", stage.as_str(), class.as_str())
             }
@@ -214,6 +219,46 @@ impl ProgressSink for PlainProgressSink {
         if let Ok(mut writer) = self.writer.lock() {
             let _ = writeln!(writer, "{line}");
         }
+    }
+}
+
+fn format_provider_error(class: FailureClass, status: Option<u16>) -> String {
+    if let Some(status) = status {
+        if let Some(reason) = http_status_reason(status) {
+            return format!(
+                "Provider error: HTTP {status} {reason} (class={})",
+                class.as_str()
+            );
+        }
+        return format!("Provider error: HTTP {status} (class={})", class.as_str());
+    }
+
+    let detail = match class {
+        FailureClass::Configuration => "provider configuration error",
+        FailureClass::Authentication => "authentication failed",
+        FailureClass::RateLimited => "rate limited",
+        FailureClass::Timeout => "request timed out",
+        FailureClass::Transport => "connection failed",
+        FailureClass::Api => "API request failed",
+        FailureClass::Content => "invalid or empty response",
+        _ => "request failed",
+    };
+    format!("Provider error: {detail} (class={})", class.as_str())
+}
+
+fn http_status_reason(status: u16) -> Option<&'static str> {
+    match status {
+        400 => Some("Bad Request"),
+        401 => Some("Unauthorized"),
+        403 => Some("Forbidden"),
+        404 => Some("Not Found"),
+        408 => Some("Request Timeout"),
+        429 => Some("Too Many Requests"),
+        500 => Some("Internal Server Error"),
+        502 => Some("Bad Gateway"),
+        503 => Some("Service Unavailable"),
+        504 => Some("Gateway Timeout"),
+        _ => None,
     }
 }
 
@@ -261,6 +306,36 @@ mod tests {
             path: "a\nb.json".to_string(),
         });
         assert_eq!(String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(), "[1/4] Markdown解析: 1 tasks\n[2/4] 生成開始: Identity / 1 batches\n      batch 1/1: 1成功, 0 retry\n[3/4] 検証完了: 1/1\n[4/4] 保存完了: a\\nb.json\n");
+    }
+
+    #[test]
+    fn provider_error_renders_http_status_and_reason() {
+        let writer = SharedWriter::default();
+        let sink = PlainProgressSink::with_writer(writer.clone(), "Gemini");
+        sink.emit(ProgressEvent::ProviderError {
+            class: FailureClass::RateLimited,
+            status: Some(429),
+        });
+
+        assert_eq!(
+            String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
+            "Provider error: HTTP 429 Too Many Requests (class=rate_limited)\n"
+        );
+    }
+
+    #[test]
+    fn provider_error_without_status_is_still_human_readable() {
+        let writer = SharedWriter::default();
+        let sink = PlainProgressSink::with_writer(writer.clone(), "Gemini");
+        sink.emit(ProgressEvent::ProviderError {
+            class: FailureClass::Timeout,
+            status: None,
+        });
+
+        assert_eq!(
+            String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
+            "Provider error: request timed out (class=timeout)\n"
+        );
     }
 
     #[test]
