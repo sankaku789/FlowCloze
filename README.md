@@ -122,6 +122,16 @@ flowcloze generate --provider gemini \
   -o sample/generated.json sample/sample.md
 ```
 
+Gemini 3.8 Flashを使う場合:
+
+```bash
+flowcloze generate --provider gemini \
+  --model gemini-3.8-flash \
+  -o sample/generated.json sample/sample.md
+```
+
+Gemini 3系では非推奨のsampling parameterを送信しません。
+
 LLMを呼ばずに生成する場合:
 
 ```bash
@@ -186,10 +196,10 @@ export XDG_CONFIG_HOME="$PWD/.dev-config"
 
 標準TypstテンプレートはPDF出力時に自動展開されるため、テンプレート配置のための追加インストール操作は不要です。
 
-Gemini APIキーは `config.toml` ではなく、専用の `credentials.toml` に保存します。
+APIキーは `config.toml` ではなく、専用の `credentials.toml` に保存します。`flowcloze api set` を実行するとproviderを対話式に選択し、APIキーは非表示入力できます。
 
 ```bash
-flowcloze api set --key "YOUR_GEMINI_API_KEY"
+flowcloze api set
 ```
 
 Unix系OSでは `credentials.toml` を `0600`、設定ディレクトリを `0700` で作成します。

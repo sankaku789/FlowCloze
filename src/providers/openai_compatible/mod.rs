@@ -112,9 +112,11 @@ impl OpenAiCompatibleAdapter {
     fn request(&self, prompt: &str, strategy: StructuredStrategy) -> Result<String, HttpError> {
         let mut body = json!({
             "model": self.endpoint.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.0
+            "messages": [{"role": "user", "content": prompt}]
         });
+        if should_send_temperature(&self.endpoint) {
+            body["temperature"] = json!(0.0);
+        }
         if let Some(format) = response_format(strategy) {
             body["response_format"] = format;
         }
@@ -283,6 +285,10 @@ impl QuestionComposer for OpenAiCompatiblePool {
     }
 }
 
+fn should_send_temperature(endpoint: &OpenAiEndpointConfig) -> bool {
+    !(endpoint.provider_label == "gemini" && endpoint.model.starts_with("gemini-3"))
+}
+
 fn map_http(error: HttpError) -> ComposeError {
     match error {
         HttpError::Configuration => ComposeError::Configuration,
@@ -293,5 +299,27 @@ fn map_http(error: HttpError) -> ComposeError {
         HttpError::Api {
             status, retryable, ..
         } => ComposeError::Api { status, retryable },
+    }
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+
+    #[test]
+    fn gemini_3_omits_deprecated_sampling_parameters() {
+        let endpoint = OpenAiEndpointConfig::new("https://example.invalid/v1", "gemini-3.8-flash")
+            .with_provider_label("gemini");
+        assert!(!should_send_temperature(&endpoint));
+    }
+
+    #[test]
+    fn gemini_25_and_other_openai_compatible_models_keep_temperature() {
+        let gemini = OpenAiEndpointConfig::new("https://example.invalid/v1", "gemini-2.5-flash")
+            .with_provider_label("gemini");
+        let other = OpenAiEndpointConfig::new("https://example.invalid/v1", "mistral-small-latest")
+            .with_provider_label("openai-compatible");
+        assert!(should_send_temperature(&gemini));
+        assert!(should_send_temperature(&other));
     }
 }

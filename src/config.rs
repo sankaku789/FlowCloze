@@ -61,8 +61,8 @@ struct FileConfig {
 struct Credentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     gemini_api_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    local_llm_api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", alias = "local_llm_api_key")]
+    openai_compatible_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -156,7 +156,7 @@ impl GenerationConfig {
         let credentials = load_credentials()?;
         let value = match self.provider {
             Provider::Gemini => credentials.gemini_api_key,
-            Provider::OpenAiCompatible => credentials.local_llm_api_key,
+            Provider::OpenAiCompatible => credentials.openai_compatible_api_key,
         };
         Ok(value.filter(|value| !value.trim().is_empty()))
     }
@@ -169,11 +169,11 @@ impl GenerationConfig {
                 .unwrap_or_else(|_| "credentials.toml".to_string());
             match self.provider {
                 Provider::Gemini => format!(
-                    "Gemini APIキーが未設定です。`flowcloze api set --key <API_KEY>` を実行してください ({location})"
+                    "Gemini APIキーが未設定です。`flowcloze api set` を実行してください ({location})"
                 ),
-                Provider::OpenAiCompatible => {
-                    format!("ローカルLLM APIキーが未設定です ({location})")
-                }
+                Provider::OpenAiCompatible => format!(
+                    "OpenAI互換providerのAPIキーが未設定です。`flowcloze api set` を実行してください ({location})"
+                ),
             }
         })
     }
@@ -294,8 +294,8 @@ fn ensure_bundled_typst_template(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("{} を書き込めませんでした: {error}", path.display()))
 }
 
-/// Gemini API キーを標準 credentials.toml に保存する。
-pub fn save_gemini_api_key(api_key: &str) -> Result<(), String> {
+/// provider に対応する API キーを標準 credentials.toml に保存する。
+pub fn save_api_key(provider: Provider, api_key: &str) -> Result<(), String> {
     if api_key.trim().is_empty() {
         return Err("APIキーを空にはできません".into());
     }
@@ -318,7 +318,12 @@ pub fn save_gemini_api_key(api_key: &str) -> Result<(), String> {
     }
 
     let mut credentials = load_credentials()?;
-    credentials.gemini_api_key = Some(api_key.to_string());
+    match provider {
+        Provider::Gemini => credentials.gemini_api_key = Some(api_key.to_string()),
+        Provider::OpenAiCompatible => {
+            credentials.openai_compatible_api_key = Some(api_key.to_string())
+        }
+    }
     let body = toml::to_string_pretty(&credentials)
         .map_err(|_| "credentials.toml を作成できませんでした".to_string())?;
     write_private_file(&credentials_path()?, body.as_bytes())
@@ -523,6 +528,16 @@ mod tests {
     }
 
     #[test]
+    fn legacy_local_credential_key_is_accepted() {
+        let credentials: Credentials =
+            toml::from_str("local_llm_api_key = 'legacy-secret'").unwrap();
+        assert_eq!(
+            credentials.openai_compatible_api_key.as_deref(),
+            Some("legacy-secret")
+        );
+    }
+
+    #[test]
     fn standard_config_uses_xdg_config_home() {
         let _lock = environment_test_lock();
         let _xdg = EnvironmentVariable::new("XDG_CONFIG_HOME");
@@ -588,15 +603,17 @@ mod tests {
     }
 
     #[test]
-    fn saves_gemini_credentials_privately() {
+    fn saves_provider_credentials_privately() {
         let _lock = environment_test_lock();
         let _xdg = EnvironmentVariable::new("XDG_CONFIG_HOME");
         let directory = temporary_home("credentials");
         env::set_var("XDG_CONFIG_HOME", &directory);
-        save_gemini_api_key("secret-marker").unwrap();
+        save_api_key(Provider::Gemini, "gemini-secret").unwrap();
+        save_api_key(Provider::OpenAiCompatible, "openai-secret").unwrap();
         let path = credentials_path().unwrap();
         let body = fs::read_to_string(&path).unwrap();
-        assert!(body.contains("gemini_api_key = \"secret-marker\""));
+        assert!(body.contains("gemini_api_key = \"gemini-secret\""));
+        assert!(body.contains("openai_compatible_api_key = \"openai-secret\""));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

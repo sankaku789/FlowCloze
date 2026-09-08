@@ -14,6 +14,7 @@ gemini-native = []
 [dependencies]
 crossterm = "0.27"
 ratatui = "0.27"
+rpassword = "7"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
