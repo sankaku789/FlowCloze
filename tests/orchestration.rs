@@ -156,9 +156,12 @@ fn swapped_task_bodies_are_retried_with_stable_tokens() {
 
     assert_eq!(outcome.document.questions.len(), 2);
     let tokens = composer.seen_tokens.lock().unwrap();
-    assert_eq!(tokens.len(), 4);
-    assert_eq!(tokens[0], tokens[3]);
-    assert_eq!(tokens[1], tokens[2]);
+    // First content retry is re-batched; only the final retry is single-task.
+    assert_eq!(tokens.len(), 6);
+    assert_eq!(tokens[0], tokens[2]);
+    assert_eq!(tokens[0], tokens[4]);
+    assert_eq!(tokens[1], tokens[3]);
+    assert_eq!(tokens[1], tokens[5]);
 }
 
 struct UnknownSentinelComposer;

@@ -10,6 +10,7 @@ use crate::observability::{ComposeEvent, ComposeEventKind, EventSink, NoopEventS
 use crate::parser::{parse_markdown_located, MarkdownParseError, ParsedDocument};
 use crate::planner::{ComposeExecutionPolicy, ComposePlanError, FailureReason};
 use crate::progress::{FailureClass, NoopProgressSink, ProgressEvent, ProgressSink};
+use crate::quota::QuotaProfile;
 use crate::scaffold::{ScaffoldDocument, ScaffoldTask};
 use crate::validation::GeneratedDocument;
 
@@ -20,6 +21,8 @@ pub struct GenerateMarkdownOptions {
     pub policy: ComposeExecutionPolicy,
     pub rewrite: RewritePolicy,
     pub fallback: FallbackPolicy,
+    /// provider quotaに応じて初回batchと送信速度を調整する。
+    pub quota: Option<QuotaProfile>,
     /// provider taskがある時だけrequestへ渡す追加制約。
     pub extra_constraints: Vec<String>,
 }
@@ -31,6 +34,7 @@ impl GenerateMarkdownOptions {
             policy: ComposeExecutionPolicy::default(),
             rewrite: RewritePolicy::Always,
             fallback: FallbackPolicy::Error,
+            quota: None,
             extra_constraints: Vec::new(),
         }
     }
@@ -232,17 +236,23 @@ pub fn generate_markdown_with_composer_observed_with_progress(
     let identity_indexes = (0..scaffold.tasks.len())
         .filter(|index| !rewrite_indexes.contains(index))
         .collect::<Vec<_>>();
-    let identity_plan = match prepare_selected_plan(&scaffold, &identity_indexes, options.policy) {
-        Ok(count) => count,
-        Err(error) => {
-            progress.emit(ProgressEvent::Failed {
-                stage: crate::progress::ProgressStage::Plan,
-                class: failure_class_for_plan(&error),
-            });
-            return Err(GenerateMarkdownError::Compose(error));
-        }
-    };
-    let rewrite_plan = match prepare_selected_plan(&scaffold, &rewrite_indexes, options.policy) {
+    let identity_plan =
+        match prepare_selected_plan(&scaffold, &identity_indexes, options.policy, None) {
+            Ok(count) => count,
+            Err(error) => {
+                progress.emit(ProgressEvent::Failed {
+                    stage: crate::progress::ProgressStage::Plan,
+                    class: failure_class_for_plan(&error),
+                });
+                return Err(GenerateMarkdownError::Compose(error));
+            }
+        };
+    let rewrite_plan = match prepare_selected_plan(
+        &scaffold,
+        &rewrite_indexes,
+        options.policy,
+        options.quota.as_ref(),
+    ) {
         Ok(count) => count,
         Err(error) => {
             progress.emit(ProgressEvent::Failed {
@@ -411,6 +421,7 @@ fn prepare_selected_plan(
     scaffold: &ScaffoldDocument,
     indexes: &[usize],
     policy: ComposeExecutionPolicy,
+    quota: Option<&QuotaProfile>,
 ) -> Result<crate::planner::PreparedComposePlan, ComposePlanError> {
     let selected = ScaffoldDocument {
         tasks: indexes
@@ -418,7 +429,7 @@ fn prepare_selected_plan(
             .map(|index| scaffold.tasks[*index].clone())
             .collect(),
     };
-    crate::planner::prepare_compose_plan(&selected, policy)
+    crate::planner::prepare_compose_plan_with_quota(&selected, policy, quota)
 }
 
 /// planner が実測時点で出す batch 番号を、auto の通し番号へ変換する。

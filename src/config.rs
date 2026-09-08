@@ -1,5 +1,6 @@
 //! FlowCloze の標準設定と秘密情報を解決する。
 
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::planner::BatchPolicy;
 use crate::providers::capability::StructuredOutputMode;
+use crate::quota::{QuotaProfile, QuotaProfileConfig};
 
 const GEMINI_OPENAI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const BUNDLED_TYPST_TEMPLATE: &str = include_str!("../templates/cloze.typ");
@@ -46,6 +48,9 @@ struct FileConfig {
     provider: Option<String>,
     model: Option<String>,
     base_url: Option<String>,
+    quota_profile: Option<String>,
+    #[serde(default)]
+    quota_profiles: HashMap<String, QuotaProfileConfig>,
     batch: Option<String>,
     max_tasks_per_batch: Option<usize>,
     max_input_tokens: Option<usize>,
@@ -80,6 +85,7 @@ pub struct GenerationConfig {
     pub provider: Provider,
     pub model: String,
     pub base_url: Option<String>,
+    pub quota: Option<QuotaProfile>,
     pub batch: BatchPolicyName,
     pub max_tasks_per_batch: Option<usize>,
     pub max_input_tokens: Option<usize>,
@@ -209,6 +215,26 @@ pub fn load(cli: CliOverrides) -> Result<GenerationConfig, String> {
             .or(file.batch.as_deref())
             .unwrap_or("auto"),
     )?;
+    let quota_name = file
+        .quota_profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let mut quota = match quota_name {
+        Some(name) => {
+            let profile = file.quota_profiles.get(&name).ok_or_else(|| {
+                format!("quota_profile '{name}' が quota_profiles に定義されていません")
+            })?;
+            Some(profile.resolve(name, &model)?)
+        }
+        None => None,
+    };
+    if batch != BatchPolicyName::Auto {
+        if let Some(profile) = quota.as_mut() {
+            profile.disable_adaptive_expansion();
+        }
+    }
     let rewrite = parse_rewrite(
         cli.rewrite
             .as_deref()
@@ -232,6 +258,7 @@ pub fn load(cli: CliOverrides) -> Result<GenerationConfig, String> {
         provider,
         model,
         base_url,
+        quota,
         batch,
         max_tasks_per_batch: positive("max_tasks_per_batch", file.max_tasks_per_batch)?,
         max_input_tokens: positive("max_input_tokens", file.max_input_tokens)?,
@@ -599,6 +626,40 @@ mod tests {
         assert_eq!(config.provider, Provider::OpenAiCompatible);
         assert_eq!(config.model, "test-model");
         assert_eq!(typst_template_path().unwrap(), template);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn loads_quota_profile_and_model_override() {
+        let _lock = environment_test_lock();
+        let _xdg = EnvironmentVariable::new("XDG_CONFIG_HOME");
+        let directory = temporary_home("quota");
+        env::set_var("XDG_CONFIG_HOME", &directory);
+        let flowcloze = directory.join("flowcloze");
+        fs::create_dir_all(&flowcloze).unwrap();
+        fs::write(
+            flowcloze.join("config.toml"),
+            "provider = 'gemini'
+model = 'gemini-3.8-flash'
+quota_profile = 'gemini'
+[quota_profiles.gemini]
+rpm = 5
+tpm = 250000
+rpd = 20
+reserve_requests = 4
+adaptive_max_tasks_per_batch = 12
+adaptive_max_input_tokens = 18000
+[quota_profiles.gemini.models.'gemini-3.8-flash']
+rpd = 30
+",
+        )
+        .unwrap();
+        let config = load(CliOverrides::default()).unwrap();
+        let quota = config.quota.unwrap();
+        assert_eq!(quota.name, "gemini");
+        assert_eq!(quota.rpm, Some(5));
+        assert_eq!(quota.rpd, Some(30));
+        assert_eq!(quota.request_budget(), Some(26));
         fs::remove_dir_all(directory).unwrap();
     }
 
