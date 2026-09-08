@@ -758,6 +758,7 @@ fn generate_with_llm(
     };
     let mut options = flowcloze::GenerateMarkdownOptions::new(input_path);
     options.policy.batch_policy = config.batch_policy();
+    options.quota = config.quota.clone();
     options.rewrite = config.rewrite;
     options.fallback = config.fallback;
     let debug_events = verbose || matches!(env::var("FLOWCLOZE_LOG").as_deref(), Ok("debug"));
@@ -765,8 +766,9 @@ fn generate_with_llm(
     let sink = Arc::new(JsonLinesEventSink::stderr(debug_events));
     let retry_context = Arc::clone(&context);
     let retry_sink = Arc::clone(&sink);
-    let retry_transport =
-        flowcloze::http::HttpTransport::default().with_retry_observer(move |retry| {
+    let retry_transport = flowcloze::http::HttpTransport::default()
+        .with_quota_profile(config.quota.clone())
+        .with_retry_observer(move |retry| {
             let mut event = ComposeEvent::new(ComposeEventKind::RetryDelay, &retry_context);
             event.attempt = Some(retry.attempt);
             event.retry_delay_ms = Some(retry.delay_ms);

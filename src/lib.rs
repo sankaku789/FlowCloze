@@ -17,6 +17,7 @@ pub mod planner;
 pub mod progress;
 pub mod prompt;
 pub mod providers;
+pub mod quota;
 pub mod scaffold;
 pub mod validation;
 
@@ -58,6 +59,7 @@ pub use providers::openai_compatible::{
     local_openai_url_candidates, try_local_openai_candidates, OpenAiAuth, OpenAiCompatibleAdapter,
     OpenAiCompatiblePool, OpenAiEndpointConfig,
 };
+pub use quota::QuotaProfile;
 pub use validation::{
     validate_generated_document, validate_generated_json, FixedField, GeneratedDocument,
     ValidationError, ValidationReport,

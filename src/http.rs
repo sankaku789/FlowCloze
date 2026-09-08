@@ -7,6 +7,8 @@ use std::time::{Duration, SystemTime};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
 
+use crate::quota::{estimate_request_tokens, QuotaProfile, RateGate};
+
 pub const MAX_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
 const MAX_ATTEMPTS: u32 = 3;
 const MAX_BACKOFF: Duration = Duration::from_secs(20);
@@ -79,6 +81,7 @@ pub struct HttpTransport {
     request_timeout: Duration,
     sleeper: Arc<dyn Fn(Duration) + Send + Sync>,
     retry_observer: Option<Arc<dyn Fn(RetryDelay) + Send + Sync>>,
+    rate_gate: Option<RateGate>,
 }
 
 impl std::fmt::Debug for HttpTransport {
@@ -105,6 +108,7 @@ impl HttpTransport {
             request_timeout,
             sleeper: Arc::new(std::thread::sleep),
             retry_observer: None,
+            rate_gate: None,
         }
     }
     /// テストでは待機を差し替え、retry回数だけを検証できる。
@@ -120,6 +124,10 @@ impl HttpTransport {
         self.retry_observer = Some(Arc::new(observer));
         self
     }
+    pub fn with_quota_profile(mut self, profile: Option<QuotaProfile>) -> Self {
+        self.rate_gate = profile.map(RateGate::new);
+        self
+    }
     pub fn post_json(
         &self,
         url: &str,
@@ -130,6 +138,11 @@ impl HttpTransport {
             return Err(HttpError::Configuration);
         }
         for attempt in 1..=MAX_ATTEMPTS {
+            if let Some(rate_gate) = &self.rate_gate {
+                rate_gate
+                    .acquire(estimate_request_tokens(body))
+                    .map_err(|_| HttpError::Configuration)?;
+            }
             let response = self
                 .client
                 .post(url)

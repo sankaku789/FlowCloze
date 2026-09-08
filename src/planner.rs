@@ -15,6 +15,7 @@ use crate::observability::{
 };
 use crate::progress::{NoopProgressSink, ProgressEvent, ProgressSink, RetryResult};
 use crate::prompt::{build_compose_request_prompt, build_question_composer_prompt};
+use crate::quota::QuotaProfile;
 use crate::scaffold::{ScaffoldDocument, ScaffoldTask};
 use crate::validation::{
     validate_generated_document, validate_generated_documents,
@@ -251,6 +252,7 @@ impl From<ComposePlanError> for ComposeExecutionError {
 #[derive(Debug, Clone)]
 pub struct PreparedComposePlan {
     batches: Vec<Vec<TaskAttempt>>,
+    effective_policy: BatchPolicy,
 }
 
 impl PreparedComposePlan {
@@ -465,7 +467,14 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
     leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
     prepared: Option<&PreparedComposePlan>,
 ) -> Result<GeneratedDocument, ComposeExecutionError> {
-    validate_port_policy(scaffold, policy).map_err(ComposeExecutionError::from_error)?;
+    let effective_batch_policy = prepared
+        .map(|plan| plan.effective_policy)
+        .unwrap_or(policy.batch_policy);
+    let effective_policy = ComposeExecutionPolicy {
+        batch_policy: effective_batch_policy,
+        ..policy
+    };
+    validate_port_policy(scaffold, effective_policy).map_err(ComposeExecutionError::from_error)?;
     let estimator = CharHeuristicTokenEstimator;
     let mut completed = HashMap::<String, ComposedQuestion>::new();
     let mut retry_queue = Vec::<TaskAttempt>::new();
@@ -473,7 +482,7 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
     let mut terminal_failures = Vec::new();
     let batches = prepared
         .map(|plan| plan.batches.clone())
-        .unwrap_or_else(|| plan_batches(scaffold, policy.batch_policy, &estimator));
+        .unwrap_or_else(|| plan_batches(scaffold, effective_batch_policy, &estimator));
     let initial_batch_total = batches.len();
     for (batch_number, batch) in batches.iter().enumerate() {
         let failures = run_port_batch(
@@ -485,7 +494,7 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
             &mut completed,
             context,
             sink,
-            policy.batch_policy.max_concurrent_batches,
+            effective_batch_policy.max_concurrent_batches,
             extra_constraints,
             leakage_baselines,
         )?;
@@ -539,41 +548,49 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
         }
     }
 
-    while let Some(attempt) = retry_queue.pop() {
-        if completed.contains_key(&scaffold.tasks[attempt.index].id) {
-            continue;
+    let mut retry_batch_number = initial_batch_total;
+    while !retry_queue.is_empty() {
+        let pending = std::mem::take(&mut retry_queue);
+        let retry_batches =
+            plan_retry_attempts(scaffold, pending, effective_batch_policy, &estimator);
+        for batch in retry_batches {
+            let tracked = batch
+                .iter()
+                .map(|attempt| (attempt.index, attempt.retry_count))
+                .collect::<Vec<_>>();
+            let failures = run_port_batch(
+                intermediate,
+                scaffold,
+                &batch,
+                retry_batch_number,
+                composer,
+                &mut completed,
+                context,
+                sink,
+                effective_batch_policy.max_concurrent_batches,
+                extra_constraints,
+                leakage_baselines,
+            )?;
+            retry_batch_number += 1;
+            let terminal =
+                enqueue_port_failures(&mut retry_queue, failures, policy.max_content_retries);
+            for (task_index, retry_count) in tracked {
+                let task_id = scaffold.tasks[task_index].id.clone();
+                let result = if completed.contains_key(&task_id) {
+                    RetryResult::Success
+                } else if terminal.iter().any(|failure| failure.index == task_index) {
+                    RetryResult::Failed
+                } else {
+                    RetryResult::Retry
+                };
+                progress.emit(ProgressEvent::Retry {
+                    task_id,
+                    attempt: retry_count,
+                    result,
+                });
+            }
+            terminal_failures.extend(terminal);
         }
-        let task_index = attempt.index;
-        let retry_count = attempt.retry_count;
-        let failures = run_port_batch(
-            intermediate,
-            scaffold,
-            &[attempt],
-            0,
-            composer,
-            &mut completed,
-            context,
-            sink,
-            policy.batch_policy.max_concurrent_batches,
-            extra_constraints,
-            leakage_baselines,
-        )?;
-        let task_id = scaffold.tasks[task_index].id.clone();
-        let terminal =
-            enqueue_port_failures(&mut retry_queue, failures, policy.max_content_retries);
-        let result = if completed.contains_key(&task_id) {
-            RetryResult::Success
-        } else if terminal.iter().any(|failure| failure.index == task_index) {
-            RetryResult::Failed
-        } else {
-            RetryResult::Retry
-        };
-        progress.emit(ProgressEvent::Retry {
-            task_id,
-            attempt: retry_count,
-            result,
-        });
-        terminal_failures.extend(terminal);
     }
 
     if !terminal_failures.is_empty() {
@@ -734,9 +751,27 @@ pub fn prepare_compose_plan(
     scaffold: &ScaffoldDocument,
     policy: ComposeExecutionPolicy,
 ) -> Result<PreparedComposePlan, ComposePlanError> {
-    validate_port_policy(scaffold, policy)?;
+    prepare_compose_plan_with_quota(scaffold, policy, None)
+}
+
+pub fn prepare_compose_plan_with_quota(
+    scaffold: &ScaffoldDocument,
+    policy: ComposeExecutionPolicy,
+    quota: Option<&QuotaProfile>,
+) -> Result<PreparedComposePlan, ComposePlanError> {
+    let estimator = CharHeuristicTokenEstimator;
+    let effective_batch_policy =
+        quota_adjusted_batch_policy(scaffold, policy.batch_policy, quota, &estimator)?;
+    validate_port_policy(
+        scaffold,
+        ComposeExecutionPolicy {
+            batch_policy: effective_batch_policy,
+            ..policy
+        },
+    )?;
     Ok(PreparedComposePlan {
-        batches: plan_batches(scaffold, policy.batch_policy, &CharHeuristicTokenEstimator),
+        batches: plan_batches(scaffold, effective_batch_policy, &estimator),
+        effective_policy: effective_batch_policy,
     })
 }
 
@@ -773,7 +808,10 @@ fn run_port_batch(
         style: WritingStyle::PlainJapanese,
         prompt_version: "compose-v2".to_string(),
         extra_constraints: extra_constraints.to_vec(),
-        retry_feedback: attempts[0].feedback.clone(),
+        retry_feedback: attempts
+            .iter()
+            .flat_map(|attempt| attempt.feedback.iter().cloned())
+            .collect(),
     };
     // max_concurrent_batchesは設定の検証・観測値であり、この実装は逐次実行する。
     let mut batch_event = ComposeEvent::new(ComposeEventKind::BatchStarted, context);
@@ -1141,14 +1179,122 @@ fn enqueue_port_failures(
             terminal.push(failure);
             continue;
         }
+        let next_retry_count = failure.retry_count + 1;
         queue.push(TaskAttempt {
             index: failure.index,
-            retry_count: failure.retry_count + 1,
-            mode: ComposeMode::SingleTask,
+            retry_count: next_retry_count,
+            mode: if next_retry_count < max_content_retries {
+                ComposeMode::Batched
+            } else {
+                ComposeMode::SingleTask
+            },
             feedback: failure.errors,
         });
     }
     terminal
+}
+
+fn quota_adjusted_batch_policy<E>(
+    scaffold: &ScaffoldDocument,
+    base: BatchPolicy,
+    quota: Option<&QuotaProfile>,
+    estimator: &E,
+) -> Result<BatchPolicy, ComposePlanError>
+where
+    E: TokenEstimator,
+{
+    let Some(quota) = quota else {
+        return Ok(base);
+    };
+    let mut policy = base;
+    if let Some(tpm) = quota.tpm {
+        let tpm = usize::try_from(tpm).unwrap_or(usize::MAX);
+        policy.max_estimated_input_tokens = policy.max_estimated_input_tokens.min(tpm);
+    }
+    let Some(request_budget) = quota.request_budget() else {
+        return Ok(policy);
+    };
+    if request_budget == 0 {
+        return Err(ComposePlanError::Configuration {
+            id: "quota-budget".to_string(),
+        });
+    }
+
+    let hard_tasks = quota
+        .adaptive_max_tasks_per_batch
+        .unwrap_or(policy.max_tasks_per_batch)
+        .max(policy.max_tasks_per_batch);
+    let mut hard_tokens = quota
+        .adaptive_max_input_tokens
+        .unwrap_or(policy.max_estimated_input_tokens)
+        .max(policy.max_estimated_input_tokens);
+    if let Some(tpm) = quota.tpm {
+        hard_tokens = hard_tokens.min(usize::try_from(tpm).unwrap_or(usize::MAX));
+    }
+
+    let mut batch_count = plan_batches(scaffold, policy, estimator).len();
+    while batch_count > request_budget {
+        let mut changed = false;
+        if policy.max_tasks_per_batch < hard_tasks {
+            policy.max_tasks_per_batch += 1;
+            changed = true;
+        }
+        if policy.max_estimated_input_tokens < hard_tokens {
+            let remaining = hard_tokens - policy.max_estimated_input_tokens;
+            let step = remaining.clamp(1, 1_000);
+            policy.max_estimated_input_tokens += step;
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+        batch_count = plan_batches(scaffold, policy, estimator).len();
+    }
+    if batch_count > request_budget {
+        return Err(ComposePlanError::Configuration {
+            id: "quota-budget".to_string(),
+        });
+    }
+    Ok(policy)
+}
+
+fn plan_retry_attempts<E>(
+    scaffold: &ScaffoldDocument,
+    attempts: Vec<TaskAttempt>,
+    policy: BatchPolicy,
+    estimator: &E,
+) -> Vec<Vec<TaskAttempt>>
+where
+    E: TokenEstimator,
+{
+    let mut batches = Vec::new();
+    let mut current = Vec::new();
+    let mut current_tokens = 0usize;
+
+    for attempt in attempts {
+        if attempt.mode == ComposeMode::SingleTask {
+            if !current.is_empty() {
+                batches.push(std::mem::take(&mut current));
+                current_tokens = 0;
+            }
+            batches.push(vec![attempt]);
+            continue;
+        }
+        let estimated_tokens = estimate_task_tokens(&scaffold.tasks[attempt.index], estimator);
+        let would_exceed_tasks = current.len() >= policy.max_tasks_per_batch;
+        let would_exceed_tokens = !current.is_empty()
+            && current_tokens + estimated_tokens > policy.max_estimated_input_tokens;
+        if would_exceed_tasks || would_exceed_tokens {
+            batches.push(std::mem::take(&mut current));
+            current_tokens = 0;
+        }
+        current_tokens += estimated_tokens;
+        current.push(attempt);
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
 }
 
 fn validation_error_id(error: &ValidationError) -> String {
@@ -1939,5 +2085,119 @@ mod tests {
             .iter()
             .filter(|event| event.event == ComposeEventKind::Attempt)
             .all(|event| event.provider.is_none() && event.model.is_none()));
+    }
+}
+
+#[cfg(test)]
+mod quota_planner_tests {
+    use super::*;
+
+    fn scaffold(count: usize) -> ScaffoldDocument {
+        ScaffoldDocument {
+            tasks: (0..count)
+                .map(|index| ScaffoldTask {
+                    id: format!("q{index}"),
+                    source_text: "短い本文".to_string(),
+                    cloze_template: "短い＿＿＿".to_string(),
+                    scaffold_question: "短い＿＿＿".to_string(),
+                    blank_count: 1,
+                    answers: vec!["本文".to_string()],
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn quota_plan_expands_only_until_request_budget_fits() {
+        let scaffold = scaffold(5);
+        let policy = ComposeExecutionPolicy {
+            batch_policy: BatchPolicy {
+                max_tasks_per_batch: 1,
+                max_estimated_input_tokens: 1_000,
+                max_retry_count: 2,
+                max_concurrent_batches: 1,
+            },
+            max_content_retries: 2,
+        };
+        let quota = QuotaProfile {
+            name: "test".into(),
+            rpm: Some(5),
+            tpm: Some(10_000),
+            rpd: Some(3),
+            reserve_requests: 1,
+            adaptive_max_tasks_per_batch: Some(3),
+            adaptive_max_input_tokens: Some(2_000),
+        };
+        let plan = prepare_compose_plan_with_quota(&scaffold, policy, Some(&quota)).unwrap();
+        assert_eq!(plan.batch_count(), 2);
+        assert_eq!(plan.effective_policy.max_tasks_per_batch, 3);
+    }
+
+    #[test]
+    fn quota_plan_fails_before_provider_when_hard_limit_cannot_fit() {
+        let scaffold = scaffold(5);
+        let policy = ComposeExecutionPolicy {
+            batch_policy: BatchPolicy {
+                max_tasks_per_batch: 1,
+                max_estimated_input_tokens: 1_000,
+                max_retry_count: 2,
+                max_concurrent_batches: 1,
+            },
+            max_content_retries: 2,
+        };
+        let quota = QuotaProfile {
+            name: "test".into(),
+            rpm: None,
+            tpm: None,
+            rpd: Some(3),
+            reserve_requests: 1,
+            adaptive_max_tasks_per_batch: Some(2),
+            adaptive_max_input_tokens: Some(1_000),
+        };
+        assert!(matches!(
+            prepare_compose_plan_with_quota(&scaffold, policy, Some(&quota)),
+            Err(ComposePlanError::Configuration { id }) if id == "quota-budget"
+        ));
+    }
+
+    #[test]
+    fn first_content_retry_is_rebatched_and_last_retry_is_single_task() {
+        let scaffold = scaffold(3);
+        let policy = BatchPolicy {
+            max_tasks_per_batch: 3,
+            max_estimated_input_tokens: 10_000,
+            max_retry_count: 2,
+            max_concurrent_batches: 1,
+        };
+        let first = (0..3)
+            .map(|index| TaskAttempt {
+                index,
+                retry_count: 1,
+                mode: ComposeMode::Batched,
+                feedback: vec!["retry".into()],
+            })
+            .collect();
+        assert_eq!(
+            plan_retry_attempts(&scaffold, first, policy, &CharHeuristicTokenEstimator)
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+        let last = (0..3)
+            .map(|index| TaskAttempt {
+                index,
+                retry_count: 2,
+                mode: ComposeMode::SingleTask,
+                feedback: vec!["retry".into()],
+            })
+            .collect();
+        assert_eq!(
+            plan_retry_attempts(&scaffold, last, policy, &CharHeuristicTokenEstimator)
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 1]
+        );
     }
 }
