@@ -1,0 +1,32 @@
+name: Stability Batching Preflight
+
+on:
+  push:
+    branches:
+      - feat/stability-aware-batching
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+      - name: Apply staged implementation
+        run: |
+          cat .preflight/patch.* > /tmp/flowcloze.patch
+          git apply --check /tmp/flowcloze.patch
+          git apply /tmp/flowcloze.patch
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Run tests
+        run: cargo test
+      - name: Check optional Gemini native adapter
+        run: |
+          cargo clippy --all-targets --features gemini-native -- -D warnings
+          cargo test --features gemini-native
