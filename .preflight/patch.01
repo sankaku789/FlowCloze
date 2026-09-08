@@ -1,0 +1,350 @@
+                 "items": {
+                     "type": "object",
+                     "properties": {
+-                        "id": {"type": "string"},
++                        "id": {"type": "string", "enum": expected_ids},
+                         "question": {"type": "string"}
+                     },
+-                    "required": ["id", "question"]
++                    "required": ["id", "question"],
++                    "additionalProperties": false
+                 }
+             }
+         },
+-        "required": ["items"]
++        "required": ["items"],
++        "additionalProperties": false
+     })
+ }
+ 
+@@ -230,3 +247,35 @@ struct ResponseContent {
+ struct ResponsePart {
+     text: String,
+ }
++
++#[cfg(test)]
++mod schema_tests {
++    use super::*;
++    use crate::compose::{ComposeTask, WritingStyle};
++
++    #[test]
++    fn native_schema_constrains_batch_shape() {
++        let request = ComposeBatchRequest {
++            schema_version: 1,
++            batch_id: "batch".into(),
++            tasks: vec![ComposeTask {
++                id: "q1".into(),
++                source_text: "source".into(),
++                scaffold_question: "＿＿＿".into(),
++                answers: vec!["answer".into()],
++                blank_token: "＿＿＿".into(),
++                blank_tokens: vec!["＿＿＿".into()],
++                blank_count: 1,
++            }],
++            style: WritingStyle::PlainJapanese,
++            prompt_version: "test".into(),
++            extra_constraints: Vec::new(),
++            retry_feedback: Vec::new(),
++        };
++        let schema = compose_schema(&request);
++        let items = &schema["properties"]["items"];
++        assert_eq!(items["minItems"], 1);
++        assert_eq!(items["maxItems"], 1);
++        assert_eq!(items["items"]["properties"]["id"]["enum"], json!(["q1"]));
++    }
++}
+diff --git a/src/http.rs b/src/http.rs
+index c3ea4f4..bf1ac86 100644
+--- a/src/http.rs
++++ b/src/http.rs
+@@ -8,6 +8,7 @@ use reqwest::blocking::Client;
+ use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
+ 
+ use crate::quota::{estimate_request_tokens, QuotaProfile, RateGate};
++use crate::rate_limit::RateLimitKind;
+ 
+ pub const MAX_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
+ const MAX_ATTEMPTS: u32 = 3;
+@@ -29,6 +30,7 @@ pub enum HttpError {
+     },
+     RateLimited {
+         status: u16,
++        kind: RateLimitKind,
+     },
+     Timeout,
+     Transport,
+@@ -43,7 +45,7 @@ impl HttpError {
+     pub fn status(&self) -> Option<u16> {
+         match self {
+             Self::Authentication { status }
+-            | Self::RateLimited { status }
++            | Self::RateLimited { status, .. }
+             | Self::Api { status, .. } => Some(*status),
+             _ => None,
+         }
+@@ -161,20 +163,32 @@ impl HttpTransport {
+                     if (200..300).contains(&status) {
+                         return Ok(response_body);
+                     }
+-                    let retryable = status == 408 || status == 429 || (500..600).contains(&status);
++                    let rate_limit_kind = (status == 429)
++                        .then(|| classify_rate_limit(&response_body))
++                        .unwrap_or(RateLimitKind::Unknown);
++                    // Daily quota exhaustion cannot recover within this bounded retry loop.
++                    // Do not consume more RPD merely to reproduce the same 429.
++                    let retryable = retryable_status(status, rate_limit_kind);
+                     if retryable && attempt < MAX_ATTEMPTS {
+                         let delay = retry_after.unwrap_or_else(|| backoff(attempt));
+                         self.observe_retry(
+                             attempt,
+                             delay,
+-                            if status == 429 { "rate_limited" } else { "api" },
++                            if status == 429 {
++                                retry_error_class(rate_limit_kind)
++                            } else {
++                                "api"
++                            },
+                         );
+                         (self.sleeper)(delay);
+                         continue;
+                     }
+                     return Err(match status {
+                         401 | 403 => HttpError::Authentication { status },
+-                        429 => HttpError::RateLimited { status },
++                        429 => HttpError::RateLimited {
++                            status,
++                            kind: rate_limit_kind,
++                        },
+                         _ => HttpError::Api {
+                             status,
+                             retryable,
+@@ -219,6 +233,96 @@ impl HttpTransport {
+     }
+ }
+ 
++
++fn retryable_status(status: u16, rate_limit_kind: RateLimitKind) -> bool {
++    status == 408
++        || (status == 429 && !rate_limit_kind.is_daily())
++        || (500..600).contains(&status)
++}
++
++fn retry_error_class(kind: RateLimitKind) -> &'static str {
++    match kind {
++        RateLimitKind::RequestsPerDay => "rate_limited_rpd",
++        RateLimitKind::TokensPerDay => "rate_limited_tpd",
++        RateLimitKind::RequestsPerMinute => "rate_limited_rpm",
++        RateLimitKind::TokensPerMinute => "rate_limited_tpm",
++        RateLimitKind::Spend => "rate_limited_spend",
++        RateLimitKind::Unknown => "rate_limited",
++    }
++}
++
++/// Parse only structured quota descriptors. Free-form messages are intentionally
++/// not used to decide that a daily limit is exhausted, avoiding false terminal stops.
++fn classify_rate_limit(body: &str) -> RateLimitKind {
++    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
++        return RateLimitKind::Unknown;
++    };
++    let mut descriptors = Vec::new();
++    collect_quota_descriptors(&value, &mut descriptors);
++    descriptors
++        .iter()
++        .filter_map(|descriptor| classify_quota_descriptor(descriptor))
++        .max_by_key(|kind| match kind {
++            RateLimitKind::RequestsPerDay | RateLimitKind::TokensPerDay => 4,
++            RateLimitKind::RequestsPerMinute | RateLimitKind::TokensPerMinute => 3,
++            RateLimitKind::Spend => 2,
++            RateLimitKind::Unknown => 1,
++        })
++        .unwrap_or(RateLimitKind::Unknown)
++}
++
++fn collect_quota_descriptors(value: &serde_json::Value, descriptors: &mut Vec<String>) {
++    match value {
++        serde_json::Value::Object(object) => {
++            for (key, value) in object {
++                let normalized = key.to_ascii_lowercase();
++                if normalized.contains("quotaid")
++                    || normalized.contains("quota_id")
++                    || normalized.contains("quotametric")
++                    || normalized.contains("quota_metric")
++                {
++                    if let Some(value) = value.as_str() {
++                        descriptors.push(value.to_ascii_lowercase());
++                    }
++                }
++                collect_quota_descriptors(value, descriptors);
++            }
++        }
++        serde_json::Value::Array(values) => {
++            for value in values {
++                collect_quota_descriptors(value, descriptors);
++            }
++        }
++        _ => {}
++    }
++}
++
++fn classify_quota_descriptor(value: &str) -> Option<RateLimitKind> {
++    let compact = value
++        .chars()
++        .filter(|ch| ch.is_ascii_alphanumeric())
++        .collect::<String>();
++    let tokens = compact.contains("token");
++    if compact.contains("perday") || compact.contains("daily") {
++        return Some(if tokens {
++            RateLimitKind::TokensPerDay
++        } else {
++            RateLimitKind::RequestsPerDay
++        });
++    }
++    if compact.contains("perminute") {
++        return Some(if tokens {
++            RateLimitKind::TokensPerMinute
++        } else {
++            RateLimitKind::RequestsPerMinute
++        });
++    }
++    if compact.contains("spend") || compact.contains("cost") {
++        return Some(RateLimitKind::Spend);
++    }
++    None
++}
++
+ fn bounded_body(response: reqwest::blocking::Response) -> Result<String, HttpError> {
+     let mut bytes = Vec::with_capacity(4096);
+     response
+@@ -266,6 +370,50 @@ mod tests {
+         assert!(retry_after("Wed, 21 Oct 2015 07:28:00 GMT").is_some());
+     }
+ 
++    #[test]
++    fn daily_quota_is_not_bounded_retryable_but_minute_limit_is() {
++        assert!(!retryable_status(429, RateLimitKind::RequestsPerDay));
++        assert!(!retryable_status(429, RateLimitKind::TokensPerDay));
++        assert!(retryable_status(429, RateLimitKind::RequestsPerMinute));
++        assert!(retryable_status(429, RateLimitKind::Unknown));
++    }
++
++    #[test]
++    fn classifies_structured_google_daily_request_quota() {
++        let body = r#"{
++            "error": {
++                "details": [{
++                    "violations": [{
++                        "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
++                    }]
++                }]
++            }
++        }"#;
++        assert_eq!(classify_rate_limit(body), RateLimitKind::RequestsPerDay);
++        assert!(classify_rate_limit(body).is_daily());
++    }
++
++    #[test]
++    fn classifies_structured_token_per_minute_quota() {
++        let body = r#"{
++            "error": {
++                "details": [{
++                    "violations": [{
++                        "quotaMetric": "GenerateContentInputTokensPerModelPerMinute-FreeTier"
++                    }]
++                }]
++            }
++        }"#;
++        assert_eq!(classify_rate_limit(body), RateLimitKind::TokensPerMinute);
++        assert!(!classify_rate_limit(body).is_daily());
++    }
++
++    #[test]
++    fn free_form_429_message_does_not_claim_daily_quota() {
++        let body = r#"{"error":{"message":"quota exceeded; retry later"}}"#;
++        assert_eq!(classify_rate_limit(body), RateLimitKind::Unknown);
++    }
++
+     #[test]
+     fn retry_observer_receives_only_retry_metadata() {
+         let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+diff --git a/src/lib.rs b/src/lib.rs
+index df749d2..a42ab57 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -18,6 +18,7 @@ pub mod progress;
+ pub mod prompt;
+ pub mod providers;
+ pub mod quota;
++pub mod rate_limit;
+ pub mod scaffold;
+ pub mod validation;
+ 
+@@ -51,7 +52,7 @@ pub use planner::{
+ };
+ pub use progress::{
+     FailureClass, NoopProgressSink, PlainProgressSink, ProgressEvent, ProgressSink, ProgressStage,
+-    RetryResult,
++    RetryCause, RetryResult,
+ };
+ pub use prompt::{build_compose_request_prompt, build_generation_prompt};
+ pub use providers::capability::StructuredOutputMode;
+@@ -60,6 +61,7 @@ pub use providers::openai_compatible::{
+     OpenAiCompatiblePool, OpenAiEndpointConfig,
+ };
+ pub use quota::QuotaProfile;
++pub use rate_limit::RateLimitKind;
+ pub use validation::{
+     validate_generated_document, validate_generated_json, FixedField, GeneratedDocument,
+     ValidationError, ValidationReport,
+diff --git a/src/main.rs b/src/main.rs
+index b74e043..f3a0ae3 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -954,12 +954,16 @@ fn resolve_batch_policy(
+         Some(BatchPolicyOverride::Small) => flowcloze::planner::BatchPolicy {
+             max_tasks_per_batch: 2,
+             max_estimated_input_tokens: 4_000,
++            max_estimated_output_tokens: 2_000,
++            max_blanks_per_batch: 8,
+             max_retry_count: 2,
+             max_concurrent_batches: 1,
+         },
+         Some(BatchPolicyOverride::OneTask) => flowcloze::planner::BatchPolicy {
+             max_tasks_per_batch: 1,
+             max_estimated_input_tokens: 12_000,
++            max_estimated_output_tokens: 6_000,
++            max_blanks_per_batch: 24,
+             max_retry_count: 2,
+             max_concurrent_batches: 1,
+         },
+ diff --git a/src/orchestration.rs b/src/orchestration.rs
+index e0f83ae..8f1f60e 100644
+--- a/src/orchestration.rs
++++ b/src/orchestration.rs
+@@ -375,6 +375,7 @@ pub fn generate_markdown_with_composer_observed_with_progress(
+                     progress.emit(ProgressEvent::ProviderError {
+                         class,
+                         status: error.provider_status(),
++                        rate_limit: error.rate_limit_kind(),
+                     });
+                 }
+                 progress.emit(ProgressEvent::Failed {
+@@ -504,7 +505,7 @@ fn failure_class_for_terminal_cause(cause: crate::planner::TerminalCause) -> Fai
+         crate::planner::TerminalCause::Content => FailureClass::Content,
+         crate::planner::TerminalCause::Authentication => FailureClass::Authentication,
+         crate::planner::TerminalCause::Configuration => FailureClass::Configuration,
+-        crate::planner::TerminalCause::RateLimited => FailureClass::RateLimited,
++        crate::planner::TerminalCause::RateLimited { .. } => FailureClass::RateLimited,
+         crate::planner::TerminalCause::Timeout => FailureClass::Timeout,
+         crate::planner::TerminalCause::Transport => FailureClass::Transport,
+         crate::planner::TerminalCause::Api { .. } => FailureClass::Api,
+diff --git a/src/planner.rs b/src/planner.rs
+index 853c81c..effbb7a 100644
+--- a/src/planner.rs
++++ b/src/planner.rs
+@@ -1,6 +1,6 @@
+ //! Adaptive Compose Planner.
+ 
+-use std::collections::{HashMap, HashSet};
++use std::collections::{BTreeMap, HashMap, HashSet};
+ use std::time::Instant;
+ 
