@@ -44,15 +44,11 @@ fn main() {
             }
             return;
         }
-        Command::ApiSet { api_key } => {
-            if let Err(error) = save_api_settings(api_key) {
+        Command::ApiSet => {
+            if let Err(error) = run_api_set_command() {
                 eprintln!("{error}");
                 process::exit(1);
             }
-            let path = flowcloze::config::credentials_path()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|_| "credentials.toml".to_string());
-            println!("{path} を更新しました．");
             return;
         }
         Command::View { generated_path } => {
@@ -200,9 +196,7 @@ enum Command {
     Local {
         action: LocalCommand,
     },
-    ApiSet {
-        api_key: String,
-    },
+    ApiSet,
     View {
         generated_path: String,
     },
@@ -460,7 +454,7 @@ impl Args {
                 Command::Help
                 | Command::Version
                 | Command::Local { .. }
-                | Command::ApiSet { .. }
+                | Command::ApiSet
                 | Command::View { .. }
                 | Command::Validate { .. } => {}
             }
@@ -524,34 +518,10 @@ fn parse_api_command(args: &mut impl Iterator<Item = String>) -> Result<Command,
 
     match subcommand.as_str() {
         "set" => {
-            let mut api_key = None;
-
-            while let Some(arg) = args.next() {
-                match arg.as_str() {
-                    "--key" => {
-                        let Some(value) = args.next() else {
-                            return Err("--key にはAPIキーが必要です".to_string());
-                        };
-                        api_key = Some(value);
-                    }
-                    "--model" => {
-                        return Err(
-                            "--model は廃止されました。Gemini API では gemini-2.5-flash を使用します"
-                                .to_string(),
-                        );
-                    }
-                    _ if arg.starts_with('-') => {
-                        return Err(format!("未知のオプションです: {arg}"))
-                    }
-                    _ => return Err("api set はオプションのみ指定できます".to_string()),
-                }
+            if args.next().is_some() {
+                return Err("api set は引数なしで実行してください".to_string());
             }
-
-            let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) else {
-                return Err("api set には --key が必要です".to_string());
-            };
-
-            Ok(Command::ApiSet { api_key })
+            Ok(Command::ApiSet)
         }
         _ => Err("api のサブコマンドは set のみです".to_string()),
     }
@@ -570,7 +540,7 @@ fn print_usage() {
     eprintln!("  flowcloze view <generated.json>");
     eprintln!("  flowcloze csv [-o output.csv] <generated.json>");
     eprintln!("  flowcloze pdf [-o output.pdf] [--template template.typ] <generated.json>");
-    eprintln!("  flowcloze api set --key <api_key>");
+    eprintln!("  flowcloze api set");
 }
 
 /// 詳細ヘルプをstderrへ表示する．
@@ -589,7 +559,7 @@ fn print_help() {
     eprintln!("  view                   生成JSONをTUIで表示します / View generated JSON in TUI");
     eprintln!("  csv                    生成JSONからAnkilot用CSVを作成します / Export Ankilot CSV");
     eprintln!("  pdf                    生成JSONからPDFを作成します / Build PDF from JSON");
-    eprintln!("  api set                APIキーを標準credentials.tomlに保存します / Save API key to the standard credentials.toml");
+    eprintln!("  api set                providerを対話選択してAPIキーを標準credentials.tomlに保存します / Select provider interactively and save its API key");
     eprintln!("\nMarkdown記法 / Markdown Syntax:");
     eprintln!("  #qblock{{ ... }}        問題化範囲を囲みます / Mark a question range");
     eprintln!("  [答え]                 解答対象を指定します / Mark an answer target");
@@ -667,9 +637,36 @@ fn export_ankilot_csv(generated_path: &str, output_path: Option<&str>) {
     }
 }
 
-/// Gemini API keyを標準 credentials.toml へ保存する．
-fn save_api_settings(api_key: &str) -> Result<(), String> {
-    flowcloze::config::save_gemini_api_key(api_key)
+/// providerを対話選択し、APIキーを標準 credentials.toml へ保存する．
+fn run_api_set_command() -> Result<(), String> {
+    eprintln!("API providerを選択してください:");
+    eprintln!("  1) Gemini");
+    eprintln!("  2) OpenAI-compatible (OpenAI / Mistral / Ollama / LM Studio)");
+    eprint!("> ");
+    io::stderr().flush().map_err(|error| error.to_string())?;
+
+    let mut selection = String::new();
+    io::stdin()
+        .read_line(&mut selection)
+        .map_err(|error| format!("provider選択を読めませんでした: {error}"))?;
+    let provider = parse_api_provider_selection(&selection)?;
+    let api_key = rpassword::prompt_password("API key: ")
+        .map_err(|error| format!("APIキーを読めませんでした: {error}"))?;
+    flowcloze::config::save_api_key(provider, &api_key)?;
+
+    let path = flowcloze::config::credentials_path()?.display().to_string();
+    println!("{path} を更新しました．");
+    Ok(())
+}
+
+fn parse_api_provider_selection(value: &str) -> Result<Provider, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "gemini" => Ok(Provider::Gemini),
+        "2" | "openai-compatible" | "openai" | "local" | "mistral" => {
+            Ok(Provider::OpenAiCompatible)
+        }
+        _ => Err("provider は 1 (Gemini) または 2 (OpenAI-compatible) を選択してください".into()),
+    }
 }
 
 /// local backendのセットアップ補助を実行する．
@@ -1157,5 +1154,37 @@ mod stdout_tests {
             write_stdout_json(BrokenWriter, "{}").unwrap_err().kind(),
             io::ErrorKind::BrokenPipe
         );
+    }
+
+    #[test]
+    fn api_provider_selection_accepts_numbers_and_names() {
+        assert_eq!(parse_api_provider_selection("1").unwrap(), Provider::Gemini);
+        assert_eq!(
+            parse_api_provider_selection("gemini").unwrap(),
+            Provider::Gemini
+        );
+        assert_eq!(
+            parse_api_provider_selection("2").unwrap(),
+            Provider::OpenAiCompatible
+        );
+        assert_eq!(
+            parse_api_provider_selection("mistral").unwrap(),
+            Provider::OpenAiCompatible
+        );
+        assert!(parse_api_provider_selection("3").is_err());
+    }
+
+    #[test]
+    fn api_set_is_interactive_and_rejects_old_key_argument() {
+        let parsed = Args::parse(["api", "set"].into_iter().map(str::to_string)).unwrap();
+        assert_eq!(parsed.command, Command::ApiSet);
+
+        let error = Args::parse(
+            ["api", "set", "--key", "secret"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap_err();
+        assert!(error.contains("引数なし"));
     }
 }

@@ -122,6 +122,16 @@ flowcloze generate --provider gemini \
   -o sample/generated.json sample/sample.md
 ```
 
+To use Gemini 3.8 Flash:
+
+```bash
+flowcloze generate --provider gemini \
+  --model gemini-3.8-flash \
+  -o sample/generated.json sample/sample.md
+```
+
+For Gemini 3 models, FlowCloze omits deprecated sampling parameters.
+
 Without calling an LLM:
 
 ```bash
@@ -186,10 +196,10 @@ export XDG_CONFIG_HOME="$PWD/.dev-config"
 
 The bundled Typst template is materialized automatically when PDF output is used, so no extra template-install step is required.
 
-Store the Gemini API key in the dedicated `credentials.toml`, not in `config.toml`:
+Store API keys in the dedicated `credentials.toml`, not in `config.toml`. `flowcloze api set` interactively selects the provider and reads the API key without echoing it:
 
 ```bash
-flowcloze api set --key "YOUR_GEMINI_API_KEY"
+flowcloze api set
 ```
 
 On Unix-like systems, FlowCloze creates `credentials.toml` with mode `0600` and the config directory with mode `0700`.
