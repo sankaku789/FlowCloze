@@ -1,3 +1,102 @@
++                        "quotaMetric": "GenerateContentInputTokensPerModelPerMinute-FreeTier"
++                    }]
++                }]
++            }
++        }"#;
++        assert_eq!(classify_rate_limit(body), RateLimitKind::TokensPerMinute);
++    }
++
++    #[test]
++    fn free_form_429_message_does_not_claim_daily_quota() {
++        let body = r#"{"error":{"message":"quota exceeded; retry later"}}"#;
++        assert_eq!(classify_rate_limit(body), RateLimitKind::Unknown);
++    }
++
+     #[test]
+     fn retry_observer_receives_only_retry_metadata() {
+         let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+diff --git a/src/lib.rs b/src/lib.rs
+index df749d2..a42ab57 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -18,6 +18,7 @@ pub mod progress;
+ pub mod prompt;
+ pub mod providers;
+ pub mod quota;
++pub mod rate_limit;
+ pub mod scaffold;
+ pub mod validation;
+ 
+@@ -51,7 +52,7 @@ pub use planner::{
+ };
+ pub use progress::{
+     FailureClass, NoopProgressSink, PlainProgressSink, ProgressEvent, ProgressSink, ProgressStage,
+-    RetryResult,
++    RetryCause, RetryResult,
+ };
+ pub use prompt::{build_compose_request_prompt, build_generation_prompt};
+ pub use providers::capability::StructuredOutputMode;
+@@ -60,6 +61,7 @@ pub use providers::openai_compatible::{
+     OpenAiCompatiblePool, OpenAiEndpointConfig,
+ };
+ pub use quota::QuotaProfile;
++pub use rate_limit::RateLimitKind;
+ pub use validation::{
+     validate_generated_document, validate_generated_json, FixedField, GeneratedDocument,
+     ValidationError, ValidationReport,
+diff --git a/src/main.rs b/src/main.rs
+index b74e043..832fb9a 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -954,12 +954,16 @@ fn resolve_batch_policy(
+         Some(BatchPolicyOverride::Small) => flowcloze::planner::BatchPolicy {
+             max_tasks_per_batch: 2,
+             max_estimated_input_tokens: 4_000,
++            max_estimated_output_tokens: 1_500,
++            max_blanks_per_batch: 8,
+             max_retry_count: 2,
+             max_concurrent_batches: 1,
+         },
+         Some(BatchPolicyOverride::OneTask) => flowcloze::planner::BatchPolicy {
+             max_tasks_per_batch: 1,
+             max_estimated_input_tokens: 12_000,
++            max_estimated_output_tokens: 6_000,
++            max_blanks_per_batch: 24,
+             max_retry_count: 2,
+             max_concurrent_batches: 1,
+         },
+diff --git a/src/orchestration.rs b/src/orchestration.rs
+index e0f83ae..8f1f60e 100644
+--- a/src/orchestration.rs
++++ b/src/orchestration.rs
+@@ -375,6 +375,7 @@ pub fn generate_markdown_with_composer_observed_with_progress(
+                     progress.emit(ProgressEvent::ProviderError {
+                         class,
+                         status: error.provider_status(),
++                        rate_limit: error.rate_limit_kind(),
+                     });
+                 }
+                 progress.emit(ProgressEvent::Failed {
+@@ -504,7 +505,7 @@ fn failure_class_for_terminal_cause(cause: crate::planner::TerminalCause) -> Fai
+         crate::planner::TerminalCause::Content => FailureClass::Content,
+         crate::planner::TerminalCause::Authentication => FailureClass::Authentication,
+         crate::planner::TerminalCause::Configuration => FailureClass::Configuration,
+-        crate::planner::TerminalCause::RateLimited => FailureClass::RateLimited,
++        crate::planner::TerminalCause::RateLimited { .. } => FailureClass::RateLimited,
+         crate::planner::TerminalCause::Timeout => FailureClass::Timeout,
+         crate::planner::TerminalCause::Transport => FailureClass::Transport,
+         crate::planner::TerminalCause::Api { .. } => FailureClass::Api,
+diff --git a/src/planner.rs b/src/planner.rs
+index 853c81c..529f297 100644
+--- a/src/planner.rs
++++ b/src/planner.rs
+@@ -1,6 +1,6 @@
+ //! Adaptive Compose Planner.
+ 
+-use std::collections::{HashMap, HashSet};
++use std::collections::{BTreeMap, HashMap, HashSet};
+ use std::time::Instant;
+ 
  use crate::compose::{
 @@ -13,7 +13,10 @@ use crate::json::IntermediateDocument;
  use crate::observability::{
@@ -59,18 +158,11 @@
      Timeout,
      Transport,
      Api { status: u16 },
-@@ -156,12 +167,19 @@ impl std::error::Error for ComposePlanError {}
- /// taskが現在どのcompose戦略で処理されているかを表す．
- #[derive(Debug, Clone, Copy, PartialEq, Eq)]
- enum ComposeMode {
--    /// 複数taskをまとめた通常batchで処理する状態．
-+    /// 複数qblockをまとめた通常batchで処理する状態．
-     Batched,
--    /// 失敗後にtask単独で再試行する状態．
-+    /// 失敗後にqblock単独で再試行する状態．
+@@ -162,32 +173,73 @@ enum ComposeMode {
      SingleTask,
  }
  
+-/// retry queue内で追跡するtaskの状態．
 +/// content failureがqblock固有か、batch全体の崩れかを区別する。
 +#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 +enum FailureScope {
@@ -78,32 +170,77 @@
 +    Batch { group: usize, previous_size: usize },
 +}
 +
- /// retry queue内で追跡するtaskの状態．
++/// retry queue内で追跡するqblockの状態．
  #[derive(Debug, Clone)]
  struct TaskAttempt {
-@@ -171,8 +189,12 @@ struct TaskAttempt {
+     /// scaffold.tasks / intermediate.qblocks のindex．
+     index: usize,
+-    /// このtaskを再試行した回数．
++    /// このqblockを再試行した回数．
      retry_count: u32,
      /// 現在のcompose mode．将来のログ出力にも使う．
      mode: ComposeMode,
 -    /// 前回失敗時の検証理由．単独retry promptへ渡す．
 +    /// 前回失敗時の検証理由．retry promptへ渡す．
      feedback: Vec<String>,
-+    /// batch全体の失敗を再結合しないためのretry group。
++    /// batch全体の失敗を別batch由来のretryと再結合しないためのgroup。
 +    retry_group: Option<usize>,
 +    /// batch全体の失敗時に次回batchを縮小するqblock数上限。
 +    max_batch_size: Option<usize>,
  }
  
- /// 1 taskの生成・検証に失敗した理由．
-@@ -188,6 +210,7 @@ struct TaskFailure {
+-/// 1 taskの生成・検証に失敗した理由．
++/// 1 qblockの生成・検証に失敗した理由．
+ #[derive(Debug)]
+ struct TaskFailure {
+-    /// 失敗したtaskのindex．
+     index: usize,
+-    /// indexではなく公開task IDを失敗報告へ残す．
+     task_id: String,
+-    /// 失敗時点のretry回数．
+     retry_count: u32,
+-    /// 次回promptへ渡すための検証フィードバック．
      errors: Vec<String>,
      reason: FailureReason,
      terminal_cause: TerminalCause,
 +    scope: FailureScope,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++struct QBlockCost {
++    input_tokens: usize,
++    output_tokens: usize,
++    blanks: usize,
++}
++
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++struct BatchLoad {
++    input_tokens: usize,
++    output_tokens: usize,
++    blanks: usize,
++    qblocks: usize,
++}
++
++impl BatchLoad {
++    fn add(&mut self, cost: QBlockCost) {
++        self.input_tokens = self.input_tokens.saturating_add(cost.input_tokens);
++        self.output_tokens = self.output_tokens.saturating_add(cost.output_tokens);
++        self.blanks = self.blanks.saturating_add(cost.blanks);
++        self.qblocks = self.qblocks.saturating_add(1);
++    }
++
++    fn can_fit(&self, cost: QBlockCost, policy: BatchPolicy, max_qblocks: usize) -> bool {
++        self.qblocks < max_qblocks
++            && self.input_tokens.saturating_add(cost.input_tokens)
++                <= policy.max_estimated_input_tokens
++            && self.output_tokens.saturating_add(cost.output_tokens)
++                <= policy.max_estimated_output_tokens
++            && self.blanks.saturating_add(cost.blanks) <= policy.max_blanks_per_batch
++    }
  }
  
  /// 公開エラーへ変換する前だけ、実際に実行を止めた原因を保持する。
-@@ -221,12 +244,19 @@ impl ComposeExecutionError {
+@@ -221,12 +273,19 @@ impl ComposeExecutionError {
  
      pub(crate) fn provider_status(&self) -> Option<u16> {
          match self.terminal_cause {
@@ -124,7 +261,7 @@
      pub(crate) fn as_public(&self) -> &ComposePlanError {
          &self.error
      }
-@@ -527,6 +557,7 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
+@@ -527,6 +586,7 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
                      errors: attempt.feedback,
                      reason: FailureReason::Content,
                      terminal_cause: TerminalCause::Content,
@@ -132,7 +269,7 @@
                  })
              }));
              // provider障害後に未実行batchへ通信せず、残りtaskをdraft対象へ渡す。
-@@ -538,6 +569,7 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
+@@ -538,6 +598,7 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
                      errors: vec!["not-attempted-after-terminal".to_string()],
                      reason: FailureReason::Transport,
                      terminal_cause: terminal_cause.expect("transport failure has a cause"),
@@ -140,7 +277,7 @@
                  }
              }));
              return Err(partial_plan_error(
-@@ -556,7 +588,13 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
+@@ -556,7 +617,13 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
          for batch in retry_batches {
              let tracked = batch
                  .iter()
@@ -155,196 +292,9 @@
                  .collect::<Vec<_>>();
              let failures = run_port_batch(
                  intermediate,
-@@ -574,7 +612,7 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
+@@ -574,7 +641,7 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
              retry_batch_number += 1;
              let terminal =
                  enqueue_port_failures(&mut retry_queue, failures, policy.max_content_retries);
 -            for (task_index, retry_count) in tracked {
 +            for (task_index, retry_count, cause) in tracked {
-                 let task_id = scaffold.tasks[task_index].id.clone();
-                 let result = if completed.contains_key(&task_id) {
-                     RetryResult::Success
-@@ -586,6 +624,7 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
-                 progress.emit(ProgressEvent::Retry {
-                     task_id,
-                     attempt: retry_count,
-+                    cause,
-                     result,
-                 });
-             }
-@@ -714,31 +753,28 @@ fn partial_plan_error(
- }
- 
- fn validate_port_policy(
--    scaffold: &ScaffoldDocument,
-+    _scaffold: &ScaffoldDocument,
-     policy: ComposeExecutionPolicy,
- ) -> Result<(), ComposePlanError> {
-     if policy.max_content_retries > 2
-         || policy.batch_policy.max_tasks_per_batch == 0
-         || policy.batch_policy.max_estimated_input_tokens == 0
-+        || policy.batch_policy.max_estimated_output_tokens == 0
-+        || policy.batch_policy.max_blanks_per_batch == 0
-         || policy.batch_policy.max_concurrent_batches == 0
-     {
-         return Err(ComposePlanError::Configuration {
-             id: "policy".to_string(),
-         });
-     }
--    let estimator = CharHeuristicTokenEstimator;
--    if let Some(task) = scaffold.tasks.iter().find(|task| {
--        estimate_task_tokens(task, &estimator) > policy.batch_policy.max_estimated_input_tokens
--    }) {
--        return Err(ComposePlanError::Configuration {
--            id: task.id.clone(),
--        });
--    }
-+    // BatchPolicyのtoken/blank値はpackingのsoft上限。
-+    // 単独qblockがこれを超える場合はrejectせず、oversized singletonとして実行する。
-+    // providerのhard limit（TPM等）はquota側で別に検証する。
-     Ok(())
- }
- 
--/// policy 検証と単独 task の token 予算検査を、実行前にまとめて行う。
--/// 呼び出し側が開始イベントを出す前に使う。
-+/// policy 検証と初回batch計画を、実行前にまとめて行う。
-+/// qblock単独がsoft budgetを超える場合はsingletonとして許可する。
- pub fn prepare_initial_batch_count(
-     scaffold: &ScaffoldDocument,
-     policy: ComposeExecutionPolicy,
-@@ -848,6 +884,10 @@ fn run_port_batch(
-                     errors: vec!["invalid-provider-content".to_string()],
-                     reason: FailureReason::Content,
-                     terminal_cause: TerminalCause::Content,
-+                    scope: FailureScope::Batch {
-+                        group: batch_number,
-+                        previous_size: attempts.len(),
-+                    },
-                 })
-                 .collect());
-         }
-@@ -874,6 +914,7 @@ fn run_port_batch(
-                     errors: vec![error_class(&error).to_string()],
-                     reason: FailureReason::Transport,
-                     terminal_cause,
-+                    scope: FailureScope::QBlock,
-                 })
-                 .collect());
-         }
-@@ -957,6 +998,7 @@ fn run_port_batch(
-                 errors: vec!["id-mismatch".to_string()],
-                 reason: FailureReason::Content,
-                 terminal_cause: TerminalCause::Content,
-+                    scope: FailureScope::QBlock,
-             });
-             continue;
-         }
-@@ -968,6 +1010,7 @@ fn run_port_batch(
-                 errors: vec!["missing-id".to_string()],
-                 reason: FailureReason::Content,
-                 terminal_cause: TerminalCause::Content,
-+                    scope: FailureScope::QBlock,
-             });
-             continue;
-         };
-@@ -984,6 +1027,7 @@ fn run_port_batch(
-                     errors: vec![error.to_string()],
-                     reason: FailureReason::Content,
-                     terminal_cause: TerminalCause::Content,
-+                    scope: FailureScope::QBlock,
-                 });
-                 continue;
-             }
-@@ -1037,6 +1081,7 @@ fn run_port_batch(
-                 errors: build_retry_feedback(&qblock.id, &generated, &report.errors),
-                 reason: FailureReason::Content,
-                 terminal_cause: TerminalCause::Content,
-+                    scope: FailureScope::QBlock,
-             });
-         }
-     }
-@@ -1115,8 +1160,9 @@ fn emit_validation_event(
- fn error_class(error: &ComposeError) -> &'static str {
-     match error {
-         ComposeError::InvalidResponse | ComposeError::EmptyResponse => "content",
--        ComposeError::Configuration | ComposeError::Authentication => "configuration",
--        ComposeError::RateLimited => "rate_limited",
-+        ComposeError::Configuration => "configuration",
-+        ComposeError::Authentication => "authentication",
-+        ComposeError::RateLimited { .. } => "rate_limited",
-         ComposeError::Timeout => "timeout",
-         ComposeError::Transport => "transport",
-         ComposeError::Api { .. } => "api",
-@@ -1128,7 +1174,7 @@ fn terminal_cause_for_error(error: &ComposeError) -> TerminalCause {
-         ComposeError::InvalidResponse | ComposeError::EmptyResponse => TerminalCause::Content,
-         ComposeError::Configuration => TerminalCause::Configuration,
-         ComposeError::Authentication => TerminalCause::Authentication,
--        ComposeError::RateLimited => TerminalCause::RateLimited,
-+        ComposeError::RateLimited { kind } => TerminalCause::RateLimited { kind: *kind },
-         ComposeError::Timeout => TerminalCause::Timeout,
-         ComposeError::Transport => TerminalCause::Transport,
-         ComposeError::Api { status, .. } => TerminalCause::Api { status: *status },
-@@ -1138,7 +1184,7 @@ fn terminal_cause_for_error(error: &ComposeError) -> bool {
- fn transport_fallbackable(error: &ComposeError) -> bool {
-     matches!(
-         error,
--        ComposeError::RateLimited
-+        ComposeError::RateLimited { .. }
-             | ComposeError::Timeout
-             | ComposeError::Transport
-             | ComposeError::Api {
-@@ -1180,15 +1226,29 @@ fn enqueue_port_failures(
-             continue;
-         }
-         let next_retry_count = failure.retry_count + 1;
-+        let final_retry = next_retry_count >= max_content_retries;
-+        let (retry_group, max_batch_size) = if final_retry {
-+            (None, Some(1))
-+        } else {
-+            match failure.scope {
-+                FailureScope::QBlock => (None, None),
-+                FailureScope::Batch {
-+                    group,
-+                    previous_size,
-+                } => (Some(group), Some((previous_size.saturating_add(1) / 2).max(1))),
-+            }
-+        };
-         queue.push(TaskAttempt {
-             index: failure.index,
-             retry_count: next_retry_count,
--            mode: if next_retry_count < max_content_retries {
--                ComposeMode::Batched
--            } else {
-+            mode: if final_retry {
-                 ComposeMode::SingleTask
-+            } else {
-+                ComposeMode::Batched
-             },
-             feedback: failure.errors,
-+            retry_group,
-+            max_batch_size,
-         });
-     }
-     terminal
-@@ -1209,6 +1269,16 @@ where
-     let mut policy = base;
-     if let Some(tpm) = quota.tpm {
-         let tpm = usize::try_from(tpm).unwrap_or(usize::MAX);
-+        // BatchPolicyはsoft limitだが、TPMはprovider側のhard limitなので単独qblockも事前検査する。
-+        if let Some(task) = scaffold
-+            .tasks
-+            .iter()
-+            .find(|task| estimate_task_tokens(task, estimator) > tpm)
-+        {
-+            return Err(ComposePlanError::Configuration {
-+                id: task.id.clone(),
-+            });
-+        }
-         policy.max_estimated_input_tokens = policy.max_estimated_input_tokens.min(tpm);
-     }
-     let Some(request_budget) = quota.request_budget() else {
-@@ -1224,12 +1294,20 @@ where
-         .adaptive_max_tasks_per_batch
-         .unwrap_or(policy.max_tasks_per_batch)
-         .max(policy.max_tasks_per_batch);
--    let mut hard_tokens = quota
