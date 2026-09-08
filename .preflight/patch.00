@@ -1,0 +1,350 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c385f06..60ab5c3 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,20 @@
+ # Changelog
+ 
++## 2.2.0-beta - 2026-09-09
++
++### Added
++
++- Add multidimensional qblock cost planning using estimated input tokens, expected output tokens, and blank counts.
++- Add configurable output-token and blank budgets, including adaptive quota-profile ceilings.
++- Add sanitized retry-cause reporting and structured rate-limit dimension diagnostics.
++
++### Changed
++
++- Repack light qblocks across source positions while keeping heavy qblocks as singleton requests and restoring final source order.
++- Shrink retry batches after batch-level malformed/empty provider output while preserving successful qblocks and retrying qblock-local validation failures independently.
++- Strengthen structured-output schemas with exact item counts and the expected qblock ID set.
++- Stop bounded HTTP retries immediately when a structured 429 response identifies a daily request or token quota.
++
+ ## 2.1.5-beta - 2026-09-09
+ 
+ ### Added
+diff --git a/Cargo.lock b/Cargo.lock
+index ddbea53..efd0882 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -154,7 +154,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+ 
+ [[package]]
+ name = "flowcloze"
+-version = "2.1.5-beta"
++version = "2.2.0-beta"
+ dependencies = [
+  "crossterm",
+  "getrandom 0.2.17",
+diff --git a/Cargo.toml b/Cargo.toml
+index 4bb0507..668c9d4 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,6 +1,6 @@
+ [package]
+ name = "flowcloze"
+-version = "2.1.5-beta"
++version = "2.2.0-beta"
+ edition = "2021"
+ description = "Markdown qblock parser for context cloze question generation."
+ readme = "README.md"
+diff --git a/README.en.md b/README.en.md
+index a6e42da..fa4f013 100644
+--- a/README.en.md
++++ b/README.en.md
+@@ -181,7 +181,7 @@ flowcloze csv -o sample/sample.csv sample/generated.json
+ 
+ ## Generation Settings
+ 
+-FlowCloze 2.1 keeps user-level settings in the standard config directory:
++FlowCloze 2.2 keeps user-level settings in the standard config directory:
+ 
+ ```text
+ ~/.config/flowcloze/config.toml
+@@ -213,10 +213,16 @@ rewrite = "always"
+ fallback = "error"
+ structured_output = "auto"
+ batch = "auto"
++max_tasks_per_batch = 12
++max_input_tokens = 18000
++max_output_tokens = 6000
++max_blanks_per_batch = 24
+ # typst_template = "/path/to/custom.typ"
+ ```
+ 
+ `typst_template` is only needed to replace the bundled default. If omitted, FlowCloze materializes the embedded template automatically. `flowcloze pdf --template ...` overrides it for one invocation.
++With `batch = "auto"`, FlowCloze evaluates each qblock independently by estimated input tokens, estimated output tokens, and blank count rather than by qblock number. Light qblocks are repacked into the same request, while a qblock that consumes a large share of any budget is sent alone. Final output is restored to source qblock order. A batch-level malformed response causes the next retry batch to shrink, while qblock-specific validation failures retry only the failed qblocks and preserve successful results.
++
+ 
+ Main `generate` options:
+ 
+diff --git a/README.md b/README.md
+index 7b833bc..a77cf5d 100644
+--- a/README.md
++++ b/README.md
+@@ -181,7 +181,7 @@ flowcloze csv -o sample/sample.csv sample/generated.json
+ 
+ ## 生成設定
+ 
+-FlowCloze 2.1では、設定をユーザー単位の標準ディレクトリへ集約します。
++FlowCloze 2.2では、設定をユーザー単位の標準ディレクトリへ集約します。
+ 
+ ```text
+ ~/.config/flowcloze/config.toml
+@@ -213,10 +213,16 @@ rewrite = "always"
+ fallback = "error"
+ structured_output = "auto"
+ batch = "auto"
++max_tasks_per_batch = 12
++max_input_tokens = 18000
++max_output_tokens = 6000
++max_blanks_per_batch = 24
+ # typst_template = "/path/to/custom.typ"
+ ```
+ 
+ `typst_template` は標準テンプレートを差し替えたい場合だけ指定します。未指定時は内蔵テンプレートを自動展開します。`flowcloze pdf --template ...` を指定した場合はCLI指定を優先します。
++`batch = "auto"` では、qblock番号ではなく各qblockの推定入力token・推定出力token・blank数を独立したbudgetとして評価します。軽いqblockは同じrequestへ再packingし、いずれかのbudgetを大きく消費するqblockは単独requestにします。最終出力は元のqblock順へ戻します。batch全体の出力が壊れた場合は次回batchを縮小し、qblock固有の検証失敗は成功済みqblockを保持したまま失敗分だけ再試行します。
++
+ 
+ 主な `generate` オプション:
+ 
+diff --git a/config.toml.example b/config.toml.example
+index cc4a89d..803b815 100644
+--- a/config.toml.example
++++ b/config.toml.example
+@@ -3,8 +3,10 @@ provider = "gemini"
+ model = "gemini-2.5-flash"
+ # base_url = "http://localhost:11434/v1"
+ batch = "auto"
+-max_tasks_per_batch = 8
+-max_input_tokens = 12000
++max_tasks_per_batch = 12
++max_input_tokens = 18000
++max_output_tokens = 6000
++max_blanks_per_batch = 24
+ max_concurrent_batches = 3
+ rewrite = "always"
+ fallback = "error"
+@@ -20,8 +22,10 @@ rpm = 5
+ tpm = 250000
+ rpd = 20
+ reserve_requests = 4
+-adaptive_max_tasks_per_batch = 12
+-adaptive_max_input_tokens = 18000
++adaptive_max_tasks_per_batch = 24
++adaptive_max_input_tokens = 36000
++adaptive_max_output_tokens = 12000
++adaptive_max_blanks_per_batch = 48
+ 
+ # Model-specific values override the provider profile when present.
+ # [quota_profiles.gemini.models."gemini-3.8-flash"]
+@@ -33,16 +37,20 @@ adaptive_max_input_tokens = 18000
+ # then set quota_profile = "openai" or "mistral" above.
+ [quota_profiles.openai]
+ reserve_requests = 0
+-adaptive_max_tasks_per_batch = 12
+-adaptive_max_input_tokens = 18000
++adaptive_max_tasks_per_batch = 24
++adaptive_max_input_tokens = 36000
++adaptive_max_output_tokens = 12000
++adaptive_max_blanks_per_batch = 48
+ # rpm = 500
+ # tpm = 30000
+ # rpd = 10000
+ 
+ [quota_profiles.mistral]
+ reserve_requests = 0
+-adaptive_max_tasks_per_batch = 12
+-adaptive_max_input_tokens = 18000
++adaptive_max_tasks_per_batch = 24
++adaptive_max_input_tokens = 36000
++adaptive_max_output_tokens = 12000
++adaptive_max_blanks_per_batch = 48
+ # rpm = 60
+ # tpm = 500000
+ # rpd = 1000
+ diff --git a/src/compose.rs b/src/compose.rs
+index f23d9e7..aadbb01 100644
+--- a/src/compose.rs
++++ b/src/compose.rs
+@@ -5,6 +5,7 @@ use std::collections::HashMap;
+ use serde::{Deserialize, Serialize};
+ 
+ use crate::json::IntermediateDocument;
++use crate::rate_limit::RateLimitKind;
+ use crate::scaffold::BLANK;
+ use crate::validation::{GeneratedDocument, GeneratedQuestion, GeneratedTarget};
+ 
+@@ -72,7 +73,7 @@ pub enum WritingStyle {
+ pub enum ComposeError {
+     Configuration,
+     Authentication,
+-    RateLimited,
++    RateLimited { kind: RateLimitKind },
+     Timeout,
+     Transport,
+     Api { status: u16, retryable: bool },
+@@ -85,7 +86,7 @@ impl std::fmt::Display for ComposeError {
+         let class = match self {
+             Self::Configuration => "configuration",
+             Self::Authentication => "authentication",
+-            Self::RateLimited => "rate-limited",
++            Self::RateLimited { .. } => "rate-limited",
+             Self::Timeout => "timeout",
+             Self::Transport => "transport",
+             Self::Api {
+diff --git a/src/config.rs b/src/config.rs
+index bfe70fd..daa8408 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -54,6 +54,8 @@ struct FileConfig {
+     batch: Option<String>,
+     max_tasks_per_batch: Option<usize>,
+     max_input_tokens: Option<usize>,
++    max_output_tokens: Option<usize>,
++    max_blanks_per_batch: Option<usize>,
+     max_concurrent_batches: Option<usize>,
+     rewrite: Option<String>,
+     fallback: Option<String>,
+@@ -89,6 +91,8 @@ pub struct GenerationConfig {
+     pub batch: BatchPolicyName,
+     pub max_tasks_per_batch: Option<usize>,
+     pub max_input_tokens: Option<usize>,
++    pub max_output_tokens: Option<usize>,
++    pub max_blanks_per_batch: Option<usize>,
+     pub max_concurrent_batches: Option<usize>,
+     pub rewrite: RewritePolicy,
+     pub fallback: FallbackPolicy,
+@@ -133,12 +137,16 @@ impl GenerationConfig {
+             (_, BatchPolicyName::Small) => BatchPolicy {
+                 max_tasks_per_batch: 2,
+                 max_estimated_input_tokens: 4_000,
++                max_estimated_output_tokens: 2_000,
++                max_blanks_per_batch: 8,
+                 max_retry_count: 2,
+                 max_concurrent_batches: 1,
+             },
+             (_, BatchPolicyName::OneTask) => BatchPolicy {
+                 max_tasks_per_batch: 1,
+                 max_estimated_input_tokens: 12_000,
++                max_estimated_output_tokens: 6_000,
++                max_blanks_per_batch: 24,
+                 max_retry_count: 2,
+                 max_concurrent_batches: 1,
+             },
+@@ -151,6 +159,12 @@ impl GenerationConfig {
+         if let Some(value) = self.max_input_tokens {
+             policy.max_estimated_input_tokens = value;
+         }
++        if let Some(value) = self.max_output_tokens {
++            policy.max_estimated_output_tokens = value;
++        }
++        if let Some(value) = self.max_blanks_per_batch {
++            policy.max_blanks_per_batch = value;
++        }
+         if let Some(value) = self.max_concurrent_batches {
+             policy.max_concurrent_batches = value;
+         }
+@@ -262,6 +276,8 @@ pub fn load(cli: CliOverrides) -> Result<GenerationConfig, String> {
+         batch,
+         max_tasks_per_batch: positive("max_tasks_per_batch", file.max_tasks_per_batch)?,
+         max_input_tokens: positive("max_input_tokens", file.max_input_tokens)?,
++        max_output_tokens: positive("max_output_tokens", file.max_output_tokens)?,
++        max_blanks_per_batch: positive("max_blanks_per_batch", file.max_blanks_per_batch)?,
+         max_concurrent_batches: positive("max_concurrent_batches", file.max_concurrent_batches)?,
+         rewrite,
+         fallback,
+@@ -647,8 +663,10 @@ rpm = 5
+ tpm = 250000
+ rpd = 20
+ reserve_requests = 4
+-adaptive_max_tasks_per_batch = 12
+-adaptive_max_input_tokens = 18000
++adaptive_max_tasks_per_batch = 24
++adaptive_max_input_tokens = 36000
++adaptive_max_output_tokens = 12000
++adaptive_max_blanks_per_batch = 48
+ [quota_profiles.gemini.models.'gemini-3.8-flash']
+ rpd = 30
+ ",
+@@ -660,6 +678,9 @@ rpd = 30
+         assert_eq!(quota.rpm, Some(5));
+         assert_eq!(quota.rpd, Some(30));
+         assert_eq!(quota.request_budget(), Some(26));
++        assert_eq!(quota.adaptive_max_tasks_per_batch, Some(24));
++        assert_eq!(quota.adaptive_max_output_tokens, Some(12_000));
++        assert_eq!(quota.adaptive_max_blanks_per_batch, Some(48));
+         fs::remove_dir_all(directory).unwrap();
+     }
+ 
+diff --git a/src/gemini.rs b/src/gemini.rs
+index 534ff3b..5a0d8c6 100644
+--- a/src/gemini.rs
++++ b/src/gemini.rs
+@@ -66,11 +66,16 @@ impl GeminiAdapter {
+         self
+     }
+ 
+-    fn request(&self, prompt: &str, structured: bool) -> Result<String, HttpError> {
++    fn request(
++        &self,
++        prompt: &str,
++        structured: bool,
++        request: &ComposeBatchRequest,
++    ) -> Result<String, HttpError> {
+         let mut config = json!({"temperature": 0.0});
+         if structured {
+             config["responseMimeType"] = json!("application/json");
+-            config["responseJsonSchema"] = compose_schema();
++            config["responseJsonSchema"] = compose_schema(request);
+         }
+         let body = json!({
+             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+@@ -96,7 +101,9 @@ impl GeminiAdapter {
+     ) -> Result<ComposeBatchOutput, ComposeError> {
+         let prompt =
+             build_compose_request_prompt(request).map_err(|_| ComposeError::Configuration)?;
+-        let raw = self.request(&prompt, structured).map_err(map_http_error)?;
++        let raw = self
++            .request(&prompt, structured, request)
++            .map_err(map_http_error)?;
+         parse_response(&raw, &self.model)
+     }
+ 
+@@ -140,7 +147,7 @@ impl QuestionComposer for GeminiAdapter {
+ 
+                 let prompt = build_compose_request_prompt(request)
+                     .map_err(|_| ComposeError::Configuration)?;
+-                match self.request(&prompt, true) {
++                match self.request(&prompt, true, request) {
+                     Ok(raw) => {
+                         self.capability.mark_supported();
+                         parse_response(&raw, &self.model)
+@@ -178,7 +185,7 @@ fn map_http_error(error: HttpError) -> ComposeError {
+     match error {
+         HttpError::Configuration => ComposeError::Configuration,
+         HttpError::Authentication { .. } => ComposeError::Authentication,
+-        HttpError::RateLimited { .. } => ComposeError::RateLimited,
++        HttpError::RateLimited { kind, .. } => ComposeError::RateLimited { kind },
+         HttpError::Timeout => ComposeError::Timeout,
+         HttpError::Transport => ComposeError::Transport,
+         HttpError::Api {
+@@ -191,23 +198,33 @@ pub fn strip_markdown_code_fence(text: &str) -> String {
+     crate::compose::extract_json_candidate(text).to_string()
+ }
+ 
+-fn compose_schema() -> Value {
++fn compose_schema(request: &ComposeBatchRequest) -> Value {
++    let expected_ids = request
++        .tasks
++        .iter()
++        .map(|task| task.id.clone())
++        .collect::<Vec<_>>();
++    let expected_items = request.tasks.len();
+     json!({
+         "type": "object",
+         "properties": {
+             "items": {
+                 "type": "array",
++                "minItems": expected_items,
++                "maxItems": expected_items,
