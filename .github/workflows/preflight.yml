@@ -17,19 +17,6 @@ jobs:
         run: rustup component add rustfmt clippy
       - name: Verify and apply staged implementation
         run: |
-          expected=(
-            b39d4f77566f855964b9d07d53b1dba5bedaaf2fdc273de9505e1f37e6ead5a1
-            2003150774ff2a0bbeadbc8836b2079158815239910309e0e2200231121ed7be
-            406801007c5a15afb761c34176e17f54bb36f171bfb8dddf9e3acbdf1c78f824
-            5732952b52095d4fb9338cedb6a7fedb7adbfcfcb7fdac2b7b55bded5c1b1035
-            50692cd74d2c117b3a069511e0d7193bb0ba0569a249745c9a609b87ce5541f1
-          )
-          i=0
-          for file in .preflight/impl.b64.*; do
-            tr -d '\r\n' < "$file" > "/tmp/chunk.$i"
-            echo "${expected[$i]}  /tmp/chunk.$i" | sha256sum --check
-            i=$((i + 1))
-          done
           cat .preflight/impl.b64.* | tr -d '\r\n' > /tmp/flowcloze.patch.gz.b64
           test "$(wc -c < /tmp/flowcloze.patch.gz.b64)" -eq 27000
           echo 'ec0a28c81992798fc598fcb88cdb97d2a2a84a5dfb2c5107456eb304522ff491  /tmp/flowcloze.patch.gz.b64' | sha256sum --check
