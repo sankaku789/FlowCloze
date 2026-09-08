@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.4-beta - 2026-09-08
+
+### Fixed
+
+- Surface provider failures explicitly in CLI output and preserve terminal HTTP status codes such as 429 and 503 for diagnostics.
+- Replace the misleading `partial validation` terminal message with `generation incomplete` when generation stops before all tasks finish.
+
 ## 2.1.3-beta - 2026-09-08
 
 ### Added
