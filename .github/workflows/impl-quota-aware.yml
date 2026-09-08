@@ -23,6 +23,16 @@ jobs:
         run: |
           python3 .github/scripts/impl_quota_aware.py
           sed -i 's/remaining\.min(1_000)\.max(1)/remaining.clamp(1, 1_000)/' src/planner.rs
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tests/orchestration.rs')
+          text = p.read_text()
+          old = '''    assert_eq!(tokens.len(), 4);\n    assert_eq!(tokens[0], tokens[3]);\n    assert_eq!(tokens[1], tokens[2]);'''
+          new = '''    // First content retry is re-batched; only the final retry is single-task.\n    assert_eq!(tokens.len(), 6);\n    assert_eq!(tokens[0], tokens[2]);\n    assert_eq!(tokens[0], tokens[4]);\n    assert_eq!(tokens[1], tokens[3]);\n    assert_eq!(tokens[1], tokens[5]);'''
+          if old not in text:
+              raise SystemExit('retry regression patch target missing')
+          p.write_text(text.replace(old, new, 1))
+          PY
 
       - name: Format
         run: cargo fmt
@@ -44,6 +54,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src config.toml.example
+          git add src tests config.toml.example
           git commit -m "feat: add quota-aware provider planning"
           git push origin HEAD:feature/quota-aware-planner
