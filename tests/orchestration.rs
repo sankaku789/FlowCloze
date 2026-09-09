@@ -201,7 +201,6 @@ fn batching_still_uses_current_execution_policy() {
             max_estimated_input_tokens: 12_000,
             max_estimated_output_tokens: 12_000,
             max_blanks_per_batch: 64,
-            max_retry_count: 1,
             max_concurrent_batches: 1,
         },
         max_content_retries: 1,
