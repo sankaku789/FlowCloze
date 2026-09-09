@@ -135,9 +135,11 @@ impl OpenAiCompatibleAdapter {
             ));
         }
 
+        /* Temporary request dump for local provider debugging.
         eprintln!("\n===== FLOWCLOZE PROMPT =====");
         eprintln!("{prompt}");
         eprintln!("===== END PROMPT =====\n");
+        */
 
         let raw = self.transport.post_json(
             &format!("{}/chat/completions", self.endpoint.base_url),
@@ -145,9 +147,11 @@ impl OpenAiCompatibleAdapter {
             &body.to_string(),
         )?;
 
+        /* Temporary response dump for local provider debugging.
         eprintln!("\n===== FLOWCLOZE RAW RESPONSE =====");
         eprintln!("{raw}");
         eprintln!("===== END RAW RESPONSE =====\n");
+        */
 
         Ok(raw)
     }
