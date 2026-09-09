@@ -22,12 +22,12 @@ impl MarkdownParseError {
 
 /// 新しい生成経路だけが使う、元Markdown上の位置を保持した解析結果。
 #[derive(Debug, Clone)]
-pub(crate) struct ParsedDocument {
+pub struct ParsedDocument {
     pub qblocks: Vec<ParsedQBlock>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ParsedQBlock {
+pub struct ParsedQBlock {
     pub qblock: QBlock,
     pub raw_body: Range<usize>,
     pub target_locations: Vec<TargetLocation>,
@@ -35,7 +35,7 @@ pub(crate) struct ParsedQBlock {
 
 /// targetのanswer部分の元Markdown上、およびtrim前source_text上のbyte範囲。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TargetLocation {
+pub struct TargetLocation {
     pub raw: Range<usize>,
     pub source_text: Range<usize>,
 }
@@ -66,7 +66,7 @@ pub fn parse_qblocks(markdown: &str) -> Result<Vec<QBlock>, MarkdownParseError> 
 }
 
 /// 元Markdownのbyte位置を失わずにqblockを解析する内部用入口。
-pub(crate) fn parse_markdown_located(markdown: &str) -> Result<ParsedDocument, MarkdownParseError> {
+pub fn parse_markdown_located(markdown: &str) -> Result<ParsedDocument, MarkdownParseError> {
     let mut qblocks = Vec::new();
     let mut in_fence = false;
     let mut current_heading = None;

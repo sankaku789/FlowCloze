@@ -242,7 +242,7 @@ impl BatchLoad {
 
 /// 公開エラーへ変換する前だけ、実際に実行を止めた原因を保持する。
 #[derive(Debug)]
-pub(crate) struct ComposeExecutionError {
+pub struct ComposeExecutionError {
     error: ComposePlanError,
     terminal_cause: Option<TerminalCause>,
     fallback_causes: Vec<TerminalCause>,
@@ -534,7 +534,7 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
     progress: &dyn ProgressSink,
     leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
 ) -> Result<GeneratedDocument, ComposePlanError> {
-    compose_with_question_composer_prepared_with_terminal_cause(
+    crate::executor::execute_legacy(
         intermediate,
         scaffold,
         policy,
@@ -564,7 +564,7 @@ pub(crate) fn compose_with_question_composer_prepared(
     leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
     prepared: Option<&PreparedComposePlan>,
 ) -> Result<GeneratedDocument, ComposePlanError> {
-    compose_with_question_composer_prepared_with_terminal_cause(
+    crate::executor::execute_legacy(
         intermediate,
         scaffold,
         policy,
@@ -581,7 +581,7 @@ pub(crate) fn compose_with_question_composer_prepared(
 
 /// orchestration用に、公開エラーへ落とす前の終端原因を返す。
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
+pub(crate) fn execute_prepared_with_terminal_cause(
     intermediate: &IntermediateDocument,
     scaffold: &ScaffoldDocument,
     policy: ComposeExecutionPolicy,

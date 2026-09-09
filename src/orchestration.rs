@@ -675,7 +675,7 @@ fn compose_indexes(
             .map(|index| scaffold.tasks[*index].clone())
             .collect(),
     };
-    crate::planner::compose_with_question_composer_prepared_with_terminal_cause(
+    crate::executor::execute_legacy(
         &selected_intermediate,
         &selected_scaffold,
         policy,
@@ -689,7 +689,7 @@ fn compose_indexes(
     )
 }
 
-fn build_sentinel_scaffold(
+pub(crate) fn build_sentinel_scaffold(
     markdown: &str,
     parsed: &ParsedDocument,
 ) -> Result<(ScaffoldDocument, HashMap<String, Vec<usize>>), MarkdownParseError> {

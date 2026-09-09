@@ -7,13 +7,15 @@ use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
 
+use flowcloze::config::auth_store::AuthStore;
 use flowcloze::{
-    compile_pdf, default_pdf_output_path, parse_markdown, plan_markdown, to_ankilot_csv,
-    to_intermediate_json, validate_generated_json, CliOverrides, ComposeEvent, ComposeEventKind,
-    EventSink, FailureClass, GeneratedDocument, GenerationConfig, IdentityComposer,
-    IntermediateDocument, JsonLinesEventSink, OpenAiCompatibleAdapter, OpenAiCompatiblePool,
-    OpenAiEndpointConfig, PdfOptions, PlainProgressSink, PlanMarkdownOptions, PlanMarkdownOutcome,
-    ProgressEvent, ProgressSink, ProgressStage, Provider, RewritePolicy, RunContext,
+    build_adapter, compile_pdf, default_pdf_output_path, parse_markdown, plan_markdown,
+    to_ankilot_csv, to_intermediate_json, validate_generated_json, CliOverrides, ComposeEvent,
+    ComposeEventKind, EventSink, FailureClass, GeneratedDocument, GenerationConfig,
+    IdentityComposer, IntermediateDocument, JsonLinesEventSink, OpenAiCompatibleAdapter,
+    OpenAiCompatiblePool, OpenAiEndpointConfig, PdfOptions, PlainProgressSink, PlanMarkdownOptions,
+    PlanMarkdownOutcome, ProgressEvent, ProgressSink, ProgressStage, Provider, ResolvedModel,
+    RewritePolicy, RunContext,
 };
 
 mod view;
@@ -51,6 +53,27 @@ fn main() {
             }
             return;
         }
+        Command::AuthAdd { provider } => {
+            if let Err(error) = run_auth_add_command(provider) {
+                eprintln!("{error}");
+                process::exit(1);
+            }
+            return;
+        }
+        Command::ModelList => {
+            if let Err(error) = run_model_list_command() {
+                eprintln!("{error}");
+                process::exit(1);
+            }
+            return;
+        }
+        Command::ProviderCheck { provider } => {
+            if let Err(error) = run_provider_check_command(provider) {
+                eprintln!("{error}");
+                process::exit(1);
+            }
+            return;
+        }
         Command::View { generated_path } => {
             view_generated_json(generated_path);
             return;
@@ -75,14 +98,7 @@ fn main() {
                 .input_path
                 .as_deref()
                 .expect("planには入力パスが必要です");
-            let config = match flowcloze::config::load(CliOverrides {
-                provider: backend.as_ref().map(backend_name),
-                model: args.model.clone(),
-                rewrite: args.rewrite.clone(),
-                fallback: args.fallback.clone(),
-                structured_output: args.structured_output.clone(),
-                batch: args.batch_policy.as_ref().map(batch_name),
-            }) {
+            let config = match load_generation_config(&args, backend.as_ref()) {
                 Ok(config) => config,
                 Err(error) => {
                     eprintln!("{error}");
@@ -98,14 +114,7 @@ fn main() {
                 .as_deref()
                 .expect("generateには入力パスが必要です");
             let progress = PlainProgressSink::stderr("Generate");
-            let config = match flowcloze::config::load(CliOverrides {
-                provider: backend.as_ref().map(backend_name),
-                model: args.model.clone(),
-                rewrite: args.rewrite.clone(),
-                fallback: args.fallback.clone(),
-                structured_output: args.structured_output.clone(),
-                batch: args.batch_policy.as_ref().map(batch_name),
-            }) {
+            let config = match load_generation_config(&args, backend.as_ref()) {
                 Ok(config) => config,
                 Err(error) => {
                     progress.emit(ProgressEvent::Failed {
@@ -129,6 +138,8 @@ fn main() {
                 &config,
                 args.skip_constraints,
                 args.verbose,
+                backend.is_none() && !args.offline,
+                args.model.as_deref(),
                 &progress,
             );
             return;
@@ -209,6 +220,7 @@ struct Args {
     fallback: Option<String>,
     structured_output: Option<String>,
     verbose: bool,
+    offline: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +231,13 @@ enum Command {
         action: LocalCommand,
     },
     ApiSet,
+    AuthAdd {
+        provider: String,
+    },
+    ModelList,
+    ProviderCheck {
+        provider: String,
+    },
     View {
         generated_path: String,
     },
@@ -270,6 +289,7 @@ impl Args {
         let mut fallback = None;
         let mut structured_output = None;
         let mut verbose = false;
+        let mut offline = false;
         let mut command = Command::Parse;
         let mut args = args.into_iter();
 
@@ -300,6 +320,7 @@ impl Args {
                         structured_output: None,
                         skip_constraints,
                         verbose,
+                        offline,
                     });
                 }
                 "api" if input_path.is_none() && matches!(command, Command::Parse) => {
@@ -311,12 +332,37 @@ impl Args {
                         json: false,
                         skip_constraints,
                         verbose,
+                        offline,
                         batch_policy: None,
                         model: None,
                         rewrite: None,
                         fallback: None,
                         structured_output: None,
                     });
+                }
+                "auth" if input_path.is_none() && matches!(command, Command::Parse) => {
+                    return command_args(
+                        parse_auth_command(&mut args)?,
+                        skip_constraints,
+                        verbose,
+                        offline,
+                    );
+                }
+                "model" if input_path.is_none() && matches!(command, Command::Parse) => {
+                    return command_args(
+                        parse_model_command(&mut args)?,
+                        skip_constraints,
+                        verbose,
+                        offline,
+                    );
+                }
+                "provider" if input_path.is_none() && matches!(command, Command::Parse) => {
+                    return command_args(
+                        parse_provider_command(&mut args)?,
+                        skip_constraints,
+                        verbose,
+                        offline,
+                    );
                 }
                 "local" if input_path.is_none() && matches!(command, Command::Parse) => {
                     let local_command = parse_local_command(&mut args)?;
@@ -327,6 +373,7 @@ impl Args {
                         json: false,
                         skip_constraints,
                         verbose,
+                        offline,
                         batch_policy: None,
                         model: None,
                         rewrite: None,
@@ -371,6 +418,7 @@ impl Args {
                         json: false,
                         skip_constraints,
                         verbose,
+                        offline,
                         batch_policy: None,
                         model: None,
                         rewrite: None,
@@ -380,6 +428,12 @@ impl Args {
                 }
                 "--json" => json = true,
                 "--verbose" => verbose = true,
+                "--offline" => {
+                    if !matches!(command, Command::Generate { .. } | Command::Plan { .. }) {
+                        return Err("--offline はgenerate/planコマンドでのみ使えます".to_string());
+                    }
+                    offline = true;
+                }
                 "-s" | "--skip-constraints" => skip_constraints = true,
                 "--batch" => {
                     let Some(value) = args.next() else {
@@ -491,6 +545,9 @@ impl Args {
                 | Command::Version
                 | Command::Local { .. }
                 | Command::ApiSet
+                | Command::AuthAdd { .. }
+                | Command::ModelList
+                | Command::ProviderCheck { .. }
                 | Command::View { .. }
                 | Command::Validate { .. } => {}
             }
@@ -512,8 +569,67 @@ impl Args {
             fallback,
             structured_output,
             verbose,
+            offline,
         })
     }
+}
+
+fn command_args(
+    command: Command,
+    skip_constraints: bool,
+    verbose: bool,
+    offline: bool,
+) -> Result<Args, String> {
+    Ok(Args {
+        command,
+        input_path: None,
+        output_path: None,
+        json: false,
+        skip_constraints,
+        batch_policy: None,
+        model: None,
+        rewrite: None,
+        fallback: None,
+        structured_output: None,
+        verbose,
+        offline,
+    })
+}
+
+fn parse_auth_command(args: &mut impl Iterator<Item = String>) -> Result<Command, String> {
+    if args.next().as_deref() != Some("add") {
+        return Err("auth には add サブコマンドが必要です".to_string());
+    }
+    let provider = args
+        .next()
+        .ok_or_else(|| "auth add にはprovider IDが必要です".to_string())?;
+    if args.next().is_some() {
+        return Err("auth add の引数が多すぎます".to_string());
+    }
+    Ok(Command::AuthAdd { provider })
+}
+
+fn parse_model_command(args: &mut impl Iterator<Item = String>) -> Result<Command, String> {
+    if args.next().as_deref() != Some("list") {
+        return Err("model には list サブコマンドが必要です".to_string());
+    }
+    if args.next().is_some() {
+        return Err("model list は引数なしで実行してください".to_string());
+    }
+    Ok(Command::ModelList)
+}
+
+fn parse_provider_command(args: &mut impl Iterator<Item = String>) -> Result<Command, String> {
+    if args.next().as_deref() != Some("check") {
+        return Err("provider には check サブコマンドが必要です".to_string());
+    }
+    let provider = args
+        .next()
+        .ok_or_else(|| "provider check にはprovider IDが必要です".to_string())?;
+    if args.next().is_some() {
+        return Err("provider check の引数が多すぎます".to_string());
+    }
+    Ok(Command::ProviderCheck { provider })
 }
 
 /// `flowcloze local ...` 配下のサブコマンドを解析する．
@@ -574,6 +690,9 @@ fn print_usage() {
         "  flowcloze plan [--provider gemini|local] [--model model] [--rewrite always|never|auto] [--batch auto|small|one-task] <markdown-file>"
     );
     eprintln!("  flowcloze local check");
+    eprintln!("  flowcloze auth add <provider>");
+    eprintln!("  flowcloze model list");
+    eprintln!("  flowcloze provider check <id>");
     eprintln!("  flowcloze inspect-scaffold [-o scaffold.json] <markdown-file>");
     eprintln!("  flowcloze validate <intermediate.json> <generated.json>");
     eprintln!("  flowcloze view <generated.json>");
@@ -596,6 +715,11 @@ fn print_help() {
         "  plan                   APIへ送信せず、qblockのまとめ方を表示します / Show batch plan without API calls"
     );
     eprintln!("  local check            Ollama/LM Studioのlocal server接続を確認します / Check the local server");
+    eprintln!("  auth add <provider>     APIキーをauth.yamlへ保存します / Save an API key");
+    eprintln!("  model list             利用可能なmodel profileを表示します / List model profiles");
+    eprintln!(
+        "  provider check <id>    providerの到達性を確認します / Check provider reachability"
+    );
     eprintln!("  inspect-scaffold       LLM入力用scaffoldを表示します / Inspect scaffold JSON");
     eprintln!("  validate               中間JSONと生成JSONを検証します / Validate JSON pairs");
     eprintln!("  view                   生成JSONをTUIで表示します / View generated JSON in TUI");
@@ -617,6 +741,7 @@ fn print_help() {
         "  --batch <policy>        generateのbatch policyを指定します(auto/small/one-task) / Batch policy"
     );
     eprintln!("  --verbose               通常の進捗表示に観測JSON Linesをstderrへ追加します (FLOWCLOZE_LOG=debugでも有効)");
+    eprintln!("  --offline               generate/planをIdentityのみで実行します / Disable provider calls");
     eprintln!("                           max_concurrent_batchesは検証・観測のみで、現在は並列実行しません");
     eprintln!(
         "  --template <path>       pdfのTypstテンプレートを指定します / Typst template for pdf"
@@ -701,6 +826,59 @@ fn run_api_set_command() -> Result<(), String> {
     Ok(())
 }
 
+fn catalog_path() -> Result<PathBuf, String> {
+    Ok(flowcloze::config::config_dir()?.join("model.yaml"))
+}
+
+fn run_auth_add_command(provider: &str) -> Result<(), String> {
+    let (providers, _) = flowcloze::config::yaml::load_catalogs(&catalog_path()?)?;
+    if providers.get(provider).is_none() {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let api_key = rpassword::prompt_password("API key: ")
+        .map_err(|error| format!("APIキーを読めませんでした: {error}"))?;
+    let mut auth = AuthStore::load().map_err(|error| error.to_string())?;
+    auth.set_api_key(provider, &api_key)
+        .map_err(|error| error.to_string())?;
+    auth.save().map_err(|error| error.to_string())?;
+    println!(
+        "{} を更新しました．",
+        flowcloze::config::config_dir()?.join("auth.yaml").display()
+    );
+    Ok(())
+}
+
+fn run_model_list_command() -> Result<(), String> {
+    let (_, models) = flowcloze::config::yaml::load_catalogs(&catalog_path()?)?;
+    let mut entries: Vec<_> = models.iter().collect();
+    entries.sort_by_key(|(name, _)| *name);
+    for (name, model) in entries {
+        println!("{name}\t{}\t{}", model.provider, model.model);
+    }
+    Ok(())
+}
+
+fn run_provider_check_command(provider: &str) -> Result<(), String> {
+    let (providers, _) = flowcloze::config::yaml::load_catalogs(&catalog_path()?)?;
+    let definition = providers
+        .get(provider)
+        .ok_or_else(|| format!("unknown provider: {provider}"))?;
+    let response = reqwest::blocking::Client::new()
+        .get(&definition.base_url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .map_err(|error| format!("{}: {error}", definition.base_url))?;
+    if response.status().is_server_error() {
+        return Err(format!(
+            "{}: HTTP {}",
+            definition.base_url,
+            response.status()
+        ));
+    }
+    println!("provider ok: {}", definition.base_url);
+    Ok(())
+}
+
 fn parse_api_provider_selection(value: &str) -> Result<Provider, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "gemini" => Ok(Provider::Gemini),
@@ -778,13 +956,78 @@ fn compile_pdf_file(generated_json_path: &str, output_path: Option<&str>, templa
     println!("{}", output_pdf_path.display());
 }
 
+fn resolve_registry_model(profile: Option<&str>) -> Result<ResolvedModel, String> {
+    let directory = flowcloze::config::config_dir()?;
+    let app = flowcloze::config::yaml::load_app_config(&directory.join("config.yaml"))?;
+    let (providers, models) =
+        flowcloze::config::yaml::load_catalogs(&directory.join("model.yaml"))?;
+    models
+        .resolve(profile.unwrap_or(&app.default_model), &providers)
+        .map_err(|error| error.to_string())
+}
+
+fn load_generation_config(
+    args: &Args,
+    backend: Option<&LlmBackend>,
+) -> Result<GenerationConfig, String> {
+    if let Some(backend) = backend {
+        return flowcloze::config::load(CliOverrides {
+            provider: Some(backend_name(backend)),
+            model: args.model.clone(),
+            rewrite: args
+                .offline
+                .then(|| "never".to_string())
+                .or(args.rewrite.clone()),
+            fallback: args.fallback.clone(),
+            structured_output: args.structured_output.clone(),
+            batch: args.batch_policy.as_ref().map(batch_name),
+        });
+    }
+
+    let directory = flowcloze::config::config_dir()?;
+    let app = flowcloze::config::yaml::load_app_config(&directory.join("config.yaml"))?;
+    let model = if args.offline {
+        None
+    } else {
+        Some(resolve_registry_model(args.model.as_deref())?)
+    };
+    flowcloze::config::load(CliOverrides {
+        provider: Some(
+            if model
+                .as_ref()
+                .is_none_or(|model| model.provider == "google")
+            {
+                "gemini"
+            } else {
+                "local"
+            }
+            .into(),
+        ),
+        model: model.map(|model| model.model),
+        rewrite: args
+            .offline
+            .then(|| "never".to_string())
+            .or(args.rewrite.clone()),
+        fallback: args.fallback.clone().or(Some(app.generation.fallback)),
+        structured_output: args.structured_output.clone(),
+        batch: args
+            .batch_policy
+            .as_ref()
+            .map(batch_name)
+            .or(Some(app.batch.mode)),
+    })
+}
+
 /// Markdownを解析し，選択されたLLM backendで問題JSONを生成する．
+#[allow(clippy::too_many_arguments)]
 fn generate_with_llm(
     input_path: &str,
     output_path: Option<&str>,
     config: &GenerationConfig,
     skip_constraints: bool,
     verbose: bool,
+    use_registry: bool,
+    model_profile: Option<&str>,
     progress: &dyn ProgressSink,
 ) {
     let markdown = match fs::read_to_string(input_path) {
@@ -842,6 +1085,25 @@ fn generate_with_llm(
             &context,
             &*sink,
             progress,
+        )
+    } else if use_registry {
+        let model = resolve_registry_model(model_profile).unwrap_or_else(|error| {
+            eprintln!("{error}");
+            process::exit(2)
+        });
+        let auth = AuthStore::load().unwrap_or_else(|error| {
+            eprintln!("{error}");
+            process::exit(2)
+        });
+        let adapter = build_adapter(&model, &auth)
+            .unwrap_or_else(|error| {
+                eprintln!("{error}");
+                process::exit(2)
+            })
+            .with_structured_output(config.structured_output)
+            .with_transport(retry_transport.clone());
+        flowcloze::generate_markdown_with_composer_observed_with_progress(
+            &markdown, options, &adapter, &context, &*sink, progress,
         )
     } else {
         match config.provider {
@@ -1357,5 +1619,48 @@ mod stdout_tests {
         )
         .unwrap_err();
         assert!(error.contains("引数なし"));
+    }
+
+    #[test]
+    fn new_catalog_commands_are_parsed() {
+        assert_eq!(
+            Args::parse(["auth", "add", "google"].into_iter().map(str::to_string))
+                .unwrap()
+                .command,
+            Command::AuthAdd {
+                provider: "google".to_string()
+            }
+        );
+        assert_eq!(
+            Args::parse(["model", "list"].into_iter().map(str::to_string))
+                .unwrap()
+                .command,
+            Command::ModelList
+        );
+        assert_eq!(
+            Args::parse(
+                ["provider", "check", "ollama"]
+                    .into_iter()
+                    .map(str::to_string)
+            )
+            .unwrap()
+            .command,
+            Command::ProviderCheck {
+                provider: "ollama".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn generate_accepts_model_profile_and_offline() {
+        let parsed = Args::parse(
+            ["generate", "--model", "local-qwen", "--offline", "notes.md"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap();
+        assert_eq!(parsed.model.as_deref(), Some("local-qwen"));
+        assert!(parsed.offline);
+        assert_eq!(parsed.input_path.as_deref(), Some("notes.md"));
     }
 }

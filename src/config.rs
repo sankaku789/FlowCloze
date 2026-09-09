@@ -1,5 +1,8 @@
 //! FlowCloze の標準設定と秘密情報を解決する。
 
+pub mod auth_store;
+pub mod yaml;
+
 use std::collections::HashMap;
 use std::env;
 use std::fs;
