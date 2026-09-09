@@ -35,7 +35,7 @@ pub use application::plan::{
 pub use application::{GenerateUseCase, PlanUseCase};
 pub use compose::{
     parse_compose_output, ComposeBatchOutput, ComposeBatchRequest, ComposeError, ComposeMetadata,
-    ComposeTask, ComposedItem, IdentityComposer, QuestionComposer, WritingStyle,
+    ComposeTask, ComposedItem, IdentityComposer, QuestionComposer,
 };
 pub use config::{BatchPolicyName, CliOverrides, FallbackPolicy, GenerationConfig};
 pub use csv::to_ankilot_csv;
