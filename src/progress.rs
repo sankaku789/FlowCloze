@@ -1,7 +1,9 @@
 //! 人間が読む進捗表示。JSON Lines の観測イベントとは独立している。
 
 use std::io::{self, Write};
-use std::sync::Mutex;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use crate::rate_limit::RateLimitKind;
 
@@ -207,10 +209,81 @@ impl ProgressSink for NoopProgressSink {
     fn emit(&self, _: ProgressEvent) {}
 }
 
+const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeartbeatPhase {
+    Batch { number: usize, total: usize },
+    Retry { pending: usize },
+}
+
+enum HeartbeatCommand {
+    Set(HeartbeatPhase),
+    Pause,
+    Stop,
+}
+
+struct HeartbeatWorker {
+    tx: mpsc::Sender<HeartbeatCommand>,
+    handle: Option<JoinHandle<()>>,
+}
+
+fn format_heartbeat(phase: HeartbeatPhase, elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    match phase {
+        HeartbeatPhase::Batch { number, total } => {
+            format!("      batch {number}/{total}: provider待機中... {seconds}s")
+        }
+        HeartbeatPhase::Retry { pending } => {
+            format!("      retry: provider待機中... {seconds}s ({pending} tasks pending)")
+        }
+    }
+}
+
+fn write_progress_line(writer: &Arc<Mutex<Box<dyn Write + Send>>>, line: &str) {
+    if let Ok(mut writer) = writer.lock() {
+        let _ = writeln!(writer, "{line}");
+        let _ = writer.flush();
+    }
+}
+
+fn heartbeat_loop(
+    rx: mpsc::Receiver<HeartbeatCommand>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    interval: Duration,
+) {
+    let mut state: Option<(HeartbeatPhase, Instant)> = None;
+    loop {
+        if state.is_none() {
+            match rx.recv() {
+                Ok(HeartbeatCommand::Set(phase)) => state = Some((phase, Instant::now())),
+                Ok(HeartbeatCommand::Pause) => {}
+                Ok(HeartbeatCommand::Stop) | Err(_) => break,
+            }
+            continue;
+        }
+
+        match rx.recv_timeout(interval) {
+            Ok(HeartbeatCommand::Set(phase)) => state = Some((phase, Instant::now())),
+            Ok(HeartbeatCommand::Pause) => state = None,
+            Ok(HeartbeatCommand::Stop) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if let Some((phase, started)) = &state {
+                    write_progress_line(&writer, &format_heartbeat(*phase, started.elapsed()));
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
 /// stderr 等へ固定書式で書く sink。識別子とパスは制御文字を可視化して一行性を守る。
 pub struct PlainProgressSink {
-    writer: Mutex<Box<dyn Write + Send>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     label: Mutex<String>,
+    heartbeat: Mutex<Option<HeartbeatWorker>>,
+    pending_retries: Mutex<usize>,
+    heartbeat_interval: Duration,
 }
 impl PlainProgressSink {
     pub fn stderr(label: impl Into<String>) -> Self {
@@ -222,9 +295,20 @@ impl PlainProgressSink {
     }
 
     pub fn with_writer(writer: impl Write + Send + 'static, label: impl Into<String>) -> Self {
+        Self::with_writer_and_interval(writer, label, DEFAULT_HEARTBEAT_INTERVAL)
+    }
+
+    fn with_writer_and_interval(
+        writer: impl Write + Send + 'static,
+        label: impl Into<String>,
+        heartbeat_interval: Duration,
+    ) -> Self {
         Self {
-            writer: Mutex::new(Box::new(writer)),
+            writer: Arc::new(Mutex::new(Box::new(writer))),
             label: Mutex::new(escape(&label.into())),
+            heartbeat: Mutex::new(None),
+            pending_retries: Mutex::new(0),
+            heartbeat_interval,
         }
     }
 
@@ -234,9 +318,119 @@ impl PlainProgressSink {
             *current = escape(&label.into());
         }
     }
+
+    fn send_heartbeat(&self, command: HeartbeatCommand) {
+        let Ok(mut slot) = self.heartbeat.lock() else {
+            return;
+        };
+
+        let needs_worker = matches!(&command, HeartbeatCommand::Set(_)) && slot.is_none();
+        if needs_worker {
+            let (tx, rx) = mpsc::channel();
+            let writer = Arc::clone(&self.writer);
+            let interval = self.heartbeat_interval;
+            let handle = thread::spawn(move || heartbeat_loop(rx, writer, interval));
+            *slot = Some(HeartbeatWorker {
+                tx,
+                handle: Some(handle),
+            });
+        }
+
+        if let Some(worker) = slot.as_ref() {
+            let _ = worker.tx.send(command);
+        }
+    }
+
+    fn update_heartbeat(&self, event: &ProgressEvent) {
+        let command = match event {
+            ProgressEvent::Parsed { .. } => {
+                if let Ok(mut pending) = self.pending_retries.lock() {
+                    *pending = 0;
+                }
+                Some(HeartbeatCommand::Pause)
+            }
+            ProgressEvent::Planned {
+                initial_batches, ..
+            } if *initial_batches > 0 => {
+                if let Ok(mut pending) = self.pending_retries.lock() {
+                    *pending = 0;
+                }
+                Some(HeartbeatCommand::Set(HeartbeatPhase::Batch {
+                    number: 1,
+                    total: *initial_batches,
+                }))
+            }
+            ProgressEvent::BatchComplete {
+                number,
+                total,
+                retries,
+                ..
+            } => {
+                let pending = if let Ok(mut pending) = self.pending_retries.lock() {
+                    *pending = pending.saturating_add(*retries);
+                    *pending
+                } else {
+                    0
+                };
+                if number < total {
+                    Some(HeartbeatCommand::Set(HeartbeatPhase::Batch {
+                        number: number + 1,
+                        total: *total,
+                    }))
+                } else if pending > 0 {
+                    Some(HeartbeatCommand::Set(HeartbeatPhase::Retry { pending }))
+                } else {
+                    Some(HeartbeatCommand::Pause)
+                }
+            }
+            ProgressEvent::Retry { result, .. } => {
+                let pending = if let Ok(mut pending) = self.pending_retries.lock() {
+                    if matches!(result, RetryResult::Success | RetryResult::Failed) {
+                        *pending = pending.saturating_sub(1);
+                    }
+                    *pending
+                } else {
+                    0
+                };
+                if pending > 0 {
+                    Some(HeartbeatCommand::Set(HeartbeatPhase::Retry { pending }))
+                } else {
+                    Some(HeartbeatCommand::Pause)
+                }
+            }
+            ProgressEvent::Validated { .. }
+            | ProgressEvent::Saved { .. }
+            | ProgressEvent::Stdout
+            | ProgressEvent::ProviderError { .. }
+            | ProgressEvent::Failed { .. } => Some(HeartbeatCommand::Pause),
+            ProgressEvent::Fallback { .. } => None,
+            ProgressEvent::Planned { .. } => Some(HeartbeatCommand::Pause),
+        };
+
+        if let Some(command) = command {
+            self.send_heartbeat(command);
+        }
+    }
 }
+
+impl Drop for PlainProgressSink {
+    fn drop(&mut self) {
+        let Ok(mut slot) = self.heartbeat.lock() else {
+            return;
+        };
+        let Some(mut worker) = slot.take() else {
+            return;
+        };
+        let _ = worker.tx.send(HeartbeatCommand::Stop);
+        if let Some(handle) = worker.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 impl ProgressSink for PlainProgressSink {
     fn emit(&self, event: ProgressEvent) {
+        let heartbeat_event = event.clone();
         let line = match event {
             ProgressEvent::Parsed { tasks } => format!("[1/4] Markdown解析: {tasks} tasks"),
             ProgressEvent::Planned {
@@ -297,9 +491,8 @@ impl ProgressSink for PlainProgressSink {
                 class.detail()
             ),
         };
-        if let Ok(mut writer) = self.writer.lock() {
-            let _ = writeln!(writer, "{line}");
-        }
+        write_progress_line(&self.writer, &line);
+        self.update_heartbeat(&heartbeat_event);
     }
 }
 
@@ -463,6 +656,27 @@ mod tests {
         assert_eq!(
             String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
             "[failed] stage=generate class=content detail=provider output was invalid or failed content checks\n"
+        );
+    }
+
+    #[test]
+    fn heartbeat_lines_report_elapsed_provider_wait() {
+        assert_eq!(
+            format_heartbeat(
+                HeartbeatPhase::Batch {
+                    number: 2,
+                    total: 4,
+                },
+                Duration::from_secs(15),
+            ),
+            "      batch 2/4: provider待機中... 15s"
+        );
+        assert_eq!(
+            format_heartbeat(
+                HeartbeatPhase::Retry { pending: 2 },
+                Duration::from_secs(10),
+            ),
+            "      retry: provider待機中... 10s (2 tasks pending)"
         );
     }
 
