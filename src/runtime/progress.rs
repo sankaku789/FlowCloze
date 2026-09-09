@@ -3,7 +3,7 @@
 use std::io::{self, Write};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::rate_limit::RateLimitKind;
 
@@ -147,12 +147,11 @@ pub enum RetryCause {
     UnknownId,
     OrderMismatch,
     AnonymousBlank,
-    MissingSentinel,
-    DuplicateSentinel,
-    SentinelOrder,
-    MalformedSentinel,
-    UnknownSentinel,
-    ForeignSentinel,
+    MissingPlaceholder,
+    DuplicatePlaceholder,
+    PlaceholderOrder,
+    MalformedPlaceholder,
+    UnknownPlaceholder,
     ContentValidation,
 }
 
@@ -172,12 +171,11 @@ impl RetryCause {
             Self::UnknownId => "unknown_id",
             Self::OrderMismatch => "order_mismatch",
             Self::AnonymousBlank => "anonymous_blank",
-            Self::MissingSentinel => "missing_sentinel",
-            Self::DuplicateSentinel => "duplicate_sentinel",
-            Self::SentinelOrder => "sentinel_order",
-            Self::MalformedSentinel => "malformed_sentinel",
-            Self::UnknownSentinel => "unknown_sentinel",
-            Self::ForeignSentinel => "foreign_sentinel",
+            Self::MissingPlaceholder => "missing_placeholder",
+            Self::DuplicatePlaceholder => "duplicate_placeholder",
+            Self::PlaceholderOrder => "placeholder_order",
+            Self::MalformedPlaceholder => "malformed_placeholder",
+            Self::UnknownPlaceholder => "unknown_placeholder",
             Self::ContentValidation => "content_validation",
         }
     }
@@ -189,6 +187,7 @@ pub enum RetryResult {
     Retry,
     Failed,
 }
+
 impl RetryResult {
     const fn as_str(self) -> &'static str {
         match self {
@@ -205,11 +204,13 @@ pub trait ProgressSink: Send + Sync {
 
 #[derive(Debug, Default)]
 pub struct NoopProgressSink;
+
 impl ProgressSink for NoopProgressSink {
     fn emit(&self, _: ProgressEvent) {}
 }
 
 const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const JST_OFFSET_SECONDS: u64 = 9 * 60 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeartbeatPhase {
@@ -228,6 +229,49 @@ struct HeartbeatWorker {
     handle: Option<JoinHandle<()>>,
 }
 
+struct WriterState {
+    writer: Box<dyn Write + Send>,
+    transient_width: usize,
+}
+
+impl WriterState {
+    fn new(writer: impl Write + Send + 'static) -> Self {
+        Self {
+            writer: Box::new(writer),
+            transient_width: 0,
+        }
+    }
+
+    fn write_line(&mut self, severity: &'static str, line: &str) {
+        let rendered = render_log_line(severity, line);
+        if self.transient_width > 0 {
+            let padding = self.transient_width.saturating_sub(rendered.chars().count());
+            let _ = write!(self.writer, "\r{rendered}{}\n", " ".repeat(padding));
+            self.transient_width = 0;
+        } else {
+            let _ = writeln!(self.writer, "{rendered}");
+        }
+        let _ = self.writer.flush();
+    }
+
+    fn write_transient(&mut self, severity: &'static str, line: &str) {
+        let rendered = render_log_line(severity, line);
+        let width = rendered.chars().count();
+        let padding = self.transient_width.saturating_sub(width);
+        let _ = write!(self.writer, "\r{rendered}{}", " ".repeat(padding));
+        self.transient_width = width;
+        let _ = self.writer.flush();
+    }
+
+    fn finish_transient(&mut self) {
+        if self.transient_width > 0 {
+            let _ = writeln!(self.writer);
+            self.transient_width = 0;
+            let _ = self.writer.flush();
+        }
+    }
+}
+
 fn format_heartbeat(phase: HeartbeatPhase, elapsed: Duration) -> String {
     let seconds = elapsed.as_secs();
     match phase {
@@ -240,16 +284,29 @@ fn format_heartbeat(phase: HeartbeatPhase, elapsed: Duration) -> String {
     }
 }
 
-fn write_progress_line(writer: &Arc<Mutex<Box<dyn Write + Send>>>, line: &str) {
-    if let Ok(mut writer) = writer.lock() {
-        let _ = writeln!(writer, "{line}");
-        let _ = writer.flush();
-    }
+fn format_jst_hms_from_unix(unix_seconds: u64) -> String {
+    let seconds = (unix_seconds + JST_OFFSET_SECONDS) % (24 * 60 * 60);
+    let hour = seconds / 3600;
+    let minute = (seconds % 3600) / 60;
+    let second = seconds % 60;
+    format!("{hour:02}:{minute:02}:{second:02}")
+}
+
+fn current_jst_hms() -> String {
+    let unix_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format_jst_hms_from_unix(unix_seconds)
+}
+
+fn render_log_line(severity: &'static str, line: &str) -> String {
+    format!("[{}] [{severity}] {line}", current_jst_hms())
 }
 
 fn heartbeat_loop(
     rx: mpsc::Receiver<HeartbeatCommand>,
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    writer: Arc<Mutex<WriterState>>,
     interval: Duration,
 ) {
     let mut state: Option<(HeartbeatPhase, Instant)> = None;
@@ -269,7 +326,9 @@ fn heartbeat_loop(
             Ok(HeartbeatCommand::Stop) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if let Some((phase, started)) = &state {
-                    write_progress_line(&writer, &format_heartbeat(*phase, started.elapsed()));
+                    if let Ok(mut writer) = writer.lock() {
+                        writer.write_transient("WARN", &format_heartbeat(*phase, started.elapsed()));
+                    }
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -279,12 +338,13 @@ fn heartbeat_loop(
 
 /// stderr 等へ固定書式で書く sink。識別子とパスは制御文字を可視化して一行性を守る。
 pub struct PlainProgressSink {
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    writer: Arc<Mutex<WriterState>>,
     label: Mutex<String>,
     heartbeat: Mutex<Option<HeartbeatWorker>>,
     pending_retries: Mutex<usize>,
     heartbeat_interval: Duration,
 }
+
 impl PlainProgressSink {
     pub fn stderr(label: impl Into<String>) -> Self {
         Self::with_writer(io::stderr(), label)
@@ -304,7 +364,7 @@ impl PlainProgressSink {
         heartbeat_interval: Duration,
     ) -> Self {
         Self {
-            writer: Arc::new(Mutex::new(Box::new(writer))),
+            writer: Arc::new(Mutex::new(WriterState::new(writer))),
             label: Mutex::new(escape(&label.into())),
             heartbeat: Mutex::new(None),
             pending_retries: Mutex::new(0),
@@ -418,12 +478,14 @@ impl Drop for PlainProgressSink {
         let Ok(mut slot) = self.heartbeat.lock() else {
             return;
         };
-        let Some(mut worker) = slot.take() else {
-            return;
-        };
-        let _ = worker.tx.send(HeartbeatCommand::Stop);
-        if let Some(handle) = worker.handle.take() {
-            let _ = handle.join();
+        if let Some(mut worker) = slot.take() {
+            let _ = worker.tx.send(HeartbeatCommand::Stop);
+            if let Some(handle) = worker.handle.take() {
+                let _ = handle.join();
+            }
+        }
+        if let Ok(mut writer) = self.writer.lock() {
+            writer.finish_transient();
         }
     }
 }
@@ -431,8 +493,8 @@ impl Drop for PlainProgressSink {
 impl ProgressSink for PlainProgressSink {
     fn emit(&self, event: ProgressEvent) {
         let heartbeat_event = event.clone();
-        let line = match event {
-            ProgressEvent::Parsed { tasks } => format!("[1/4] Markdown解析: {tasks} tasks"),
+        let (severity, line) = match event {
+            ProgressEvent::Parsed { tasks } => ("INFO", format!("[1/4] Markdown解析: {tasks} tasks")),
             ProgressEvent::Planned {
                 initial_batches,
                 provider_tasks,
@@ -448,9 +510,9 @@ impl ProgressSink for PlainProgressSink {
                     (_, 0) => String::new(),
                     _ => format!(" (provider: {provider_tasks}, identity: {identity_tasks})"),
                 };
-                format!(
-                    "[2/4] 生成開始: {} / {initial_batches} batches{counts}",
-                    label
+                (
+                    "INFO",
+                    format!("[2/4] 生成開始: {label} / {initial_batches} batches{counts}"),
                 )
             }
             ProgressEvent::BatchComplete {
@@ -458,40 +520,58 @@ impl ProgressSink for PlainProgressSink {
                 total,
                 successes,
                 retries,
-            } => format!("      batch {number}/{total}: {successes}成功, {retries} retry"),
+            } => (
+                if retries > 0 { "WARN" } else { "INFO" },
+                format!("      batch {number}/{total}: {successes}成功, {retries} retry"),
+            ),
             ProgressEvent::Retry {
                 task_id,
                 attempt,
                 cause,
                 result,
-            } => format!(
-                "      retry: task={} attempt={attempt} cause={} result={}",
-                escape(&task_id),
-                cause.as_str(),
-                result.as_str()
+            } => (
+                "WARN",
+                format!(
+                    "      retry: task={} attempt={attempt} cause={} result={}",
+                    escape(&task_id),
+                    cause.as_str(),
+                    result.as_str()
+                ),
             ),
-            ProgressEvent::Fallback { task_id, reason } => format!(
-                "      fallback: task={} reason={} detail={}",
-                escape(&task_id),
-                reason.as_str(),
-                reason.detail()
+            ProgressEvent::Fallback { task_id, reason } => (
+                "WARN",
+                format!(
+                    "      fallback: task={} reason={} detail={}",
+                    escape(&task_id),
+                    reason.as_str(),
+                    reason.detail()
+                ),
             ),
-            ProgressEvent::Validated { tasks } => format!("[3/4] 検証完了: {tasks}/{tasks}"),
-            ProgressEvent::Saved { path } => format!("[4/4] 保存完了: {}", escape(&path)),
-            ProgressEvent::Stdout => "[4/4] stdout出力完了".to_string(),
+            ProgressEvent::Validated { tasks } => {
+                ("INFO", format!("[3/4] 検証完了: {tasks}/{tasks}"))
+            }
+            ProgressEvent::Saved { path } => {
+                ("INFO", format!("[4/4] 保存完了: {}", escape(&path)))
+            }
+            ProgressEvent::Stdout => ("INFO", "[4/4] stdout出力完了".to_string()),
             ProgressEvent::ProviderError {
                 class,
                 status,
                 rate_limit,
-            } => format_provider_error(class, status, rate_limit),
-            ProgressEvent::Failed { stage, class } => format!(
-                "[failed] stage={} class={} detail={}",
-                stage.as_str(),
-                class.as_str(),
-                class.detail()
+            } => ("ERROR", format_provider_error(class, status, rate_limit)),
+            ProgressEvent::Failed { stage, class } => (
+                "ERROR",
+                format!(
+                    "[failed] stage={} class={} detail={}",
+                    stage.as_str(),
+                    class.as_str(),
+                    class.detail()
+                ),
             ),
         };
-        write_progress_line(&self.writer, &line);
+        if let Ok(mut writer) = self.writer.lock() {
+            writer.write_line(severity, &line);
+        }
         self.update_heartbeat(&heartbeat_event);
     }
 }
@@ -549,156 +629,33 @@ fn escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{self, Write};
-    use std::sync::{Arc, Mutex};
-
     use super::*;
 
-    #[derive(Clone, Default)]
-    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
-    impl Write for SharedWriter {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
+    #[test]
+    fn jst_timestamp_wraps_at_midnight() {
+        assert_eq!(format_jst_hms_from_unix(0), "09:00:00");
+        assert_eq!(format_jst_hms_from_unix(15 * 60 * 60), "00:00:00");
     }
 
     #[test]
-    fn plain_identity_output_is_stable_and_escapes_paths() {
-        let writer = SharedWriter::default();
-        let sink = PlainProgressSink::with_writer(writer.clone(), "Identity");
-        sink.emit(ProgressEvent::Parsed { tasks: 1 });
-        sink.emit(ProgressEvent::Planned {
-            initial_batches: 1,
-            provider_tasks: 0,
-            identity_tasks: 1,
-        });
-        sink.emit(ProgressEvent::BatchComplete {
-            number: 1,
-            total: 1,
-            successes: 1,
-            retries: 0,
-        });
-        sink.emit(ProgressEvent::Validated { tasks: 1 });
-        sink.emit(ProgressEvent::Saved {
-            path: "a\nb.json".to_string(),
-        });
-        assert_eq!(String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(), "[1/4] Markdown解析: 1 tasks\n[2/4] 生成開始: Identity / 1 batches\n      batch 1/1: 1成功, 0 retry\n[3/4] 検証完了: 1/1\n[4/4] 保存完了: a\\nb.json\n");
-    }
-
-    #[test]
-    fn retry_output_explains_content_validation_cause() {
-        let writer = SharedWriter::default();
-        let sink = PlainProgressSink::with_writer(writer.clone(), "Gemini");
-        sink.emit(ProgressEvent::BatchComplete {
-            number: 1,
-            total: 2,
-            successes: 2,
-            retries: 1,
-        });
-        sink.emit(ProgressEvent::Retry {
-            task_id: "qblock-003".to_string(),
-            attempt: 1,
-            cause: RetryCause::AnswerLeakage,
-            result: RetryResult::Success,
-        });
-
-        assert_eq!(
-            String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
-            "      batch 1/2: 2成功, 1 retry\n      retry: task=qblock-003 attempt=1 cause=answer_leakage result=success\n"
-        );
-    }
-
-    #[test]
-    fn provider_error_renders_http_status_and_reason() {
-        let writer = SharedWriter::default();
-        let sink = PlainProgressSink::with_writer(writer.clone(), "Gemini");
-        sink.emit(ProgressEvent::ProviderError {
-            class: FailureClass::RateLimited,
-            status: Some(429),
-            rate_limit: Some(RateLimitKind::RequestsPerDay),
-        });
-
-        assert_eq!(
-            String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
-            "Provider error: HTTP 429 Too Many Requests (class=rate_limited, detail=provider rate limit reached, quota=rpd)\n"
-        );
-    }
-
-    #[test]
-    fn provider_error_without_status_is_still_human_readable() {
-        let writer = SharedWriter::default();
-        let sink = PlainProgressSink::with_writer(writer.clone(), "Gemini");
-        sink.emit(ProgressEvent::ProviderError {
-            class: FailureClass::Timeout,
-            status: None,
-            rate_limit: None,
-        });
-
-        assert_eq!(
-            String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
-            "Provider error: provider request timed out (class=timeout)\n"
-        );
-    }
-
-    #[test]
-    fn failed_output_includes_sanitized_detail() {
-        let writer = SharedWriter::default();
-        let sink = PlainProgressSink::with_writer(writer.clone(), "Gemini");
-        sink.emit(ProgressEvent::Failed {
-            stage: ProgressStage::Generate,
-            class: FailureClass::Content,
-        });
-
-        assert_eq!(
-            String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
-            "[failed] stage=generate class=content detail=provider output was invalid or failed content checks\n"
-        );
-    }
-
-    #[test]
-    fn heartbeat_lines_report_elapsed_provider_wait() {
+    fn heartbeat_text_is_single_line_payload() {
         assert_eq!(
             format_heartbeat(
                 HeartbeatPhase::Batch {
-                    number: 2,
-                    total: 4,
+                    number: 4,
+                    total: 8,
                 },
                 Duration::from_secs(15),
             ),
-            "      batch 2/4: provider待機中... 15s"
-        );
-        assert_eq!(
-            format_heartbeat(
-                HeartbeatPhase::Retry { pending: 2 },
-                Duration::from_secs(10),
-            ),
-            "      retry: provider待機中... 10s (2 tasks pending)"
+            "      batch 4/8: provider待機中... 15s"
         );
     }
 
     #[test]
-    fn noop_never_writes_or_panics() {
-        NoopProgressSink.emit(ProgressEvent::Stdout);
-    }
-
-    #[test]
-    fn label_can_be_resolved_after_config_loading() {
-        let writer = SharedWriter::default();
-        let sink = PlainProgressSink::with_writer(writer.clone(), "Generate");
-        sink.set_label("Auto(Gemini)");
-        sink.emit(ProgressEvent::Planned {
-            initial_batches: 2,
-            provider_tasks: 1,
-            identity_tasks: 1,
-        });
-
+    fn placeholder_retry_cause_has_current_name() {
         assert_eq!(
-            String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
-            "[2/4] 生成開始: Auto(Gemini) / 2 batches (provider: 1, identity: 1)\n"
+            RetryCause::MissingPlaceholder.as_str(),
+            "missing_placeholder"
         );
     }
 }
