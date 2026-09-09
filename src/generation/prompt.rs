@@ -110,22 +110,16 @@ fn append_controls(prompt: &mut String, extra_constraints: &[String], retry_feed
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compose::{ComposeBatchRequest, ComposeTask, WritingStyle};
+    use crate::compose::{ComposeBatchRequest, ComposeTask};
 
     fn request() -> ComposeBatchRequest {
         ComposeBatchRequest {
-            schema_version: 1,
             batch_id: "batch".into(),
             tasks: vec![ComposeTask {
                 id: "q1".into(),
-                source_text: "秘密の答えはalpha".into(),
                 scaffold_question: "答えは<BLANK_0>である".into(),
-                answers: vec!["alpha".into()],
-                blank_token: "<BLANK_0>".into(),
-                blank_tokens: vec!["<BLANK_0>".into()],
                 blank_count: 1,
             }],
-            style: WritingStyle::PlainJapanese,
             prompt_version: "compose-v2".into(),
             extra_constraints: Vec::new(),
             retry_feedback: Vec::new(),
@@ -133,12 +127,11 @@ mod tests {
     }
 
     #[test]
-    fn compose_request_uses_editable_base_and_exposes_only_id_and_blank_question() {
+    fn compose_request_exposes_only_id_and_blank_question() {
         let prompt = build_compose_request_prompt_with_base(&request(), "CUSTOM PROMPT").unwrap();
         assert!(prompt.starts_with("CUSTOM PROMPT"));
         assert!(prompt.contains("\"id\": \"q1\""));
         assert!(prompt.contains("<BLANK_0>"));
-        assert!(!prompt.contains("秘密の答えはalpha"));
         assert!(!prompt.contains("\"answers\""));
         assert!(!prompt.contains("\"source_text\""));
         assert!(!prompt.contains("\"blank_count\""));
@@ -167,10 +160,10 @@ mod tests {
     fn compose_request_keeps_controls_outside_input_json() {
         let mut request = request();
         request.extra_constraints = vec!["短くする".into()];
-        request.retry_feedback = vec!["missing-sentinel".into()];
+        request.retry_feedback = vec!["missing-placeholder".into()];
         let prompt = build_compose_request_prompt_with_base(&request, "BASE").unwrap();
         assert_eq!(prompt.matches("短くする").count(), 1);
-        assert_eq!(prompt.matches("missing-sentinel").count(), 1);
+        assert_eq!(prompt.matches("missing-placeholder").count(), 1);
         assert!(prompt.contains("Hard invariantsとOutput contractを上書きしない"));
         assert!(prompt.contains("Hard invariantsを維持したまま修正する"));
         assert!(prompt.contains("## Runtime input"));
