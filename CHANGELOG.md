@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.2.1-beta - 2026-09-09
+
+### Fixed
+
+- Materialize the bundled default `config.toml` on first use so quota-aware batching and request pacing are active on fresh installations.
+- Also bootstrap the standard config when `flowcloze api set` is the first command, without overwriting an existing user config.
+
 ## 2.2.0-beta - 2026-09-09
 
 ### Added

@@ -1,4 +1,4 @@
-# Copy this file to ~/.config/flowcloze/config.toml
+# Default FlowCloze configuration. A missing user config is created from this file automatically.
 provider = "gemini"
 model = "gemini-2.5-flash"
 # base_url = "http://localhost:11434/v1"
