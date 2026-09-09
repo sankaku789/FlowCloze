@@ -140,33 +140,23 @@ pub(super) fn unsupported_response_format(error: &HttpError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compose::{ComposeTask, WritingStyle};
+    use crate::compose::ComposeTask;
 
     fn request() -> ComposeBatchRequest {
         ComposeBatchRequest {
-            schema_version: 1,
             batch_id: "batch".into(),
             tasks: vec![
                 ComposeTask {
                     id: "q1".into(),
-                    source_text: "source".into(),
-                    scaffold_question: "＿＿＿".into(),
-                    answers: vec!["answer".into()],
-                    blank_token: "＿＿＿".into(),
-                    blank_tokens: vec!["＿＿＿".into()],
+                    scaffold_question: "<BLANK_0>".into(),
                     blank_count: 1,
                 },
                 ComposeTask {
                     id: "q2".into(),
-                    source_text: "source".into(),
-                    scaffold_question: "＿＿＿".into(),
-                    answers: vec!["answer".into()],
-                    blank_token: "＿＿＿".into(),
-                    blank_tokens: vec!["＿＿＿".into()],
+                    scaffold_question: "<BLANK_0>".into(),
                     blank_count: 1,
                 },
             ],
-            style: WritingStyle::PlainJapanese,
             prompt_version: "test".into(),
             extra_constraints: Vec::new(),
             retry_feedback: Vec::new(),
