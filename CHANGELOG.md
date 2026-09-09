@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.2.0-beta - 2026-09-09
+
+### Added
+
+- Add multidimensional qblock cost planning using estimated input tokens, expected output tokens, and blank counts.
+- Add configurable output-token and blank budgets, including adaptive quota-profile ceilings.
+- Add sanitized retry-cause reporting and structured rate-limit dimension diagnostics.
+
+### Changed
+
+- Repack light qblocks across source positions while keeping heavy qblocks as singleton requests and restoring final source order.
+- Shrink retry batches after batch-level malformed/empty provider output while preserving successful qblocks and retrying qblock-local validation failures independently.
+- Strengthen structured-output schemas with exact item counts and the expected qblock ID set.
+- Stop bounded HTTP retries immediately when a structured 429 response identifies a daily request or token quota.
+
 ## 2.1.5-beta - 2026-09-09
 
 ### Added

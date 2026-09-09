@@ -109,7 +109,12 @@ impl OpenAiCompatibleAdapter {
         self
     }
 
-    fn request(&self, prompt: &str, strategy: StructuredStrategy) -> Result<String, HttpError> {
+    fn request(
+        &self,
+        prompt: &str,
+        strategy: StructuredStrategy,
+        request: &ComposeBatchRequest,
+    ) -> Result<String, HttpError> {
         let mut body = json!({
             "model": self.endpoint.model,
             "messages": [{"role": "user", "content": prompt}]
@@ -117,7 +122,7 @@ impl OpenAiCompatibleAdapter {
         if should_send_temperature(&self.endpoint) {
             body["temperature"] = json!(0.0);
         }
-        if let Some(format) = response_format(strategy) {
+        if let Some(format) = response_format(strategy, request) {
             body["response_format"] = format;
         }
 
@@ -144,7 +149,7 @@ impl OpenAiCompatibleAdapter {
     ) -> Result<ComposeBatchOutput, ComposeError> {
         let prompt =
             build_compose_request_prompt(request).map_err(|_| ComposeError::Configuration)?;
-        let raw = self.request(&prompt, strategy).map_err(map_http)?;
+        let raw = self.request(&prompt, strategy, request).map_err(map_http)?;
         self.parse_response(&raw)
     }
 
@@ -169,10 +174,10 @@ impl QuestionComposer for OpenAiCompatibleAdapter {
             StructuredOutputMode::On => {
                 let prompt = build_compose_request_prompt(request)
                     .map_err(|_| ComposeError::Configuration)?;
-                match self.request(&prompt, StructuredStrategy::JsonSchema) {
+                match self.request(&prompt, StructuredStrategy::JsonSchema, request) {
                     Ok(raw) => self.parse_response(&raw),
                     Err(error) if unsupported_response_format(&error) => {
-                        match self.request(&prompt, StructuredStrategy::JsonObject) {
+                        match self.request(&prompt, StructuredStrategy::JsonObject, request) {
                             Ok(raw) => self.parse_response(&raw),
                             Err(error) => Err(map_http(error)),
                         }
@@ -184,7 +189,7 @@ impl QuestionComposer for OpenAiCompatibleAdapter {
                 let prompt = build_compose_request_prompt(request)
                     .map_err(|_| ComposeError::Configuration)?;
                 if let Some(strategy) = self.capability.strategy() {
-                    return match self.request(&prompt, strategy) {
+                    return match self.request(&prompt, strategy, request) {
                         Ok(raw) => self.parse_response(&raw),
                         Err(error) => Err(map_http(error)),
                     };
@@ -195,7 +200,7 @@ impl QuestionComposer for OpenAiCompatibleAdapter {
                     .lock()
                     .map_err(|_| ComposeError::Transport)?;
                 if let Some(strategy) = self.capability.strategy() {
-                    return match self.request(&prompt, strategy) {
+                    return match self.request(&prompt, strategy, request) {
                         Ok(raw) => self.parse_response(&raw),
                         Err(error) => Err(map_http(error)),
                     };
@@ -206,7 +211,7 @@ impl QuestionComposer for OpenAiCompatibleAdapter {
                     StructuredStrategy::JsonObject,
                     StructuredStrategy::PromptOnly,
                 ] {
-                    match self.request(&prompt, strategy) {
+                    match self.request(&prompt, strategy, request) {
                         Ok(raw) => {
                             let output = self.parse_response(&raw)?;
                             self.capability.mark(strategy);
@@ -293,7 +298,7 @@ fn map_http(error: HttpError) -> ComposeError {
     match error {
         HttpError::Configuration => ComposeError::Configuration,
         HttpError::Authentication { .. } => ComposeError::Authentication,
-        HttpError::RateLimited { .. } => ComposeError::RateLimited,
+        HttpError::RateLimited { kind, .. } => ComposeError::RateLimited { kind },
         HttpError::Timeout => ComposeError::Timeout,
         HttpError::Transport => ComposeError::Transport,
         HttpError::Api {

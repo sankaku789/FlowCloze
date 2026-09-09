@@ -181,7 +181,7 @@ flowcloze csv -o sample/sample.csv sample/generated.json
 
 ## Generation Settings
 
-FlowCloze 2.1 keeps user-level settings in the standard config directory:
+FlowCloze 2.2 keeps user-level settings in the standard config directory:
 
 ```text
 ~/.config/flowcloze/config.toml
@@ -213,10 +213,16 @@ rewrite = "always"
 fallback = "error"
 structured_output = "auto"
 batch = "auto"
+max_tasks_per_batch = 12
+max_input_tokens = 18000
+max_output_tokens = 6000
+max_blanks_per_batch = 24
 # typst_template = "/path/to/custom.typ"
 ```
 
 `typst_template` is only needed to replace the bundled default. If omitted, FlowCloze materializes the embedded template automatically. `flowcloze pdf --template ...` overrides it for one invocation.
+
+With `batch = "auto"`, FlowCloze evaluates each qblock independently by estimated input tokens, estimated output tokens, and blank count rather than by qblock number. Light qblocks are repacked into the same request, while a qblock that consumes a large share of any budget is sent alone. Final output is restored to source qblock order. A batch-level malformed response causes the next retry batch to shrink, while qblock-specific validation failures retry only the failed qblocks and preserve successful results.
 
 Main `generate` options:
 

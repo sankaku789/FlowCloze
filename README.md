@@ -181,7 +181,7 @@ flowcloze csv -o sample/sample.csv sample/generated.json
 
 ## 生成設定
 
-FlowCloze 2.1では、設定をユーザー単位の標準ディレクトリへ集約します。
+FlowCloze 2.2では、設定をユーザー単位の標準ディレクトリへ集約します。
 
 ```text
 ~/.config/flowcloze/config.toml
@@ -213,10 +213,16 @@ rewrite = "always"
 fallback = "error"
 structured_output = "auto"
 batch = "auto"
+max_tasks_per_batch = 12
+max_input_tokens = 18000
+max_output_tokens = 6000
+max_blanks_per_batch = 24
 # typst_template = "/path/to/custom.typ"
 ```
 
 `typst_template` は標準テンプレートを差し替えたい場合だけ指定します。未指定時は内蔵テンプレートを自動展開します。`flowcloze pdf --template ...` を指定した場合はCLI指定を優先します。
+
+`batch = "auto"` では、qblock番号ではなく各qblockの推定入力token・推定出力token・blank数を独立したbudgetとして評価します。軽いqblockは同じrequestへ再packingし、いずれかのbudgetを大きく消費するqblockは単独requestにします。最終出力は元のqblock順へ戻します。batch全体の出力が壊れた場合は次回batchを縮小し、qblock固有の検証失敗は成功済みqblockを保持したまま失敗分だけ再試行します。
 
 主な `generate` オプション:
 

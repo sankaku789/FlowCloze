@@ -375,6 +375,7 @@ pub fn generate_markdown_with_composer_observed_with_progress(
                     progress.emit(ProgressEvent::ProviderError {
                         class,
                         status: error.provider_status(),
+                        rate_limit: error.rate_limit_kind(),
                     });
                 }
                 progress.emit(ProgressEvent::Failed {
@@ -504,7 +505,7 @@ fn failure_class_for_terminal_cause(cause: crate::planner::TerminalCause) -> Fai
         crate::planner::TerminalCause::Content => FailureClass::Content,
         crate::planner::TerminalCause::Authentication => FailureClass::Authentication,
         crate::planner::TerminalCause::Configuration => FailureClass::Configuration,
-        crate::planner::TerminalCause::RateLimited => FailureClass::RateLimited,
+        crate::planner::TerminalCause::RateLimited { .. } => FailureClass::RateLimited,
         crate::planner::TerminalCause::Timeout => FailureClass::Timeout,
         crate::planner::TerminalCause::Transport => FailureClass::Transport,
         crate::planner::TerminalCause::Api { .. } => FailureClass::Api,

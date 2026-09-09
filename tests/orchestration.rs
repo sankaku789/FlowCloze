@@ -7,7 +7,7 @@ use flowcloze::{
 };
 use flowcloze::{
     BatchPolicy, ComposeExecutionPolicy, FailureClass, FallbackPolicy, ProgressEvent, ProgressSink,
-    ProgressStage, RetryResult,
+    ProgressStage, RateLimitKind, RetryCause, RetryResult,
 };
 
 #[test]
@@ -76,7 +76,12 @@ impl QuestionComposer for AlwaysError {
 #[test]
 fn progress_failure_class_preserves_terminal_provider_cause() {
     let cases = [
-        (ComposeError::RateLimited, FailureClass::RateLimited),
+        (
+            ComposeError::RateLimited {
+                kind: RateLimitKind::Unknown,
+            },
+            FailureClass::RateLimited,
+        ),
         (ComposeError::Timeout, FailureClass::Timeout),
         (ComposeError::Transport, FailureClass::Transport),
         (
@@ -326,6 +331,8 @@ fn transport_fallback_drafts_only_the_unresolved_batch() {
         batch_policy: BatchPolicy {
             max_tasks_per_batch: 2,
             max_estimated_input_tokens: 12_000,
+            max_estimated_output_tokens: 12_000,
+            max_blanks_per_batch: 64,
             max_retry_count: 0,
             max_concurrent_batches: 1,
         },
@@ -359,6 +366,8 @@ fn transport_fallback_drafts_unattempted_later_batches() {
         batch_policy: BatchPolicy {
             max_tasks_per_batch: 2,
             max_estimated_input_tokens: 12_000,
+            max_estimated_output_tokens: 12_000,
+            max_blanks_per_batch: 64,
             max_retry_count: 0,
             max_concurrent_batches: 1,
         },
@@ -425,6 +434,8 @@ fn terminal_transport_preserves_queued_content_failure_and_all_remaining_tasks()
         batch_policy: BatchPolicy {
             max_tasks_per_batch: 2,
             max_estimated_input_tokens: 12_000,
+            max_estimated_output_tokens: 12_000,
+            max_blanks_per_batch: 64,
             max_retry_count: 0,
             max_concurrent_batches: 1,
         },
@@ -477,6 +488,8 @@ fn later_transport_terminal_cause_overrides_prior_content_for_progress() {
         batch_policy: BatchPolicy {
             max_tasks_per_batch: 2,
             max_estimated_input_tokens: 12_000,
+            max_estimated_output_tokens: 12_000,
+            max_blanks_per_batch: 64,
             max_retry_count: 0,
             max_concurrent_batches: 1,
         },
@@ -772,6 +785,7 @@ fn progress_reports_content_retry_result() {
     assert!(progress.0.lock().unwrap().contains(&ProgressEvent::Retry {
         task_id: "qblock-001".to_string(),
         attempt: 1,
+        cause: RetryCause::MissingSentinel,
         result: RetryResult::Success,
     }));
 }

@@ -3,6 +3,7 @@ use std::sync::{LockResult, Mutex, MutexGuard};
 
 use serde_json::{json, Value};
 
+use crate::compose::ComposeBatchRequest;
 use crate::http::HttpError;
 
 const UNKNOWN: u8 = 0;
@@ -65,34 +66,47 @@ impl StructuredCapabilityProbe {
     }
 }
 
-pub(super) fn response_format(strategy: StructuredStrategy) -> Option<Value> {
+pub(super) fn response_format(
+    strategy: StructuredStrategy,
+    request: &ComposeBatchRequest,
+) -> Option<Value> {
     match strategy {
-        StructuredStrategy::JsonSchema => Some(json!({
-            "type": "json_schema",
-            "json_schema": {
-                "name": "flowcloze_compose",
-                "strict": true,
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "items": {
-                            "type": "array",
+        StructuredStrategy::JsonSchema => {
+            let expected_ids = request
+                .tasks
+                .iter()
+                .map(|task| task.id.clone())
+                .collect::<Vec<_>>();
+            let expected_items = request.tasks.len();
+            Some(json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "flowcloze_compose",
+                    "strict": true,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
                             "items": {
-                                "type": "object",
-                                "properties": {
-                                    "id": {"type": "string"},
-                                    "question": {"type": "string"}
-                                },
-                                "required": ["id", "question"],
-                                "additionalProperties": false
+                                "type": "array",
+                                "minItems": expected_items,
+                                "maxItems": expected_items,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string", "enum": expected_ids},
+                                        "question": {"type": "string"}
+                                    },
+                                    "required": ["id", "question"],
+                                    "additionalProperties": false
+                                }
                             }
-                        }
-                    },
-                    "required": ["items"],
-                    "additionalProperties": false
+                        },
+                        "required": ["items"],
+                        "additionalProperties": false
+                    }
                 }
-            }
-        })),
+            }))
+        }
         StructuredStrategy::JsonObject => Some(json!({"type": "json_object"})),
         StructuredStrategy::PromptOnly => None,
     }
@@ -121,4 +135,53 @@ pub(super) fn unsupported_response_format(error: &HttpError) -> bool {
         || lower.contains("invalid")
         || lower.contains("not available");
     mentions_format && rejects_format
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compose::{ComposeTask, WritingStyle};
+
+    fn request() -> ComposeBatchRequest {
+        ComposeBatchRequest {
+            schema_version: 1,
+            batch_id: "batch".into(),
+            tasks: vec![
+                ComposeTask {
+                    id: "q1".into(),
+                    source_text: "source".into(),
+                    scaffold_question: "＿＿＿".into(),
+                    answers: vec!["answer".into()],
+                    blank_token: "＿＿＿".into(),
+                    blank_tokens: vec!["＿＿＿".into()],
+                    blank_count: 1,
+                },
+                ComposeTask {
+                    id: "q2".into(),
+                    source_text: "source".into(),
+                    scaffold_question: "＿＿＿".into(),
+                    answers: vec!["answer".into()],
+                    blank_token: "＿＿＿".into(),
+                    blank_tokens: vec!["＿＿＿".into()],
+                    blank_count: 1,
+                },
+            ],
+            style: WritingStyle::PlainJapanese,
+            prompt_version: "test".into(),
+            extra_constraints: Vec::new(),
+            retry_feedback: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn json_schema_constrains_batch_shape() {
+        let format = response_format(StructuredStrategy::JsonSchema, &request()).unwrap();
+        let items = &format["json_schema"]["schema"]["properties"]["items"];
+        assert_eq!(items["minItems"], 2);
+        assert_eq!(items["maxItems"], 2);
+        assert_eq!(
+            items["items"]["properties"]["id"]["enum"],
+            json!(["q1", "q2"])
+        );
+    }
 }
