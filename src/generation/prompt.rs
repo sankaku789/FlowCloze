@@ -9,6 +9,22 @@ use crate::scaffold::ScaffoldDocument;
 use serde_json::json;
 
 const BUNDLED_COMPOSE_PROMPT: &str = include_str!("../../prompt.txt.example");
+const LEGACY_SIMPLE_COMPOSE_PROMPT: &str = r#"次の各taskのquestionを、意味を変えず自然な常体の日本語へ整えてください。
+
+最重要制約:
+- question内の <BLANK_0>, <BLANK_1>, ... は空欄placeholderである
+- placeholderは文字列を一切変更しない
+- placeholderを削除、追加、置換、並べ替えしない
+- placeholderの位置に語句を補完しない
+- taskのidを変更、追加、削除しない
+- questionにない新しい事実を追加しない
+- 空欄の答えを推測しない
+
+出力:
+- JSONのみ。Markdownコードフェンスは禁止
+- ルートキーは items
+- 各itemは id と question だけ
+"#;
 
 /// 旧generation経路用のプロンプト。
 /// compose経路とは独立しており、既存の中間JSON契約を維持する。
@@ -58,8 +74,14 @@ pub fn build_question_composer_prompt(
     Ok(prompt)
 }
 
+fn is_legacy_simple_prompt(prompt: &str) -> bool {
+    prompt.trim() == LEGACY_SIMPLE_COMPOSE_PROMPT.trim()
+}
+
 /// 現在のcompose経路で使うuser-editable promptを読む。
 /// ~/.config/flowcloze/prompt.txt が無ければ同梱の既定値を一度だけ作成する。
+/// 過去にFlowCloze自身が生成した旧最小promptだけは新しい既定値へ移行する。
+/// ユーザーが内容を編集したpromptは上書きしない。
 fn load_compose_prompt() -> Result<String, String> {
     let directory = crate::config::config_dir()?;
     fs::create_dir_all(&directory)
@@ -86,8 +108,15 @@ fn load_compose_prompt() -> Result<String, String> {
         }
     }
 
-    let prompt = fs::read_to_string(&path)
+    let mut prompt = fs::read_to_string(&path)
         .map_err(|error| format!("{}: {error}", path.display()))?;
+
+    if is_legacy_simple_prompt(&prompt) {
+        fs::write(&path, BUNDLED_COMPOSE_PROMPT)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        prompt = BUNDLED_COMPOSE_PROMPT.to_string();
+    }
+
     if prompt.trim().is_empty() {
         return Err(format!("{} is empty", path.display()));
     }
@@ -190,10 +219,20 @@ mod tests {
     }
 
     #[test]
-    fn bundled_prompt_is_the_simple_pre_reconstruction_prompt() {
-        assert!(BUNDLED_COMPOSE_PROMPT.contains("意味を変えず自然な常体"));
-        assert!(!BUNDLED_COMPOSE_PROMPT.contains("1〜3段落"));
-        assert!(!BUNDLED_COMPOSE_PROMPT.contains("実質的に再構成"));
+    fn bundled_prompt_uses_strong_reconstruction_rules_with_ascii_blanks() {
+        assert!(BUNDLED_COMPOSE_PROMPT.contains("実質的に再構成"));
+        assert!(BUNDLED_COMPOSE_PROMPT.contains("targetをblankへ単純置換しただけの出力にしない"));
+        assert!(BUNDLED_COMPOSE_PROMPT.contains("文の統合、分割、接続、説明順の変更"));
+        assert!(BUNDLED_COMPOSE_PROMPT.contains("<BLANK_0>"));
+        assert!(!BUNDLED_COMPOSE_PROMPT.contains("⟦FC_"));
+    }
+
+    #[test]
+    fn recognizes_only_the_old_managed_simple_prompt_for_migration() {
+        assert!(is_legacy_simple_prompt(LEGACY_SIMPLE_COMPOSE_PROMPT));
+        assert!(is_legacy_simple_prompt(&format!("\n{LEGACY_SIMPLE_COMPOSE_PROMPT}\n")));
+        assert!(!is_legacy_simple_prompt("CUSTOM PROMPT"));
+        assert!(!is_legacy_simple_prompt(BUNDLED_COMPOSE_PROMPT));
     }
 
     #[test]
