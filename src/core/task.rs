@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::orchestration::build_sentinel_scaffold;
+use crate::orchestration::build_blank_scaffold;
 use crate::parser::{MarkdownParseError, ParsedDocument};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -21,7 +21,7 @@ pub fn build_generation_tasks(
     markdown: &str,
     parsed: &ParsedDocument,
 ) -> Result<Vec<GenerationTask>, TaskBuildError> {
-    let (scaffold, leakage_baselines) = build_sentinel_scaffold(markdown, parsed)?;
+    let (scaffold, leakage_baselines) = build_blank_scaffold(markdown, parsed)?;
     Ok(scaffold
         .tasks
         .into_iter()
@@ -37,24 +37,23 @@ pub fn build_generation_tasks(
                 .iter()
                 .map(|target| Some(target.target_type.clone()))
                 .collect(),
-            blank_tokens: sentinel_tokens(&task.scaffold_question),
+            blank_tokens: blank_tokens(&task.scaffold_question),
             draft_question: task.scaffold_question,
             leakage_baseline: leakage_baselines.get(&task.id).cloned().unwrap_or_default(),
         })
         .collect())
 }
 
-fn sentinel_tokens(text: &str) -> Vec<String> {
+fn blank_tokens(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
-    let mut remaining = text;
-    while let Some(start) = remaining.find("⟦FC_") {
-        let candidate = &remaining[start..];
-        let Some(end) = candidate.find('⟧') else {
+    let mut index = 0usize;
+    loop {
+        let token = format!("<BLANK_{index}>");
+        if !text.contains(&token) {
             break;
-        };
-        let token_end = end + '⟧'.len_utf8();
-        tokens.push(candidate[..token_end].to_string());
-        remaining = &candidate[token_end..];
+        }
+        tokens.push(token);
+        index += 1;
     }
     tokens
 }
@@ -65,14 +64,14 @@ mod tests {
     use crate::parse_markdown_located;
 
     #[test]
-    fn generation_task_matches_legacy_scaffold() {
+    fn generation_task_uses_blank_placeholders() {
         let markdown = "# Memory\n\n#qblock{\n短期記憶は[ワーキングメモリ]{term-name}である。\n}";
         let parsed = parse_markdown_located(markdown).unwrap();
         let tasks = build_generation_tasks(markdown, &parsed).unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].section, "Memory");
         assert_eq!(tasks[0].answers, ["ワーキングメモリ"]);
-        assert_eq!(tasks[0].blank_tokens.len(), 1);
-        assert!(tasks[0].draft_question.contains(&tasks[0].blank_tokens[0]));
+        assert_eq!(tasks[0].blank_tokens, ["<BLANK_0>"]);
+        assert!(tasks[0].draft_question.contains("<BLANK_0>"));
     }
 }
