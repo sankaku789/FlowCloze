@@ -1,42 +1,44 @@
 //! FlowCloze CLIが使う解析・生成支援・検証・出力のコア機能．
 
 pub mod application;
-pub mod compose;
 pub mod config;
-pub mod csv;
-pub mod executor;
-#[cfg(feature = "gemini-native")]
-pub mod gemini;
-pub mod http;
-pub mod json;
-pub mod local_openai;
-pub mod models;
-pub mod observability;
-pub mod orchestration;
-pub mod parser;
-pub mod pdf;
-pub mod planner;
-pub mod progress;
-pub mod prompt;
+pub mod core;
+pub mod generation;
+pub mod output;
 pub mod providers;
-pub mod quota;
-pub mod rate_limit;
-pub mod scaffold;
-pub mod task;
-pub mod validation;
+pub mod runtime;
 
+pub use application::generate as orchestration;
+pub use config::quota;
+pub use core::composition as compose;
+pub use core::model as models;
+pub use core::parser;
+pub use core::scaffold;
+pub use core::task;
+pub use core::validation;
+pub use generation::executor;
+pub use generation::planner;
+pub use generation::prompt;
+pub use output::csv;
+pub use output::json;
+pub use output::pdf;
+pub use runtime::http;
+pub use runtime::observability;
+pub use runtime::progress;
+pub use runtime::rate_limit;
+
+pub use application::plan::{
+    plan_markdown, PlanBatchSummary, PlanIdentitySummary, PlanMarkdownOptions, PlanMarkdownOutcome,
+    PlanQBlockSummary,
+};
 pub use application::{GenerateUseCase, PlanUseCase};
 pub use compose::{
     parse_compose_output, ComposeBatchOutput, ComposeBatchRequest, ComposeError, ComposeMetadata,
     ComposeTask, ComposedItem, IdentityComposer, QuestionComposer, WritingStyle,
 };
-pub use config::{
-    BatchPolicyName, CliOverrides, FallbackPolicy, GenerationConfig, Provider, RewritePolicy,
-};
+pub use config::{BatchPolicyName, CliOverrides, FallbackPolicy, GenerationConfig};
 pub use csv::to_ankilot_csv;
 pub use executor::{ExecutionContext, ExecutionError, Executor};
-#[cfg(feature = "gemini-native")]
-pub use gemini::GeminiAdapter;
 pub use json::{to_intermediate_json, IntermediateDocument, IntermediateMeta, IntermediateQBlock};
 pub use models::{QBlock, Target, ALLOWED_TARGET_TYPES};
 pub use observability::{
@@ -46,9 +48,8 @@ pub use observability::{
 pub use orchestration::{
     generate_markdown_with_composer, generate_markdown_with_composer_observed,
     generate_markdown_with_composer_observed_with_progress,
-    generate_markdown_with_composer_with_progress, plan_markdown, GenerateMarkdownError,
-    GenerateMarkdownOptions, GenerateMarkdownOutcome, PlanBatchSummary, PlanIdentitySummary,
-    PlanMarkdownOptions, PlanMarkdownOutcome, PlanQBlockSummary,
+    generate_markdown_with_composer_with_progress, GenerateMarkdownError, GenerateMarkdownOptions,
+    GenerateMarkdownOutcome,
 };
 pub use parser::{
     parse_markdown, parse_markdown_located, parse_qblocks, MarkdownParseError, ParsedDocument,

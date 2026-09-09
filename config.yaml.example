@@ -1,0 +1,11 @@
+default_model: gemini-flash
+generation:
+  fallback: draft
+batch:
+  mode: auto
+  max_retries: 2
+quotas:
+  gemini-flash:
+    rpm: 5
+    tpm: 250000
+# typst_template: /path/to/custom.typ

@@ -3,13 +3,13 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use flowcloze::config::auth_store::AuthStore;
+use flowcloze::providers::model_registry::{ModelProfile, ModelRegistry};
 use flowcloze::{
-    ComposeBatchRequest, ComposeError, ComposeTask, OpenAiCompatibleAdapter, OpenAiCompatiblePool,
+    build_adapter, AuthRequirement, ComposeBatchRequest, ComposeError, ComposeTask,
+    OpenAiCompatibleAdapter, OpenAiCompatiblePool, ProviderCatalog, ProviderDefinition,
     QuestionComposer, StructuredOutputMode, WritingStyle,
 };
-
-#[cfg(feature = "gemini-native")]
-use flowcloze::GeminiAdapter;
 
 fn request() -> ComposeBatchRequest {
     ComposeBatchRequest {
@@ -54,16 +54,8 @@ fn mock(responses: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<usize>>) {
     (format!("http://{address}"), calls)
 }
 
-#[cfg(feature = "gemini-native")]
 #[test]
-fn both_adapters_use_the_common_fence_parser() {
-    let gemini_body = r#"{"candidates":[{"content":{"parts":[{"text":"```json\n{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}\n```"}]}}]}"#;
-    let (url, _) = mock(vec![(200, gemini_body)]);
-    let gemini = GeminiAdapter::new("key", "model")
-        .with_base_url(url)
-        .with_structured_output(StructuredOutputMode::Off);
-    assert_eq!(gemini.compose(&request()).unwrap().items[0].id, "q1");
-
+fn openai_adapter_uses_the_common_fence_parser() {
     let openai_body = r#"{"choices":[{"message":{"content":"```json\n{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}\n```"}}]}"#;
     let (url, _) = mock(vec![(200, openai_body)]);
     let openai = OpenAiCompatibleAdapter::new(url, "model", None)
@@ -71,22 +63,39 @@ fn both_adapters_use_the_common_fence_parser() {
     assert_eq!(openai.compose(&request()).unwrap().items[0].id, "q1");
 }
 
-#[cfg(feature = "gemini-native")]
 #[test]
-fn auto_downgrades_only_once_and_caches_gemini_schema_rejection() {
-    let body = r#"{"candidates":[{"content":{"parts":[{"text":"{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}]}}]}"#;
-    let (url, calls) = mock(vec![
-        (
-            400,
-            r#"{"error":{"status":"INVALID_ARGUMENT","message":"responseJsonSchema unsupported"}}"#,
-        ),
-        (200, body),
-        (200, body),
-    ]);
-    let adapter = GeminiAdapter::new("key", "model").with_base_url(url);
-    adapter.compose(&request()).unwrap();
-    adapter.compose(&request()).unwrap();
-    assert_eq!(*calls.lock().unwrap(), 3);
+fn google_catalog_and_factory_use_the_openai_compatible_contract() {
+    let body = r#"{"choices":[{"message":{"content":"{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}}]}"#;
+    let (url, _) = mock(vec![(200, body)]);
+    let mut providers = ProviderCatalog::default();
+    providers
+        .register(ProviderDefinition {
+            id: "google".into(),
+            base_url: url,
+            auth: AuthRequirement::ApiKey,
+        })
+        .unwrap();
+    let mut models = ModelRegistry::default();
+    models
+        .register(ModelProfile {
+            name: "google-test".into(),
+            provider: "google".into(),
+            model: "gemini-test".into(),
+        })
+        .unwrap();
+    let model = models.resolve("google-test", &providers).unwrap();
+    let mut auth = AuthStore::default();
+    auth.set_api_key("google", "key").unwrap();
+
+    let output = build_adapter(&model, &auth)
+        .unwrap()
+        .with_structured_output(StructuredOutputMode::Off)
+        .compose(&request())
+        .unwrap();
+
+    assert_eq!(output.items[0].id, "q1");
+    assert_eq!(output.metadata.provider, "google");
+    assert_eq!(output.metadata.model, "gemini-test");
 }
 
 #[test]

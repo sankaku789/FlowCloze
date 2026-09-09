@@ -1,21 +1,10 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::providers::builtins::{builtin_models, builtin_providers, DEFAULT_MODEL};
-use crate::providers::catalog::{ProviderCatalog, ProviderDefinition};
-use crate::providers::model_registry::{ModelProfile, ModelRegistry};
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ModelFile {
-    #[serde(default)]
-    providers: HashMap<String, ProviderDefinition>,
-    #[serde(default)]
-    models: HashMap<String, ModelProfile>,
-}
+use crate::providers::builtins::DEFAULT_MODEL;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,11 +12,12 @@ pub struct AppConfig {
     #[serde(default = "default_model")]
     pub default_model: String,
     #[serde(default)]
-    pub quotas: HashMap<String, QuotaSettings>,
+    pub quotas: BTreeMap<String, QuotaSettings>,
     #[serde(default)]
     pub generation: GenerationSettings,
     #[serde(default)]
     pub batch: BatchSettings,
+    pub typst_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -57,9 +47,10 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             default_model: default_model(),
-            quotas: HashMap::new(),
+            quotas: BTreeMap::new(),
             generation: GenerationSettings::default(),
             batch: BatchSettings::default(),
+            typst_template: None,
         }
     }
 }
@@ -81,26 +72,23 @@ impl Default for BatchSettings {
     }
 }
 
-pub fn load_catalogs(path: &Path) -> Result<(ProviderCatalog, ModelRegistry), String> {
-    let mut providers = builtin_providers();
-    let mut models = builtin_models();
-    if !path.exists() {
-        return Ok((providers, models));
+impl QuotaSettings {
+    pub fn resolve(&self, name: &str) -> Result<crate::quota::QuotaProfile, String> {
+        if self.rpm == Some(0) || self.tpm == Some(0) {
+            return Err(format!("quota '{name}' rpm/tpm must be greater than zero"));
+        }
+        Ok(crate::quota::QuotaProfile {
+            name: name.to_string(),
+            rpm: self.rpm,
+            tpm: self.tpm.map(u64::from),
+            rpd: None,
+            reserve_requests: 0,
+            adaptive_max_tasks_per_batch: None,
+            adaptive_max_input_tokens: None,
+            adaptive_max_output_tokens: None,
+            adaptive_max_blanks_per_batch: None,
+        })
     }
-    let file: ModelFile =
-        serde_yaml::from_str(&fs::read_to_string(path).map_err(|error| error.to_string())?)
-            .map_err(|error| format!("invalid model.yaml: {error}"))?;
-    for (id, mut provider) in file.providers {
-        provider.id = id;
-        providers
-            .upsert(provider)
-            .map_err(|error| error.to_string())?;
-    }
-    for (name, mut model) in file.models {
-        model.name = name;
-        models.upsert(model).map_err(|error| error.to_string())?;
-    }
-    Ok((providers, models))
 }
 
 pub fn load_app_config(path: &Path) -> Result<AppConfig, String> {
@@ -129,25 +117,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn model_yaml_extends_builtin_catalog() {
-        let directory = std::env::temp_dir().join(format!(
-            "flowcloze-model-yaml-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+    fn config_rejects_unknown_fields_and_resolves_quota() {
+        let directory =
+            std::env::temp_dir().join(format!("flowcloze-config-yaml-{}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("model.yaml");
-        fs::write(
-            &path,
-            "models:\n  local-qwen:\n    provider: ollama\n    model: qwen3:14b\n",
-        )
-        .unwrap();
-        let (providers, models) = load_catalogs(&path).unwrap();
-        assert!(models.resolve("gemini-flash", &providers).is_ok());
-        assert_eq!(
-            models.resolve("local-qwen", &providers).unwrap().model,
-            "qwen3:14b"
-        );
+        let path = directory.join("config.yaml");
+        fs::write(&path, "unknown: true\n").unwrap();
+        assert!(load_app_config(&path).is_err());
+        fs::write(&path, "default_model: gemini-flash\nquotas:\n  gemini-flash:\n    rpm: 5\n    tpm: 250000\nbatch:\n  max_retries: 4\n").unwrap();
+        let config = load_app_config(&path).unwrap();
+        let quota = config.quotas["gemini-flash"]
+            .resolve("gemini-flash")
+            .unwrap();
+        assert_eq!(quota.rpm, Some(5));
+        assert_eq!(quota.tpm, Some(250_000));
+        assert_eq!(config.batch.max_retries, 4);
         fs::remove_dir_all(directory).unwrap();
     }
 }

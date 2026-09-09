@@ -2,10 +2,9 @@
 
 [日本語](README.md) | English
 
-FlowCloze is a Rust CLI that generates context-cloze questions from study notes written in Markdown.
-Wrap a question range with `#qblock{ ... }`, and mark answer targets with `[answer]` or `[answer]{type}`.
+FlowCloze is a Rust CLI that generates context-cloze questions from study notes written in Markdown. Wrap a question range in `#qblock{ ... }` and mark answer targets with `[answer]` or `[answer]{type}`.
 
-It supports Gemini, OpenAI-compatible local LLMs such as Ollama / LM Studio, and offline Identity generation without calling an LLM. The same CLI also validates generated output and exports it to TUI, PDF, and CSV formats.
+It supports Google Gemini, OpenAI-compatible APIs such as Ollama, and offline Identity generation without calling an LLM. The same CLI validates generated output and exports it to TUI, PDF, and CSV formats.
 
 ![FlowCloze TUI](fig/image.png)
 
@@ -13,10 +12,10 @@ It supports Gemini, OpenAI-compatible local LLMs such as Ollama / LM Studio, and
 
 - Extract `qblock` ranges and targets from Markdown
 - Emit intermediate JSON
-- Generate questions with Gemini or an OpenAI-compatible local LLM
-- Run offline Identity generation with `--rewrite never`
+- Generate questions through OpenAI-compatible APIs
+- Run offline Identity generation with `--offline`
 - Validate targets, answers, blanks, IDs, and ordering
-- Inspect generated questions in a TUI
+- Inspect generated questions in the TUI
 - Export PDF through Typst
 - Export Ankilot-compatible CSV
 
@@ -24,7 +23,7 @@ It supports Gemini, OpenAI-compatible local LLMs such as Ollama / LM Studio, and
 Markdown
   -> parse
   -> intermediate JSON
-  -> compose / rewrite
+  -> compose
   -> validate
   -> JSON
   -> TUI / PDF / CSV
@@ -38,10 +37,10 @@ Core:
 
 Depending on the features you use:
 
-- Gemini API key: for Gemini rewrite generation
-- Ollama or LM Studio: for local LLM generation
-- Typst CLI: for PDF output
-- Japanese fonts: for Japanese text in PDF output
+- Google API key: Gemini generation
+- Ollama: local LLM generation
+- Typst CLI: PDF output
+- Japanese fonts: Japanese text in PDF output
 
 On Ubuntu / WSL, Noto CJK fonts are recommended for PDF output:
 
@@ -74,7 +73,7 @@ flowcloze --version
 
 The standard Typst template is embedded in the binary. When PDF output is used for the first time, FlowCloze materializes it at `~/.config/flowcloze/templates/cloze.typ` (or under `XDG_CONFIG_HOME`). Installation therefore does not depend on an OS- or shell-specific installer script.
 
-The binary is usually installed to `~/.cargo/bin/flowcloze`.
+The binary is usually installed at `~/.cargo/bin/flowcloze`.
 
 For a temporary run without installing, use `cargo run -- ...`.
 
@@ -115,35 +114,29 @@ flowcloze --json -o sample/sample.json sample/sample.md
 
 ### Generate Questions
 
-With Gemini:
+Use the built-in `gemini-flash` model profile:
 
 ```bash
-flowcloze generate --provider gemini \
+flowcloze auth add google
+flowcloze generate --model gemini-flash \
   -o sample/generated.json sample/sample.md
 ```
 
-To use Gemini 3.8 Flash:
+`gemini-flash` connects to Google's `gemini-2.5-flash`. Every provider, including Google, is called through the OpenAI-compatible adapter.
+
+Generate without calling an LLM:
 
 ```bash
-flowcloze generate --provider gemini \
-  --model gemini-3.8-flash \
+flowcloze generate --offline \
   -o sample/generated.json sample/sample.md
 ```
 
-For Gemini 3 models, FlowCloze omits deprecated sampling parameters.
-
-Without calling an LLM:
+Use Ollama:
 
 ```bash
-flowcloze generate --rewrite never \
-  -o sample/generated.json sample/sample.md
-```
-
-With a local LLM:
-
-```bash
-flowcloze local check
-flowcloze generate --provider local \
+flowcloze model add local-qwen --provider ollama --model qwen3:14b
+flowcloze provider check ollama
+flowcloze generate --model local-qwen \
   -o sample/generated.json sample/sample.md
 ```
 
@@ -166,6 +159,7 @@ flowcloze pdf -o sample/sample.pdf sample/generated.json
 ```
 
 The standard template is embedded in the binary and materialized at `~/.config/flowcloze/templates/cloze.typ` when PDF output is used. A configured `typst_template` overrides it.
+
 For a one-off override, use:
 
 ```bash
@@ -179,72 +173,83 @@ flowcloze pdf --template path/to/template.typ \
 flowcloze csv -o sample/sample.csv sample/generated.json
 ```
 
-## Inspect the batch plan before API calls
+## Inspect the Batch Plan Before API Calls
 
-`plan` does not connect to the provider API. It shows the qblock grouping produced by the same planner used by `generate`.
+`plan` does not connect to a provider API. It shows qblock grouping produced by the same planner used by `generate`.
 
 ```bash
-flowcloze plan sample/sample.md
+flowcloze plan --model gemini-flash sample/sample.md
 ```
 
-The output includes qblock positions, estimated input/output size, blank counts, and heavy singleton qblocks. With `rewrite=auto`, qblocks that do not use the API are listed separately as `identity (no API)`.
+The output includes qblock positions, estimated input/output sizes, blank counts, and heavy singleton qblocks.
+
+To inspect a plan in which no qblocks are sent to an API, use:
+
+```bash
+flowcloze plan --offline sample/sample.md
+```
+
+In this mode, every qblock is listed as `identity (no API)` and no provider is initialized.
 
 ## Generation Settings
 
-FlowCloze 2.2 keeps user-level settings in the standard config directory:
+FlowCloze keeps user-level settings in the standard config directory:
 
 ```text
-~/.config/flowcloze/config.toml
-~/.config/flowcloze/credentials.toml
+~/.config/flowcloze/
+  config.yaml
+  model.yaml
+  auth.yaml
+  templates/cloze.typ
 ```
 
-If `config.toml` is missing, FlowCloze creates it from the bundled default configuration on first use. Running `flowcloze api set` first also creates the config. Existing `config.toml` files are never overwritten.
-
-When `XDG_CONFIG_HOME` is set, FlowCloze uses `$XDG_CONFIG_HOME/flowcloze/`. For development, you can isolate settings like this:
+When `XDG_CONFIG_HOME` is set, FlowCloze uses `$XDG_CONFIG_HOME/flowcloze/`. During development, settings can be isolated like this:
 
 ```bash
 export XDG_CONFIG_HOME="$PWD/.dev-config"
 ```
 
-The bundled Typst template is materialized automatically when PDF output is used, so no extra template-install step is required.
+File responsibilities:
 
-Store API keys in the dedicated `credentials.toml`, not in `config.toml`. `flowcloze api set` interactively selects the provider and reads the API key without echoing it:
+- `config.yaml`: default model, generation, batch, quota, and Typst template settings
+- `model.yaml`: provider catalog and model profiles
+- `auth.yaml`: API keys only
+
+Enter the Google API key without echoing it:
 
 ```bash
-flowcloze api set
+flowcloze auth add google
 ```
 
-On Unix-like systems, FlowCloze creates `credentials.toml` with mode `0600` and the config directory with mode `0700`.
+API keys are stored only in `auth.yaml`. On Unix-like systems, FlowCloze handles the config directory and `auth.yaml` with modes `0700` and `0600`, respectively. Ollama requires no authentication entry.
 
-Example `config.toml`:
+Example `config.yaml`:
 
-```toml
-provider = "gemini"
-model = "gemini-2.5-flash"
-rewrite = "always"
-fallback = "error"
-structured_output = "auto"
-batch = "auto"
-max_tasks_per_batch = 12
-max_input_tokens = 18000
-max_output_tokens = 6000
-max_blanks_per_batch = 24
-# typst_template = "/path/to/custom.typ"
+```yaml
+default_model: gemini-flash
+generation:
+  fallback: draft
+batch:
+  mode: auto
+  max_retries: 2
+quotas:
+  gemini-flash:
+    rpm: 5
+    tpm: 250000
+# typst_template: /path/to/custom.typ
 ```
 
-`typst_template` is only needed to replace the bundled default. If omitted, FlowCloze materializes the embedded template automatically. `flowcloze pdf --template ...` overrides it for one invocation.
+Set `typst_template` only to replace the bundled default. When omitted, FlowCloze materializes the embedded template automatically. `flowcloze pdf --template ...` takes precedence for one invocation.
 
-With `batch = "auto"`, FlowCloze evaluates each qblock independently by estimated input tokens, estimated output tokens, and blank count rather than by qblock number. Light qblocks are repacked into the same request, while a qblock that consumes a large share of any budget is sent alone. Final output is restored to source qblock order. A batch-level malformed response causes the next retry batch to shrink, while qblock-specific validation failures retry only the failed qblocks and preserve successful results.
+With `batch.mode: auto`, FlowCloze evaluates each qblock independently by estimated input tokens, estimated output tokens, and blank count rather than by qblock number. Light qblocks are repacked into the same request, while a qblock that consumes a large share of any budget is sent alone. Final output is restored to source qblock order. A malformed batch response causes the next retry batch to shrink, while qblock-specific validation failures retry only failed qblocks and preserve successful results.
 
 Main `generate` options:
 
 ```text
---provider gemini|local
---model <model>
---rewrite always|never|auto
+--model <profile>
 --fallback error|draft
---structured-output auto|on|off
 --batch auto|small|one-task
+--offline
 --verbose
 -s, --skip-constraints
 ```
@@ -253,49 +258,62 @@ Example:
 
 ```bash
 flowcloze generate \
-  --provider gemini \
-  --model gemini-2.5-flash \
-  --rewrite auto \
+  --model gemini-flash \
   --fallback draft \
-  --structured-output auto \
+  --batch auto \
   --verbose \
   -o sample/generated.json \
   sample/sample.md
 ```
 
-`rewrite`:
-
-- `always`: rewrite through the selected provider
-- `never`: use Identity generation without calling a provider
-- `auto`: choose whether rewriting is needed from the input
-
 `fallback`:
 
 - `error`: return the failure as an error
-- `draft`: fall back failed transport/content-validation tasks to Identity drafts
+- `draft`: fall back failed transport or content-validation tasks to Identity drafts
 
-Settings resolve in this order: **CLI > `~/.config/flowcloze/config.toml` > built-in defaults**.
-FlowCloze no longer automatically reads `.env`, a current-directory `config.toml`, or the legacy configuration environment variables.
+`--offline` generates every task with Identity without calling a provider.
 
-## Local LLM
+Settings resolve in this order: **CLI override > `~/.config/flowcloze/config.yaml` > built-in defaults**. Unknown fields are configuration errors.
 
-FlowCloze can use an OpenAI-compatible server from Ollama or LM Studio.
+FlowCloze does not automatically read `.env`, configuration files in the current directory, or legacy configuration environment variables.
 
-By default, it tries Ollama (`http://localhost:11434/v1`) first and then LM Studio (`http://localhost:1234/v1`) if Ollama is unavailable.
-Set `FLOWCLOZE_BASE_URL` to choose the endpoint explicitly.
+## Providers and Models
 
-The default local model is `gemma4:e2b-it-qat`.
+Built-in definitions:
+
+- provider `google`: `https://generativelanguage.googleapis.com/v1beta/openai`, API key required
+- provider `ollama`: `http://localhost:11434/v1`, no authentication
+- model profile `gemini-flash`: provider `google`, model `gemini-2.5-flash`
+
+List available model profiles:
+
+```bash
+flowcloze model list
+```
+
+Add or replace an Ollama model profile:
+
+```bash
+flowcloze model add local-qwen --provider ollama --model qwen3:14b
+```
+
+`model add` modifies only the model profile in `model.yaml`. It does not store provider URLs or API keys in the model.
+
+Check provider reachability:
+
+```bash
+flowcloze provider check google
+flowcloze provider check ollama
+```
 
 With Ollama:
 
 ```bash
-ollama pull gemma4:e2b-it-qat
-flowcloze local check
+ollama pull qwen3:14b
+flowcloze provider check ollama
 ```
 
-With LM Studio, load the same model, start Local Server, and then run `flowcloze local check`.
-
-## Inspect the Scaffold
+## Inspect Scaffold
 
 Inspect the scaffold JSON sent to the LLM:
 
@@ -314,7 +332,7 @@ flowcloze inspect-scaffold \
 
 `generate` writes parse, batch, validation, and save progress to stderr.
 
-With `--verbose` or `FLOWCLOZE_LOG=debug`, it also emits observability JSON Lines to stderr. Markdown bodies, prompts, provider responses, and credentials are not included in the logs.
+With `--verbose` or `FLOWCLOZE_LOG=debug`, it also emits observability JSON Lines to stderr. Markdown bodies, prompts, provider responses, and credentials are not included in logs.
 
 ## Development
 
@@ -324,16 +342,11 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Also check the Gemini native adapter:
-
-```bash
-cargo clippy --all-targets --features gemini-native -- -D warnings
-cargo test --features gemini-native
-```
+Google and Ollama use the same OpenAI-compatible adapter, so no separate Gemini-native feature check is required.
 
 ## Editor Support
 
-`editors/vscode-flowcloze-syntax` contains a small VS Code extension for highlighting `#qblock`, `[answer]`, and `[answer]{type}`.
+`editors/vscode-flowcloze-syntax` contains a small VS Code extension that highlights `#qblock`, `[answer]`, and `[answer]{type}`.
 
 VS Code on WSL:
 
@@ -356,25 +369,20 @@ Then run `Developer: Reload Window` in VS Code.
 ## Repository Layout
 
 ```text
-src/parser.rs          Markdown parser
-src/json.rs            intermediate JSON
-src/planner.rs         generation planning
-src/compose.rs         question composition core
-src/orchestration.rs   generation orchestration
-src/config.rs          configuration resolution
-src/gemini.rs          Gemini adapter
-src/local_openai.rs    local OpenAI-compatible adapter
-src/validation.rs      generated JSON validation
-src/observability.rs   structured events / logging
-src/csv.rs             Ankilot CSV export
-src/pdf.rs             Typst PDF adapter
-src/main.rs            CLI entry point
-templates/             Typst templates
-sample/                sample inputs / outputs
-editors/               editor support
-tests/                 integration tests
+src/application/   use case orchestration
+src/cli/           CLI parsing and commands
+src/config/        YAML configuration and authentication
+src/core/          parser, model, and validation core
+src/generation/    planning and question generation
+src/output/        JSON, TUI, CSV, and PDF output
+src/providers/     provider catalog and OpenAI-compatible adapter
+src/runtime/       progress and observability
+templates/         Typst templates
+sample/            sample inputs / outputs
+editors/           editor support
+tests/             integration tests
 ```
 
 ## License
 
-Licensed under either Apache License, Version 2.0 or the MIT License, at your option.
+Licensed under either Apache License, Version 2.0 or MIT License, at your option.

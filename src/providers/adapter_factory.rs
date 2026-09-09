@@ -20,3 +20,24 @@ pub fn build_adapter(
     }
     Ok(OpenAiCompatibleAdapter::from_endpoint(endpoint))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::builtins::{builtin_models, builtin_providers};
+
+    #[test]
+    fn ollama_requires_no_auth_entry() {
+        let providers = builtin_providers();
+        let mut models = builtin_models();
+        models
+            .upsert(crate::providers::model_registry::ModelProfile {
+                name: "local".into(),
+                provider: "ollama".into(),
+                model: "qwen3".into(),
+            })
+            .unwrap();
+        let model = models.resolve("local", &providers).unwrap();
+        assert!(build_adapter(&model, &AuthStore::default()).is_ok());
+    }
+}

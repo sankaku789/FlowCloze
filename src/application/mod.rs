@@ -1,8 +1,13 @@
+pub mod generate;
+pub mod plan;
+pub mod validate;
+
 use crate::compose::QuestionComposer;
-use crate::orchestration::{
-    generate_markdown_with_composer, plan_markdown, GenerateMarkdownError, GenerateMarkdownOptions,
-    GenerateMarkdownOutcome, PlanMarkdownOptions, PlanMarkdownOutcome,
+use generate::{
+    generate_markdown_with_composer, GenerateMarkdownError, GenerateMarkdownOptions,
+    GenerateMarkdownOutcome,
 };
+use plan::{plan_markdown, PlanMarkdownOptions, PlanMarkdownOutcome};
 
 pub struct GenerateUseCase<'a> {
     composer: &'a dyn QuestionComposer,
@@ -38,14 +43,13 @@ impl PlanUseCase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IdentityComposer, RewritePolicy};
+    use crate::IdentityComposer;
 
     const MARKDOWN: &str = "#qblock{\n[答え]{term-name}を説明する。\n}";
 
     #[test]
     fn generate_use_case_offline() {
-        let mut options = GenerateMarkdownOptions::new("inline.md");
-        options.rewrite = RewritePolicy::Never;
+        let options = GenerateMarkdownOptions::new("inline.md");
         let outcome = GenerateUseCase::new(&IdentityComposer)
             .execute(MARKDOWN, options)
             .unwrap();

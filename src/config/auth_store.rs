@@ -172,4 +172,13 @@ mod tests {
         }
         fs::remove_dir_all(directory).unwrap();
     }
+
+    #[test]
+    fn auth_yaml_rejects_unknown_fields_and_reports_missing_keys() {
+        assert!(serde_yaml::from_str::<AuthStore>("unknown: true\n").is_err());
+        assert!(matches!(
+            AuthStore::default().require_api_key("google"),
+            Err(AuthError::Missing { .. })
+        ));
+    }
 }

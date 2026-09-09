@@ -820,9 +820,8 @@ fn draft_fallback_does_not_report_identity_compose_as_an_initial_batch() {
 }
 
 #[test]
-fn auto_mode_uses_one_global_initial_batch_sequence() {
+fn all_tasks_use_one_global_initial_batch_sequence() {
     let mut options = GenerateMarkdownOptions::new("inline.md");
-    options.rewrite = flowcloze::RewritePolicy::Auto;
     options.policy.batch_policy.max_tasks_per_batch = 1;
     let progress = RecordingProgressSink::default();
 

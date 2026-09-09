@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use crate::compose::{IdentityComposer, QuestionComposer};
-use crate::config::{FallbackPolicy, RewritePolicy};
+use crate::config::FallbackPolicy;
 use crate::json::IntermediateDocument;
 use crate::observability::{ComposeEvent, ComposeEventKind, EventSink, NoopEventSink, RunContext};
 use crate::parser::{parse_markdown_located, MarkdownParseError, ParsedDocument};
@@ -19,7 +19,6 @@ use crate::validation::GeneratedDocument;
 pub struct GenerateMarkdownOptions {
     pub source: String,
     pub policy: ComposeExecutionPolicy,
-    pub rewrite: RewritePolicy,
     pub fallback: FallbackPolicy,
     /// provider quotaに応じて初回batchと送信速度を調整する。
     pub quota: Option<QuotaProfile>,
@@ -32,7 +31,6 @@ impl GenerateMarkdownOptions {
         Self {
             source: source.into(),
             policy: ComposeExecutionPolicy::default(),
-            rewrite: RewritePolicy::Always,
             fallback: FallbackPolicy::Error,
             quota: None,
             extra_constraints: Vec::new(),
@@ -58,118 +56,6 @@ pub enum FallbackReason {
     Transport,
     Content,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RewriteReason {
-    List,
-    Multiline,
-    NoTerminal,
-    Short,
-}
-
-/// APIへ接続せず、Markdownから実際の初回batch計画だけを作る設定。
-#[derive(Debug, Clone)]
-pub struct PlanMarkdownOptions {
-    pub policy: ComposeExecutionPolicy,
-    pub rewrite: RewritePolicy,
-    pub quota: Option<QuotaProfile>,
-}
-
-impl Default for PlanMarkdownOptions {
-    fn default() -> Self {
-        Self {
-            policy: ComposeExecutionPolicy::default(),
-            rewrite: RewritePolicy::Always,
-            quota: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlanQBlockSummary {
-    /// Markdown中の1始まりqblock番号。
-    pub position: usize,
-    pub id: String,
-    pub input_tokens: usize,
-    pub expected_output_tokens: usize,
-    pub blanks: usize,
-    pub isolated_heavy: bool,
-    pub oversized: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlanBatchSummary {
-    pub number: usize,
-    pub qblocks: Vec<PlanQBlockSummary>,
-    pub input_tokens: usize,
-    pub expected_output_tokens: usize,
-    pub blanks: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlanIdentitySummary {
-    pub position: usize,
-    pub id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlanMarkdownOutcome {
-    pub total_qblocks: usize,
-    pub provider_qblocks: usize,
-    pub provider_batches: Vec<PlanBatchSummary>,
-    pub identity_qblocks: Vec<PlanIdentitySummary>,
-    pub identity_batches: usize,
-    pub effective_policy: crate::planner::BatchPolicy,
-}
-
-/// task本文だけから自然化の必要性を決める。理由の順序は表示・テストで安定させる。
-pub fn auto_rewrite_reasons(source: &str) -> Vec<RewriteReason> {
-    let trimmed = source.trim();
-    let mut reasons = Vec::new();
-    if trimmed.lines().any(|line| {
-        let line = line.trim_start();
-        line.starts_with("- ")
-            || line.starts_with("* ")
-            || line.starts_with("+ ")
-            || line
-                .as_bytes()
-                .iter()
-                .position(|b| !b.is_ascii_digit())
-                .is_some_and(|n| n > 0 && line[n..].starts_with(". "))
-    }) {
-        reasons.push(RewriteReason::List);
-    }
-    if trimmed
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count()
-        >= 2
-    {
-        reasons.push(RewriteReason::Multiline);
-    }
-    if !trimmed.is_empty() && !trimmed.ends_with(['。', '.', '!', '?', '！', '？']) {
-        reasons.push(RewriteReason::NoTerminal);
-    }
-    if trimmed.chars().filter(|ch| !ch.is_whitespace()).count() < 40 {
-        reasons.push(RewriteReason::Short);
-    }
-    reasons
-}
-
-fn rewrite_indexes_for(scaffold: &ScaffoldDocument, rewrite: RewritePolicy) -> Vec<usize> {
-    scaffold
-        .tasks
-        .iter()
-        .enumerate()
-        .filter_map(|(index, task)| match rewrite {
-            RewritePolicy::Always => Some(index),
-            RewritePolicy::Never => None,
-            RewritePolicy::Auto => {
-                (!auto_rewrite_reasons(&task.source_text).is_empty()).then_some(index)
-            }
-        })
-        .collect()
-}
-
 /// located生成経路で起きる、provider呼び出し前後の失敗。
 #[derive(Debug)]
 pub enum GenerateMarkdownError {
@@ -187,83 +73,6 @@ impl std::fmt::Display for GenerateMarkdownError {
 }
 
 impl std::error::Error for GenerateMarkdownError {}
-
-/// APIへ接続せず、生成時と同じscaffold・rewrite判定・quota-aware plannerで初回計画を返す。
-pub fn plan_markdown(
-    markdown: &str,
-    options: PlanMarkdownOptions,
-) -> Result<PlanMarkdownOutcome, GenerateMarkdownError> {
-    let parsed = parse_markdown_located(markdown).map_err(GenerateMarkdownError::Markdown)?;
-    let (scaffold, _) =
-        build_sentinel_scaffold(markdown, &parsed).map_err(GenerateMarkdownError::Markdown)?;
-    let rewrite_indexes = rewrite_indexes_for(&scaffold, options.rewrite);
-    let identity_indexes = (0..scaffold.tasks.len())
-        .filter(|index| !rewrite_indexes.contains(index))
-        .collect::<Vec<_>>();
-
-    // Identity側もgenerateと同じpolicy検証を通すが、API request数には含めない。
-    let identity_plan = prepare_selected_plan(&scaffold, &identity_indexes, options.policy, None)
-        .map_err(GenerateMarkdownError::Compose)?;
-    let provider_plan = prepare_selected_plan(
-        &scaffold,
-        &rewrite_indexes,
-        options.policy,
-        options.quota.as_ref(),
-    )
-    .map_err(GenerateMarkdownError::Compose)?;
-
-    let selected_scaffold = ScaffoldDocument {
-        tasks: rewrite_indexes
-            .iter()
-            .map(|index| scaffold.tasks[*index].clone())
-            .collect(),
-    };
-    let summary = provider_plan.summary(&selected_scaffold);
-    let effective_policy = summary.effective_policy;
-    let provider_batches = summary
-        .batches
-        .into_iter()
-        .enumerate()
-        .map(|(batch_index, batch)| PlanBatchSummary {
-            number: batch_index + 1,
-            qblocks: batch
-                .qblocks
-                .into_iter()
-                .map(|qblock| {
-                    let original_index = rewrite_indexes[qblock.index];
-                    PlanQBlockSummary {
-                        position: original_index + 1,
-                        id: qblock.id,
-                        input_tokens: qblock.input_tokens,
-                        expected_output_tokens: qblock.expected_output_tokens,
-                        blanks: qblock.blanks,
-                        isolated_heavy: qblock.isolated_heavy,
-                        oversized: qblock.oversized,
-                    }
-                })
-                .collect(),
-            input_tokens: batch.input_tokens,
-            expected_output_tokens: batch.expected_output_tokens,
-            blanks: batch.blanks,
-        })
-        .collect();
-    let identity_qblocks = identity_indexes
-        .iter()
-        .map(|index| PlanIdentitySummary {
-            position: index + 1,
-            id: scaffold.tasks[*index].id.clone(),
-        })
-        .collect();
-
-    Ok(PlanMarkdownOutcome {
-        total_qblocks: scaffold.tasks.len(),
-        provider_qblocks: rewrite_indexes.len(),
-        provider_batches,
-        identity_qblocks,
-        identity_batches: identity_plan.batch_count(),
-        effective_policy,
-    })
-}
 
 /// 位置情報を使った安全な標準生成経路。
 pub fn generate_markdown_with_composer(
@@ -345,47 +154,10 @@ pub fn generate_markdown_with_composer_observed_with_progress(
     progress.emit(ProgressEvent::Parsed {
         tasks: scaffold.tasks.len(),
     });
-    let rewrite_indexes = rewrite_indexes_for(&scaffold, options.rewrite);
-    if options.rewrite == RewritePolicy::Auto {
-        for (index, task) in scaffold.tasks.iter().enumerate() {
-            let reasons = auto_rewrite_reasons(&task.source_text);
-            let mut event = ComposeEvent::new(ComposeEventKind::RewriteDecision, context);
-            event.task_id = Some(task.id.clone());
-            event.validation_result = Some(
-                if rewrite_indexes.contains(&index) {
-                    "rewrite"
-                } else {
-                    "identity"
-                }
-                .to_string(),
-            );
-            event.error_class = (!reasons.is_empty()).then(|| {
-                reasons
-                    .iter()
-                    .map(|reason| format!("{reason:?}").to_lowercase())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            });
-            sink.emit(event);
-        }
-    }
-    let identity_indexes = (0..scaffold.tasks.len())
-        .filter(|index| !rewrite_indexes.contains(index))
-        .collect::<Vec<_>>();
-    let identity_plan =
-        match prepare_selected_plan(&scaffold, &identity_indexes, options.policy, None) {
-            Ok(count) => count,
-            Err(error) => {
-                progress.emit(ProgressEvent::Failed {
-                    stage: crate::progress::ProgressStage::Plan,
-                    class: failure_class_for_plan(&error),
-                });
-                return Err(GenerateMarkdownError::Compose(error));
-            }
-        };
+    let task_indexes = (0..scaffold.tasks.len()).collect::<Vec<_>>();
     let rewrite_plan = match prepare_selected_plan(
         &scaffold,
-        &rewrite_indexes,
+        &task_indexes,
         options.policy,
         options.quota.as_ref(),
     ) {
@@ -398,41 +170,23 @@ pub fn generate_markdown_with_composer_observed_with_progress(
             return Err(GenerateMarkdownError::Compose(error));
         }
     };
-    let identity_batches = identity_plan.batch_count();
+    let identity_batches = 0;
     let rewrite_batches = rewrite_plan.batch_count();
     let initial_batches = identity_batches + rewrite_batches;
     progress.emit(ProgressEvent::Planned {
         initial_batches,
-        provider_tasks: rewrite_indexes.len(),
-        identity_tasks: identity_indexes.len(),
+        provider_tasks: task_indexes.len(),
+        identity_tasks: 0,
     });
     let mut questions = Vec::new();
     let mut fallback_summary = Vec::new();
-    if !identity_indexes.is_empty() {
-        let batch_progress = BatchProgressSink::new(progress, 0, initial_batches);
-        let document = compose_indexes(
-            &intermediate,
-            &scaffold,
-            &identity_indexes,
-            options.policy,
-            &IdentityComposer,
-            context,
-            sink,
-            &batch_progress,
-            Some(&identity_plan),
-            &[],
-            &leakage_baselines,
-        )
-        .map_err(|error| GenerateMarkdownError::Compose(error.into_public()))?;
-        questions.extend(document.questions);
-    }
-    if !rewrite_indexes.is_empty() {
+    if !task_indexes.is_empty() {
         let batch_progress = BatchProgressSink::new(progress, identity_batches, initial_batches);
         // fallback方針は初回batchの形を変えない。plannerが失敗taskだけを単独retryする。
         match compose_indexes(
             &intermediate,
             &scaffold,
-            &rewrite_indexes,
+            &task_indexes,
             options.policy,
             composer,
             context,
@@ -462,7 +216,7 @@ pub fn generate_markdown_with_composer_observed_with_progress(
                     .zip(failed_reasons)
                     .zip(fallback_causes)
                 {
-                    let index = rewrite_indexes
+                    let index = task_indexes
                         .iter()
                         .copied()
                         .find(|index| scaffold.tasks[*index].id == id)
@@ -554,7 +308,7 @@ pub fn generate_markdown_with_composer_observed_with_progress(
     })
 }
 
-fn prepare_selected_plan(
+pub(crate) fn prepare_selected_plan(
     scaffold: &ScaffoldDocument,
     indexes: &[usize],
     policy: ComposeExecutionPolicy,
@@ -629,22 +383,22 @@ fn failure_class_for_plan(error: &ComposePlanError) -> FailureClass {
     }
 }
 
-fn failure_class_for_execution(error: &crate::planner::ComposeExecutionError) -> FailureClass {
+fn failure_class_for_execution(error: &crate::executor::ComposeExecutionError) -> FailureClass {
     match error.terminal_cause() {
         Some(cause) => failure_class_for_terminal_cause(cause),
         None => failure_class_for_plan(error.as_public()),
     }
 }
 
-fn failure_class_for_terminal_cause(cause: crate::planner::TerminalCause) -> FailureClass {
+fn failure_class_for_terminal_cause(cause: crate::executor::TerminalCause) -> FailureClass {
     match cause {
-        crate::planner::TerminalCause::Content => FailureClass::Content,
-        crate::planner::TerminalCause::Authentication => FailureClass::Authentication,
-        crate::planner::TerminalCause::Configuration => FailureClass::Configuration,
-        crate::planner::TerminalCause::RateLimited { .. } => FailureClass::RateLimited,
-        crate::planner::TerminalCause::Timeout => FailureClass::Timeout,
-        crate::planner::TerminalCause::Transport => FailureClass::Transport,
-        crate::planner::TerminalCause::Api { .. } => FailureClass::Api,
+        crate::executor::TerminalCause::Content => FailureClass::Content,
+        crate::executor::TerminalCause::Authentication => FailureClass::Authentication,
+        crate::executor::TerminalCause::Configuration => FailureClass::Configuration,
+        crate::executor::TerminalCause::RateLimited { .. } => FailureClass::RateLimited,
+        crate::executor::TerminalCause::Timeout => FailureClass::Timeout,
+        crate::executor::TerminalCause::Transport => FailureClass::Transport,
+        crate::executor::TerminalCause::Api { .. } => FailureClass::Api,
     }
 }
 
@@ -661,7 +415,7 @@ fn compose_indexes(
     prepared: Option<&crate::planner::PreparedComposePlan>,
     extra_constraints: &[String],
     leakage_baselines: &HashMap<String, Vec<usize>>,
-) -> Result<GeneratedDocument, crate::planner::ComposeExecutionError> {
+) -> Result<GeneratedDocument, crate::executor::ComposeExecutionError> {
     let selected_intermediate = IntermediateDocument {
         meta: intermediate.meta.clone(),
         qblocks: indexes
@@ -883,76 +637,12 @@ mod tests {
     }
 
     #[test]
-    fn auto_rewrite_reasons_are_complete_and_stably_ordered() {
-        assert_eq!(
-            auto_rewrite_reasons(" - item\nsecond"),
-            vec![
-                RewriteReason::List,
-                RewriteReason::Multiline,
-                RewriteReason::NoTerminal,
-                RewriteReason::Short,
-            ]
-        );
-        assert!(auto_rewrite_reasons(&format!("{}。", "あ".repeat(40))).is_empty());
-    }
-
-    #[test]
-    fn plan_reports_exact_provider_batches_without_a_composer() {
-        let markdown = "#qblock{\n[alpha]{term}。\n}\n#qblock{\n[beta]{term}。\n}\n#qblock{\n[gamma]{term}。\n}\n";
-        let mut options = PlanMarkdownOptions::default();
-        options.policy.batch_policy.max_tasks_per_batch = 2;
-        options.policy.batch_policy.max_estimated_input_tokens = 100_000;
-        options.policy.batch_policy.max_estimated_output_tokens = 100_000;
-        options.policy.batch_policy.max_blanks_per_batch = 100;
-        let plan = plan_markdown(markdown, options).unwrap();
-        assert_eq!(plan.provider_qblocks, 3);
-        assert_eq!(plan.provider_batches.len(), 2);
-        let mut positions = plan
-            .provider_batches
-            .iter()
-            .flat_map(|batch| batch.qblocks.iter().map(|qblock| qblock.position))
-            .collect::<Vec<_>>();
-        positions.sort_unstable();
-        assert_eq!(positions, vec![1, 2, 3]);
-        assert!(plan.identity_qblocks.is_empty());
-    }
-
-    #[test]
-    fn plan_auto_lists_non_rewritten_qblocks_as_no_api() {
-        let markdown = format!(
-            "#qblock{{\n{}[answer]{{term}}。\n}}\n#qblock{{\n[short]{{term}}\n}}\n",
-            "これは十分に長い通常の文章として扱われるため自動書き換えを必要としない文です。"
-                .repeat(2)
-        );
-        let options = PlanMarkdownOptions {
-            rewrite: RewritePolicy::Auto,
-            ..PlanMarkdownOptions::default()
-        };
-        let plan = plan_markdown(&markdown, options).unwrap();
-        assert_eq!(plan.provider_qblocks, 1);
-        assert_eq!(plan.identity_qblocks.len(), 1);
-        assert_eq!(plan.identity_qblocks[0].position, 1);
-        assert_eq!(plan.provider_batches[0].qblocks[0].position, 2);
-    }
-
-    #[test]
-    fn never_uses_identity_without_calling_provider() {
-        struct PanickingComposer;
-        impl QuestionComposer for PanickingComposer {
-            fn compose(
-                &self,
-                _: &crate::compose::ComposeBatchRequest,
-            ) -> Result<crate::compose::ComposeBatchOutput, crate::compose::ComposeError>
-            {
-                panic!("provider must not be initialized")
-            }
-        }
-        let mut options = GenerateMarkdownOptions::new("inline.md");
-        options.rewrite = RewritePolicy::Never;
+    fn identity_composer_generates_all_tasks() {
+        let options = GenerateMarkdownOptions::new("inline.md");
         assert!(generate_markdown_with_composer(
             "#qblock{\n[answer]{term}\n}\n",
             options,
-            &PanickingComposer
+            &IdentityComposer
         )
         .is_ok());
     }
