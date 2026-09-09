@@ -8,23 +8,17 @@ use flowcloze::providers::model_registry::{ModelProfile, ModelRegistry};
 use flowcloze::{
     build_adapter, AuthRequirement, ComposeBatchRequest, ComposeError, ComposeTask,
     OpenAiCompatibleAdapter, OpenAiCompatiblePool, ProviderCatalog, ProviderDefinition,
-    QuestionComposer, StructuredOutputMode, WritingStyle,
+    QuestionComposer, StructuredOutputMode,
 };
 
 fn request() -> ComposeBatchRequest {
     ComposeBatchRequest {
-        schema_version: 1,
         batch_id: "b".into(),
         tasks: vec![ComposeTask {
             id: "q1".into(),
-            source_text: "source".into(),
-            scaffold_question: "＿＿＿".into(),
-            answers: vec!["answer".into()],
-            blank_token: "＿＿＿".into(),
-            blank_tokens: vec!["＿＿＿".into()],
+            scaffold_question: "<BLANK_0>".into(),
             blank_count: 1,
         }],
-        style: WritingStyle::PlainJapanese,
         prompt_version: "test".into(),
         extra_constraints: Vec::new(),
         retry_feedback: Vec::new(),
@@ -56,7 +50,7 @@ fn mock(responses: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<usize>>) {
 
 #[test]
 fn openai_adapter_uses_the_common_fence_parser() {
-    let openai_body = r#"{"choices":[{"message":{"content":"```json\n{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}\n```"}}]}"#;
+    let openai_body = r#"{"choices":[{"message":{"content":"```json\n{\"items\":[{\"id\":\"q1\",\"question\":\"<BLANK_0>\"}]}\n```"}}]}"#;
     let (url, _) = mock(vec![(200, openai_body)]);
     let openai = OpenAiCompatibleAdapter::new(url, "model", None)
         .with_structured_output(StructuredOutputMode::Off);
@@ -65,7 +59,7 @@ fn openai_adapter_uses_the_common_fence_parser() {
 
 #[test]
 fn google_catalog_and_factory_use_the_openai_compatible_contract() {
-    let body = r#"{"choices":[{"message":{"content":"{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}}]}"#;
+    let body = r#"{"choices":[{"message":{"content":"{\"items\":[{\"id\":\"q1\",\"question\":\"<BLANK_0>\"}]}"}}]}"#;
     let (url, _) = mock(vec![(200, body)]);
     let mut providers = ProviderCatalog::default();
     providers
@@ -100,7 +94,7 @@ fn google_catalog_and_factory_use_the_openai_compatible_contract() {
 
 #[test]
 fn openai_auto_falls_back_to_json_object_and_caches_it() {
-    let body = r#"{"choices":[{"message":{"content":"{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}}]}"#;
+    let body = r#"{"choices":[{"message":{"content":"{\"items\":[{\"id\":\"q1\",\"question\":\"<BLANK_0>\"}]}"}}]}"#;
     let (url, calls) = mock(vec![
         (
             400,
@@ -126,7 +120,7 @@ fn empty_openai_pool_is_configuration_error() {
 
 #[test]
 fn openai_auto_falls_back_to_prompt_only_and_caches_it() {
-    let body = r#"{"choices":[{"message":{"content":"{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}}]}"#;
+    let body = r#"{"choices":[{"message":{"content":"{\"items\":[{\"id\":\"q1\",\"question\":\"<BLANK_0>\"}]}"}}]}"#;
     let (url, calls) = mock(vec![
         (
             400,
@@ -147,7 +141,7 @@ fn openai_auto_falls_back_to_prompt_only_and_caches_it() {
 
 #[test]
 fn openai_normalizes_content_parts() {
-    let body = r#"{"choices":[{"message":{"content":[{"type":"text","text":"{\"items\":["},{"type":"text","text":"{\"id\":\"q1\",\"question\":\"＿＿＿\"}]}"}]}}]}"#;
+    let body = r#"{"choices":[{"message":{"content":[{"type":"text","text":"{\"items\":["},{"type":"text","text":"{\"id\":\"q1\",\"question\":\"<BLANK_0>\"}]}"}]}}]}"#;
     let (url, _) = mock(vec![(200, body)]);
     let adapter = OpenAiCompatibleAdapter::new(url, "model", None)
         .with_structured_output(StructuredOutputMode::Off);
