@@ -8,12 +8,12 @@ use std::process;
 use std::sync::Arc;
 
 use flowcloze::{
-    compile_pdf, default_pdf_output_path, parse_markdown, to_ankilot_csv, to_intermediate_json,
-    validate_generated_json, CliOverrides, ComposeEvent, ComposeEventKind, EventSink, FailureClass,
-    GeneratedDocument, GenerationConfig, IdentityComposer, IntermediateDocument,
-    JsonLinesEventSink, OpenAiCompatibleAdapter, OpenAiCompatiblePool, OpenAiEndpointConfig,
-    PdfOptions, PlainProgressSink, ProgressEvent, ProgressSink, ProgressStage, Provider,
-    RewritePolicy, RunContext,
+    compile_pdf, default_pdf_output_path, parse_markdown, plan_markdown, to_ankilot_csv,
+    to_intermediate_json, validate_generated_json, CliOverrides, ComposeEvent, ComposeEventKind,
+    EventSink, FailureClass, GeneratedDocument, GenerationConfig, IdentityComposer,
+    IntermediateDocument, JsonLinesEventSink, OpenAiCompatibleAdapter, OpenAiCompatiblePool,
+    OpenAiEndpointConfig, PdfOptions, PlainProgressSink, PlanMarkdownOptions, PlanMarkdownOutcome,
+    ProgressEvent, ProgressSink, ProgressStage, Provider, RewritePolicy, RunContext,
 };
 
 mod view;
@@ -68,6 +68,28 @@ fn main() {
             generated_path,
         } => {
             validate_files(intermediate_path, generated_path);
+            return;
+        }
+        Command::Plan { backend } => {
+            let input_path = args
+                .input_path
+                .as_deref()
+                .expect("planには入力パスが必要です");
+            let config = match flowcloze::config::load(CliOverrides {
+                provider: backend.as_ref().map(backend_name),
+                model: args.model.clone(),
+                rewrite: args.rewrite.clone(),
+                fallback: args.fallback.clone(),
+                structured_output: args.structured_output.clone(),
+                batch: args.batch_policy.as_ref().map(batch_name),
+            }) {
+                Ok(config) => config,
+                Err(error) => {
+                    eprintln!("{error}");
+                    process::exit(2);
+                }
+            };
+            run_plan_command(input_path, &config);
             return;
         }
         Command::Generate { backend } => {
@@ -206,6 +228,9 @@ enum Command {
     Generate {
         backend: Option<LlmBackend>,
     },
+    Plan {
+        backend: Option<LlmBackend>,
+    },
     Pdf {
         template_path: String,
     },
@@ -312,6 +337,9 @@ impl Args {
                 "generate" if input_path.is_none() && matches!(command, Command::Parse) => {
                     command = Command::Generate { backend: None };
                 }
+                "plan" if input_path.is_none() && matches!(command, Command::Parse) => {
+                    command = Command::Plan { backend: None };
+                }
                 "inspect-scaffold" if input_path.is_none() && matches!(command, Command::Parse) => {
                     command = Command::InspectScaffold;
                 }
@@ -359,8 +387,8 @@ impl Args {
                             "--batch には auto, small, one-task のいずれかが必要です".to_string()
                         );
                     };
-                    if !matches!(command, Command::Generate { .. }) {
-                        return Err("--batch はgenerateコマンドでのみ使えます".to_string());
+                    if !matches!(command, Command::Generate { .. } | Command::Plan { .. }) {
+                        return Err("--batch はgenerate/planコマンドでのみ使えます".to_string());
                     }
                     batch_policy = Some(parse_batch_policy_override(&value)?);
                 }
@@ -373,6 +401,10 @@ impl Args {
                         Command::Generate {
                             backend: command_backend,
                             ..
+                        }
+                        | Command::Plan {
+                            backend: command_backend,
+                            ..
                         } => {
                             if command_backend.is_some() {
                                 return Err(
@@ -383,7 +415,8 @@ impl Args {
                         }
                         _ => {
                             return Err(
-                                "--provider/--backend はgenerateコマンドでのみ使えます".to_string()
+                                "--provider/--backend はgenerate/planコマンドでのみ使えます"
+                                    .to_string(),
                             )
                         }
                     }
@@ -442,7 +475,10 @@ impl Args {
 
         if input_path.is_none() {
             match command {
-                Command::Parse | Command::Generate { .. } | Command::InspectScaffold => {
+                Command::Parse
+                | Command::Generate { .. }
+                | Command::Plan { .. }
+                | Command::InspectScaffold => {
                     return Err("入力Markdownファイルを指定してください".to_string());
                 }
                 Command::Csv => {
@@ -534,6 +570,9 @@ fn print_usage() {
     eprintln!(
         "  flowcloze generate [-o output.json] [--verbose] [--provider gemini|local] [--model model] [--rewrite always|never|auto] [--fallback error|draft] [--structured-output auto|on|off] [--batch auto|small|one-task] <markdown-file>"
     );
+    eprintln!(
+        "  flowcloze plan [--provider gemini|local] [--model model] [--rewrite always|never|auto] [--batch auto|small|one-task] <markdown-file>"
+    );
     eprintln!("  flowcloze local check");
     eprintln!("  flowcloze inspect-scaffold [-o scaffold.json] <markdown-file>");
     eprintln!("  flowcloze validate <intermediate.json> <generated.json>");
@@ -552,6 +591,9 @@ fn print_help() {
     );
     eprintln!(
         "  generate               providerで問題文JSONを生成します / Generate questions JSON"
+    );
+    eprintln!(
+        "  plan                   APIへ送信せず、qblockのまとめ方を表示します / Show batch plan without API calls"
     );
     eprintln!("  local check            Ollama/LM Studioのlocal server接続を確認します / Check the local server");
     eprintln!("  inspect-scaffold       LLM入力用scaffoldを表示します / Inspect scaffold JSON");
@@ -899,6 +941,104 @@ fn write_stdout_json(mut writer: impl Write, json: &str) -> io::Result<()> {
     writer.flush()
 }
 
+fn run_plan_command(input_path: &str, config: &GenerationConfig) {
+    let markdown = match fs::read_to_string(input_path) {
+        Ok(markdown) => markdown,
+        Err(error) => {
+            eprintln!("{input_path} を読めませんでした: {error}");
+            process::exit(1);
+        }
+    };
+    let options = PlanMarkdownOptions {
+        policy: flowcloze::planner::ComposeExecutionPolicy {
+            batch_policy: config.batch_policy(),
+            max_content_retries: 2,
+        },
+        rewrite: config.rewrite,
+        quota: config.quota.clone(),
+    };
+    match plan_markdown(&markdown, options) {
+        Ok(plan) => print_plan_summary(&plan),
+        Err(error) => {
+            eprintln!("planの作成に失敗しました: {error}");
+            process::exit(1);
+        }
+    }
+}
+
+fn print_plan_summary(plan: &PlanMarkdownOutcome) {
+    println!("qblocks: {}", plan.total_qblocks);
+    println!(
+        "API: {} qblocks / {} requests",
+        plan.provider_qblocks,
+        plan.provider_batches.len()
+    );
+    println!(
+        "Identity: {} qblocks / {} internal batches (no API)",
+        plan.identity_qblocks.len(),
+        plan.identity_batches
+    );
+    println!();
+    println!(
+        "limits: qblocks={} input={} output={} blanks={}",
+        plan.effective_policy.max_tasks_per_batch,
+        format_count(plan.effective_policy.max_estimated_input_tokens),
+        format_count(plan.effective_policy.max_estimated_output_tokens),
+        plan.effective_policy.max_blanks_per_batch
+    );
+    for batch in &plan.provider_batches {
+        println!();
+        println!(
+            "batch {}: {} qblocks | input {}/{} | output {}/{} | blanks {}/{}",
+            batch.number,
+            batch.qblocks.len(),
+            format_count(batch.input_tokens),
+            format_count(plan.effective_policy.max_estimated_input_tokens),
+            format_count(batch.expected_output_tokens),
+            format_count(plan.effective_policy.max_estimated_output_tokens),
+            batch.blanks,
+            plan.effective_policy.max_blanks_per_batch
+        );
+        for qblock in &batch.qblocks {
+            let note = if qblock.oversized {
+                " [oversized singleton]"
+            } else if qblock.isolated_heavy {
+                " [heavy singleton]"
+            } else {
+                ""
+            };
+            println!(
+                "  #{} {}: input={} output={} blanks={}{}",
+                qblock.position,
+                qblock.id,
+                format_count(qblock.input_tokens),
+                format_count(qblock.expected_output_tokens),
+                qblock.blanks,
+                note
+            );
+        }
+    }
+    if !plan.identity_qblocks.is_empty() {
+        println!();
+        println!("identity (no API):");
+        for qblock in &plan.identity_qblocks {
+            println!("  #{} {}", qblock.position, qblock.id);
+        }
+    }
+}
+
+fn format_count(value: usize) -> String {
+    let digits = value.to_string();
+    let mut output = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            output.push(',');
+        }
+        output.push(ch);
+    }
+    output
+}
+
 /// Markdownからscaffoldを構築し，LLMへ渡す下書きJSONとして出力する．
 fn inspect_scaffold(input_path: &str, output_path: Option<&str>) {
     let markdown = match fs::read_to_string(input_path) {
@@ -1178,6 +1318,31 @@ mod stdout_tests {
             Provider::OpenAiCompatible
         );
         assert!(parse_api_provider_selection("3").is_err());
+    }
+
+    #[test]
+    fn plan_accepts_provider_and_batch_without_output() {
+        let parsed = Args::parse(
+            [
+                "plan",
+                "--provider",
+                "gemini",
+                "--batch",
+                "auto",
+                "notes.md",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.command,
+            Command::Plan {
+                backend: Some(LlmBackend::Gemini)
+            }
+        );
+        assert_eq!(parsed.batch_policy, Some(BatchPolicyOverride::Auto));
+        assert_eq!(parsed.input_path.as_deref(), Some("notes.md"));
     }
 
     #[test]

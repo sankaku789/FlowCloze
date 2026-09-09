@@ -179,6 +179,16 @@ flowcloze pdf --template path/to/template.typ \
 flowcloze csv -o sample/sample.csv sample/generated.json
 ```
 
+## Inspect the batch plan before API calls
+
+`plan` does not connect to the provider API. It shows the qblock grouping produced by the same planner used by `generate`.
+
+```bash
+flowcloze plan sample/sample.md
+```
+
+The output includes qblock positions, estimated input/output size, blank counts, and heavy singleton qblocks. With `rewrite=auto`, qblocks that do not use the API are listed separately as `identity (no API)`.
+
 ## Generation Settings
 
 FlowCloze 2.2 keeps user-level settings in the standard config directory:
