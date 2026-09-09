@@ -267,48 +267,35 @@ jobs:
               raise SystemExit("progress emit changed unexpectedly")
           s = s.replace(old_emit, new_emit, 1)
 
-          old_write = '''        if let Ok(mut writer) = self.writer.lock() {
-              let _ = writeln!(writer, "{line}");
-          }
-              }
-          }
-
-          fn format_provider_error'''
-          # Formatting of the source is four spaces, not the Python heredoc indentation.
-          old_write = old_write.replace("          ", "")
-          new_write = '''        write_progress_line(&self.writer, &line);
-              self.update_heartbeat(&heartbeat_event);
-          }
-          }
-
-          fn format_provider_error'''.replace("          ", "")
-          if old_write not in s:
-              raise SystemExit("progress writer tail changed unexpectedly")
-          s = s.replace(old_write, new_write, 1)
+          emit_start = s.index("impl ProgressSink for PlainProgressSink {")
+          writer_start = s.index("        if let Ok(mut writer) = self.writer.lock() {", emit_start)
+          writer_end = s.index("\n}\n\nfn format_provider_error", writer_start)
+          replacement_tail = "        write_progress_line(&self.writer, &line);\n        self.update_heartbeat(&heartbeat_event);\n    }"
+          s = s[:writer_start] + replacement_tail + s[writer_end:]
 
           test_marker = "    #[test]\n    fn noop_never_writes_or_panics() {"
           heartbeat_test = r'''    #[test]
-              fn heartbeat_lines_report_elapsed_provider_wait() {
-                  assert_eq!(
-                      format_heartbeat(
-                          HeartbeatPhase::Batch {
-                              number: 2,
-                              total: 4,
-                          },
-                          Duration::from_secs(15),
-                      ),
-                      "      batch 2/4: provider待機中... 15s"
-                  );
-                  assert_eq!(
-                      format_heartbeat(
-                          HeartbeatPhase::Retry { pending: 2 },
-                          Duration::from_secs(10),
-                      ),
-                      "      retry: provider待機中... 10s (2 tasks pending)"
-                  );
-              }
+          fn heartbeat_lines_report_elapsed_provider_wait() {
+              assert_eq!(
+                  format_heartbeat(
+                      HeartbeatPhase::Batch {
+                          number: 2,
+                          total: 4,
+                      },
+                      Duration::from_secs(15),
+                  ),
+                  "      batch 2/4: provider待機中... 15s"
+              );
+              assert_eq!(
+                  format_heartbeat(
+                      HeartbeatPhase::Retry { pending: 2 },
+                      Duration::from_secs(10),
+                  ),
+                  "      retry: provider待機中... 10s (2 tasks pending)"
+              );
+          }
 
-          '''.replace("              ", "")
+          '''.replace("          ", "")
           if test_marker not in s:
               raise SystemExit("progress tests changed unexpectedly")
           s = s.replace(test_marker, heartbeat_test + test_marker, 1)
