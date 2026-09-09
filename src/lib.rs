@@ -65,7 +65,7 @@ pub use progress::{
     FailureClass, NoopProgressSink, PlainProgressSink, ProgressEvent, ProgressSink, ProgressStage,
     RetryCause, RetryResult,
 };
-pub use prompt::{build_compose_request_prompt, build_generation_prompt};
+pub use prompt::build_compose_request_prompt;
 pub use providers::adapter_factory::build_adapter;
 pub use providers::builtins::{builtin_models, builtin_providers, DEFAULT_MODEL};
 pub use providers::capability::StructuredOutputMode;
