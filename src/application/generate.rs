@@ -5,6 +5,7 @@ use std::ops::Range;
 
 use crate::compose::{IdentityComposer, QuestionComposer};
 use crate::config::FallbackPolicy;
+use crate::executor::{ComposeExecutionError, TerminalCause};
 use crate::json::IntermediateDocument;
 use crate::observability::{ComposeEvent, ComposeEventKind, EventSink, NoopEventSink, RunContext};
 use crate::parser::{parse_markdown_located, MarkdownParseError, ParsedDocument};
@@ -53,11 +54,13 @@ pub struct FallbackSummary {
     pub id: String,
     pub reason: FallbackReason,
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FallbackReason {
     Transport,
     Content,
 }
+
 /// located生成経路で起きる、provider呼び出し前後の失敗。
 #[derive(Debug)]
 pub enum GenerateMarkdownError {
@@ -285,8 +288,6 @@ pub fn generate_markdown_with_composer_observed_with_progress(
             .unwrap_or(usize::MAX)
     });
     let document = GeneratedDocument { questions };
-    // qblockごとのaccept/retry判定と同じ契約を最終文書にも適用する。
-    // AnswerLeakageのような非構造的な疑いを最後だけhard failureへ戻さない。
     let report = validate_generated_documents_with_leakage_baselines(
         &intermediate,
         &document,
@@ -374,29 +375,27 @@ fn failure_class_for_plan(error: &ComposePlanError) -> FailureClass {
     }
 }
 
-fn failure_class_for_execution(error: &crate::generation::ComposeExecutionError) -> FailureClass {
+fn failure_class_for_execution(error: &ComposeExecutionError) -> FailureClass {
     match error.terminal_cause() {
-        Some(crate::generation::TerminalCause::Authentication) => FailureClass::Authentication,
-        Some(crate::generation::TerminalCause::Configuration) => FailureClass::Configuration,
-        Some(crate::generation::TerminalCause::RateLimited { .. }) => FailureClass::RateLimited,
-        Some(crate::generation::TerminalCause::Timeout) => FailureClass::Timeout,
-        Some(crate::generation::TerminalCause::Transport) => FailureClass::Transport,
-        Some(crate::generation::TerminalCause::Api { .. }) => FailureClass::Api,
-        Some(crate::generation::TerminalCause::Content) | None => FailureClass::Content,
+        Some(TerminalCause::Authentication) => FailureClass::Authentication,
+        Some(TerminalCause::Configuration) => FailureClass::Configuration,
+        Some(TerminalCause::RateLimited { .. }) => FailureClass::RateLimited,
+        Some(TerminalCause::Timeout) => FailureClass::Timeout,
+        Some(TerminalCause::Transport) => FailureClass::Transport,
+        Some(TerminalCause::Api { .. }) => FailureClass::Api,
+        Some(TerminalCause::Content) | None => FailureClass::Content,
     }
 }
 
-fn failure_class_for_terminal_cause(
-    cause: crate::generation::TerminalCause,
-) -> FailureClass {
+fn failure_class_for_terminal_cause(cause: TerminalCause) -> FailureClass {
     match cause {
-        crate::generation::TerminalCause::Authentication => FailureClass::Authentication,
-        crate::generation::TerminalCause::Configuration => FailureClass::Configuration,
-        crate::generation::TerminalCause::RateLimited { .. } => FailureClass::RateLimited,
-        crate::generation::TerminalCause::Timeout => FailureClass::Timeout,
-        crate::generation::TerminalCause::Transport => FailureClass::Transport,
-        crate::generation::TerminalCause::Api { .. } => FailureClass::Api,
-        crate::generation::TerminalCause::Content => FailureClass::Content,
+        TerminalCause::Authentication => FailureClass::Authentication,
+        TerminalCause::Configuration => FailureClass::Configuration,
+        TerminalCause::RateLimited { .. } => FailureClass::RateLimited,
+        TerminalCause::Timeout => FailureClass::Timeout,
+        TerminalCause::Transport => FailureClass::Transport,
+        TerminalCause::Api { .. } => FailureClass::Api,
+        TerminalCause::Content => FailureClass::Content,
     }
 }
 
@@ -508,7 +507,7 @@ fn compose_indexes(
     prepared: Option<&crate::planner::PreparedComposePlan>,
     extra_constraints: &[String],
     leakage_baselines: &HashMap<String, Vec<usize>>,
-) -> Result<GeneratedDocument, crate::generation::ComposeExecutionError> {
+) -> Result<GeneratedDocument, ComposeExecutionError> {
     let selected_intermediate = IntermediateDocument {
         meta: intermediate.meta.clone(),
         qblocks: indexes
@@ -532,7 +531,7 @@ fn compose_indexes(
                 .map(|baseline| (id.clone(), baseline))
         })
         .collect::<HashMap<_, _>>();
-    crate::generation::execute_legacy(
+    crate::executor::execute_prepared_with_terminal_cause(
         &selected_intermediate,
         &selected_scaffold,
         policy,
