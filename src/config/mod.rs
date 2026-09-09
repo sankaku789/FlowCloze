@@ -155,13 +155,11 @@ impl GenerationConfig {
                 max_estimated_input_tokens: 12_000,
                 max_estimated_output_tokens: 6_000,
                 max_blanks_per_batch: 24,
-                max_retry_count: self.max_retries,
                 max_concurrent_batches: 1,
             },
             BatchPolicyName::Auto if local => BatchPolicy::local_default(),
             BatchPolicyName::Auto => BatchPolicy::gemini_default(),
         };
-        policy.max_retry_count = self.max_retries;
         if let Some(value) = self.batch_settings.max_tasks_per_batch {
             policy.max_tasks_per_batch = value;
         }
@@ -342,7 +340,6 @@ mod tests {
         assert_eq!(config.fallback, FallbackPolicy::Draft);
         assert_eq!(config.quota.as_ref().unwrap().rpm, Some(7));
         assert_eq!(config.execution_policy().max_content_retries, 5);
-        assert_eq!(config.batch_policy().max_retry_count, 5);
         fs::remove_dir_all(root).unwrap();
         match old {
             Some(value) => env::set_var("XDG_CONFIG_HOME", value),
