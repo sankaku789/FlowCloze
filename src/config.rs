@@ -54,6 +54,8 @@ struct FileConfig {
     batch: Option<String>,
     max_tasks_per_batch: Option<usize>,
     max_input_tokens: Option<usize>,
+    max_output_tokens: Option<usize>,
+    max_blanks_per_batch: Option<usize>,
     max_concurrent_batches: Option<usize>,
     rewrite: Option<String>,
     fallback: Option<String>,
@@ -89,6 +91,8 @@ pub struct GenerationConfig {
     pub batch: BatchPolicyName,
     pub max_tasks_per_batch: Option<usize>,
     pub max_input_tokens: Option<usize>,
+    pub max_output_tokens: Option<usize>,
+    pub max_blanks_per_batch: Option<usize>,
     pub max_concurrent_batches: Option<usize>,
     pub rewrite: RewritePolicy,
     pub fallback: FallbackPolicy,
@@ -133,12 +137,16 @@ impl GenerationConfig {
             (_, BatchPolicyName::Small) => BatchPolicy {
                 max_tasks_per_batch: 2,
                 max_estimated_input_tokens: 4_000,
+                max_estimated_output_tokens: 1_500,
+                max_blanks_per_batch: 8,
                 max_retry_count: 2,
                 max_concurrent_batches: 1,
             },
             (_, BatchPolicyName::OneTask) => BatchPolicy {
                 max_tasks_per_batch: 1,
                 max_estimated_input_tokens: 12_000,
+                max_estimated_output_tokens: 6_000,
+                max_blanks_per_batch: 24,
                 max_retry_count: 2,
                 max_concurrent_batches: 1,
             },
@@ -150,6 +158,12 @@ impl GenerationConfig {
         }
         if let Some(value) = self.max_input_tokens {
             policy.max_estimated_input_tokens = value;
+        }
+        if let Some(value) = self.max_output_tokens {
+            policy.max_estimated_output_tokens = value;
+        }
+        if let Some(value) = self.max_blanks_per_batch {
+            policy.max_blanks_per_batch = value;
         }
         if let Some(value) = self.max_concurrent_batches {
             policy.max_concurrent_batches = value;
@@ -262,6 +276,8 @@ pub fn load(cli: CliOverrides) -> Result<GenerationConfig, String> {
         batch,
         max_tasks_per_batch: positive("max_tasks_per_batch", file.max_tasks_per_batch)?,
         max_input_tokens: positive("max_input_tokens", file.max_input_tokens)?,
+        max_output_tokens: positive("max_output_tokens", file.max_output_tokens)?,
+        max_blanks_per_batch: positive("max_blanks_per_batch", file.max_blanks_per_batch)?,
         max_concurrent_batches: positive("max_concurrent_batches", file.max_concurrent_batches)?,
         rewrite,
         fallback,
@@ -647,8 +663,10 @@ rpm = 5
 tpm = 250000
 rpd = 20
 reserve_requests = 4
-adaptive_max_tasks_per_batch = 12
-adaptive_max_input_tokens = 18000
+adaptive_max_tasks_per_batch = 24
+adaptive_max_input_tokens = 36000
+adaptive_max_output_tokens = 12000
+adaptive_max_blanks_per_batch = 48
 [quota_profiles.gemini.models.'gemini-3.8-flash']
 rpd = 30
 ",
@@ -660,6 +678,9 @@ rpd = 30
         assert_eq!(quota.rpm, Some(5));
         assert_eq!(quota.rpd, Some(30));
         assert_eq!(quota.request_budget(), Some(26));
+        assert_eq!(quota.adaptive_max_tasks_per_batch, Some(24));
+        assert_eq!(quota.adaptive_max_output_tokens, Some(12_000));
+        assert_eq!(quota.adaptive_max_blanks_per_batch, Some(48));
         fs::remove_dir_all(directory).unwrap();
     }
 

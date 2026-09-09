@@ -66,11 +66,16 @@ impl GeminiAdapter {
         self
     }
 
-    fn request(&self, prompt: &str, structured: bool) -> Result<String, HttpError> {
+    fn request(
+        &self,
+        prompt: &str,
+        structured: bool,
+        request: &ComposeBatchRequest,
+    ) -> Result<String, HttpError> {
         let mut config = json!({"temperature": 0.0});
         if structured {
             config["responseMimeType"] = json!("application/json");
-            config["responseJsonSchema"] = compose_schema();
+            config["responseJsonSchema"] = compose_schema(request);
         }
         let body = json!({
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -96,7 +101,9 @@ impl GeminiAdapter {
     ) -> Result<ComposeBatchOutput, ComposeError> {
         let prompt =
             build_compose_request_prompt(request).map_err(|_| ComposeError::Configuration)?;
-        let raw = self.request(&prompt, structured).map_err(map_http_error)?;
+        let raw = self
+            .request(&prompt, structured, request)
+            .map_err(map_http_error)?;
         parse_response(&raw, &self.model)
     }
 
@@ -140,7 +147,7 @@ impl QuestionComposer for GeminiAdapter {
 
                 let prompt = build_compose_request_prompt(request)
                     .map_err(|_| ComposeError::Configuration)?;
-                match self.request(&prompt, true) {
+                match self.request(&prompt, true, request) {
                     Ok(raw) => {
                         self.capability.mark_supported();
                         parse_response(&raw, &self.model)
@@ -178,7 +185,7 @@ fn map_http_error(error: HttpError) -> ComposeError {
     match error {
         HttpError::Configuration => ComposeError::Configuration,
         HttpError::Authentication { .. } => ComposeError::Authentication,
-        HttpError::RateLimited { .. } => ComposeError::RateLimited,
+        HttpError::RateLimited { kind, .. } => ComposeError::RateLimited { kind },
         HttpError::Timeout => ComposeError::Timeout,
         HttpError::Transport => ComposeError::Transport,
         HttpError::Api {
@@ -191,23 +198,33 @@ pub fn strip_markdown_code_fence(text: &str) -> String {
     crate::compose::extract_json_candidate(text).to_string()
 }
 
-fn compose_schema() -> Value {
+fn compose_schema(request: &ComposeBatchRequest) -> Value {
+    let expected_ids = request
+        .tasks
+        .iter()
+        .map(|task| task.id.clone())
+        .collect::<Vec<_>>();
+    let expected_items = request.tasks.len();
     json!({
         "type": "object",
         "properties": {
             "items": {
                 "type": "array",
+                "minItems": expected_items,
+                "maxItems": expected_items,
                 "items": {
                     "type": "object",
                     "properties": {
-                        "id": {"type": "string"},
+                        "id": {"type": "string", "enum": expected_ids},
                         "question": {"type": "string"}
                     },
-                    "required": ["id", "question"]
+                    "required": ["id", "question"],
+                    "additionalProperties": false
                 }
             }
         },
-        "required": ["items"]
+        "required": ["items"],
+        "additionalProperties": false
     })
 }
 
@@ -229,4 +246,36 @@ struct ResponseContent {
 #[derive(Deserialize)]
 struct ResponsePart {
     text: String,
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+    use crate::compose::{ComposeTask, WritingStyle};
+
+    #[test]
+    fn native_schema_constrains_batch_shape() {
+        let request = ComposeBatchRequest {
+            schema_version: 1,
+            batch_id: "batch".into(),
+            tasks: vec![ComposeTask {
+                id: "q1".into(),
+                source_text: "source".into(),
+                scaffold_question: "＿＿＿".into(),
+                answers: vec!["answer".into()],
+                blank_token: "＿＿＿".into(),
+                blank_tokens: vec!["＿＿＿".into()],
+                blank_count: 1,
+            }],
+            style: WritingStyle::PlainJapanese,
+            prompt_version: "test".into(),
+            extra_constraints: Vec::new(),
+            retry_feedback: Vec::new(),
+        };
+        let schema = compose_schema(&request);
+        let items = &schema["properties"]["items"];
+        assert_eq!(items["minItems"], 1);
+        assert_eq!(items["maxItems"], 1);
+        assert_eq!(items["items"]["properties"]["id"]["enum"], json!(["q1"]));
+    }
 }

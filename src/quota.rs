@@ -15,6 +15,8 @@ pub struct QuotaProfile {
     pub reserve_requests: u32,
     pub adaptive_max_tasks_per_batch: Option<usize>,
     pub adaptive_max_input_tokens: Option<usize>,
+    pub adaptive_max_output_tokens: Option<usize>,
+    pub adaptive_max_blanks_per_batch: Option<usize>,
 }
 
 impl QuotaProfile {
@@ -26,6 +28,8 @@ impl QuotaProfile {
     pub fn disable_adaptive_expansion(&mut self) {
         self.adaptive_max_tasks_per_batch = None;
         self.adaptive_max_input_tokens = None;
+        self.adaptive_max_output_tokens = None;
+        self.adaptive_max_blanks_per_batch = None;
     }
 }
 
@@ -39,6 +43,8 @@ pub(crate) struct QuotaProfileConfig {
     reserve_requests: u32,
     adaptive_max_tasks_per_batch: Option<usize>,
     adaptive_max_input_tokens: Option<usize>,
+    adaptive_max_output_tokens: Option<usize>,
+    adaptive_max_blanks_per_batch: Option<usize>,
     #[serde(default)]
     models: HashMap<String, QuotaOverrideConfig>,
 }
@@ -52,6 +58,8 @@ struct QuotaOverrideConfig {
     reserve_requests: Option<u32>,
     adaptive_max_tasks_per_batch: Option<usize>,
     adaptive_max_input_tokens: Option<usize>,
+    adaptive_max_output_tokens: Option<usize>,
+    adaptive_max_blanks_per_batch: Option<usize>,
 }
 
 impl QuotaProfileConfig {
@@ -71,6 +79,12 @@ impl QuotaProfileConfig {
             adaptive_max_input_tokens: override_config
                 .and_then(|value| value.adaptive_max_input_tokens)
                 .or(self.adaptive_max_input_tokens),
+            adaptive_max_output_tokens: override_config
+                .and_then(|value| value.adaptive_max_output_tokens)
+                .or(self.adaptive_max_output_tokens),
+            adaptive_max_blanks_per_batch: override_config
+                .and_then(|value| value.adaptive_max_blanks_per_batch)
+                .or(self.adaptive_max_blanks_per_batch),
         };
         validate_profile(&profile)?;
         Ok(profile)
@@ -105,6 +119,18 @@ fn validate_profile(profile: &QuotaProfile) -> Result<(), String> {
     if profile.adaptive_max_input_tokens == Some(0) {
         return Err(format!(
             "quota profile '{}' の adaptive_max_input_tokens は1以上にしてください",
+            profile.name
+        ));
+    }
+    if profile.adaptive_max_output_tokens == Some(0) {
+        return Err(format!(
+            "quota profile '{}' の adaptive_max_output_tokens は1以上にしてください",
+            profile.name
+        ));
+    }
+    if profile.adaptive_max_blanks_per_batch == Some(0) {
+        return Err(format!(
+            "quota profile '{}' の adaptive_max_blanks_per_batch は1以上にしてください",
             profile.name
         ));
     }
@@ -246,6 +272,8 @@ mod tests {
             reserve_requests: 4,
             adaptive_max_tasks_per_batch: Some(12),
             adaptive_max_input_tokens: Some(18_000),
+            adaptive_max_output_tokens: Some(6_000),
+            adaptive_max_blanks_per_batch: Some(24),
         };
         assert_eq!(profile.request_budget(), Some(16));
     }

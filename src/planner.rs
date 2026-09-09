@@ -1,6 +1,6 @@
 //! Adaptive Compose Planner.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use crate::compose::{
@@ -13,9 +13,10 @@ use crate::json::IntermediateDocument;
 use crate::observability::{
     fnv1a_64, ComposeEvent, ComposeEventKind, EventSink, NoopEventSink, RunContext,
 };
-use crate::progress::{NoopProgressSink, ProgressEvent, ProgressSink, RetryResult};
+use crate::progress::{NoopProgressSink, ProgressEvent, ProgressSink, RetryCause, RetryResult};
 use crate::prompt::{build_compose_request_prompt, build_question_composer_prompt};
 use crate::quota::QuotaProfile;
+use crate::rate_limit::RateLimitKind;
 use crate::scaffold::{ScaffoldDocument, ScaffoldTask};
 use crate::validation::{
     validate_generated_document, validate_generated_documents,
@@ -50,10 +51,14 @@ impl TokenEstimator for CharHeuristicTokenEstimator {
 /// backendごとのbatch作成とretry上限を表す設定．
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchPolicy {
-    /// 1回のLLM呼び出しに含めるtask数の上限．
+    /// 1回のLLM呼び出しに含めるqblock数の上限．
     pub max_tasks_per_batch: usize,
-    /// 1回のLLM呼び出しに含める入力token概算の上限．
+    /// 1回のLLM呼び出しに含める入力token概算のsoft上限．
     pub max_estimated_input_tokens: usize,
+    /// 1回のLLM応答で生成させるtoken概算のsoft上限．
+    pub max_estimated_output_tokens: usize,
+    /// 1回のLLM呼び出しに含めるblank総数のsoft上限．
+    pub max_blanks_per_batch: usize,
     /// task単位で再試行する最大回数．
     pub max_retry_count: u32,
     /// 将来の並列実行用の上限値．初期実装では逐次実行する．
@@ -80,8 +85,10 @@ impl BatchPolicy {
     /// Gemini向けの初期policy．API request数を抑えるためbatchを大きめにする．
     pub fn gemini_default() -> Self {
         Self {
-            max_tasks_per_batch: 8,
-            max_estimated_input_tokens: 12_000,
+            max_tasks_per_batch: 12,
+            max_estimated_input_tokens: 18_000,
+            max_estimated_output_tokens: 6_000,
+            max_blanks_per_batch: 24,
             max_retry_count: 2,
             max_concurrent_batches: 3,
         }
@@ -92,6 +99,8 @@ impl BatchPolicy {
         Self {
             max_tasks_per_batch: 2,
             max_estimated_input_tokens: 4_000,
+            max_estimated_output_tokens: 1_500,
+            max_blanks_per_batch: 8,
             max_retry_count: 2,
             max_concurrent_batches: 1,
         }
@@ -132,7 +141,7 @@ pub(crate) enum TerminalCause {
     Content,
     Authentication,
     Configuration,
-    RateLimited,
+    RateLimited { kind: RateLimitKind },
     Timeout,
     Transport,
     Api { status: u16 },
@@ -162,32 +171,73 @@ enum ComposeMode {
     SingleTask,
 }
 
-/// retry queue内で追跡するtaskの状態．
+/// content failureがqblock固有か、batch全体の崩れかを区別する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureScope {
+    QBlock,
+    Batch { group: usize, previous_size: usize },
+}
+
+/// retry queue内で追跡するqblockの状態．
 #[derive(Debug, Clone)]
 struct TaskAttempt {
     /// scaffold.tasks / intermediate.qblocks のindex．
     index: usize,
-    /// このtaskを再試行した回数．
+    /// このqblockを再試行した回数．
     retry_count: u32,
     /// 現在のcompose mode．将来のログ出力にも使う．
     mode: ComposeMode,
-    /// 前回失敗時の検証理由．単独retry promptへ渡す．
+    /// 前回失敗時の検証理由．retry promptへ渡す．
     feedback: Vec<String>,
+    /// batch全体の失敗を別batch由来のretryと再結合しないためのgroup。
+    retry_group: Option<usize>,
+    /// batch全体の失敗時に次回batchを縮小するqblock数上限。
+    max_batch_size: Option<usize>,
 }
 
-/// 1 taskの生成・検証に失敗した理由．
+/// 1 qblockの生成・検証に失敗した理由．
 #[derive(Debug)]
 struct TaskFailure {
-    /// 失敗したtaskのindex．
     index: usize,
-    /// indexではなく公開task IDを失敗報告へ残す．
     task_id: String,
-    /// 失敗時点のretry回数．
     retry_count: u32,
-    /// 次回promptへ渡すための検証フィードバック．
     errors: Vec<String>,
     reason: FailureReason,
     terminal_cause: TerminalCause,
+    scope: FailureScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QBlockCost {
+    input_tokens: usize,
+    output_tokens: usize,
+    blanks: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BatchLoad {
+    input_tokens: usize,
+    output_tokens: usize,
+    blanks: usize,
+    qblocks: usize,
+}
+
+impl BatchLoad {
+    fn add(&mut self, cost: QBlockCost) {
+        self.input_tokens = self.input_tokens.saturating_add(cost.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(cost.output_tokens);
+        self.blanks = self.blanks.saturating_add(cost.blanks);
+        self.qblocks = self.qblocks.saturating_add(1);
+    }
+
+    fn can_fit(&self, cost: QBlockCost, policy: BatchPolicy, max_qblocks: usize) -> bool {
+        self.qblocks < max_qblocks
+            && self.input_tokens.saturating_add(cost.input_tokens)
+                <= policy.max_estimated_input_tokens
+            && self.output_tokens.saturating_add(cost.output_tokens)
+                <= policy.max_estimated_output_tokens
+            && self.blanks.saturating_add(cost.blanks) <= policy.max_blanks_per_batch
+    }
 }
 
 /// 公開エラーへ変換する前だけ、実際に実行を止めた原因を保持する。
@@ -221,8 +271,15 @@ impl ComposeExecutionError {
 
     pub(crate) fn provider_status(&self) -> Option<u16> {
         match self.terminal_cause {
-            Some(TerminalCause::RateLimited) => Some(429),
+            Some(TerminalCause::RateLimited { .. }) => Some(429),
             Some(TerminalCause::Api { status }) => Some(status),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn rate_limit_kind(&self) -> Option<RateLimitKind> {
+        match self.terminal_cause {
+            Some(TerminalCause::RateLimited { kind }) => Some(kind),
             _ => None,
         }
     }
@@ -527,6 +584,7 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
                     errors: attempt.feedback,
                     reason: FailureReason::Content,
                     terminal_cause: TerminalCause::Content,
+                    scope: FailureScope::QBlock,
                 })
             }));
             // provider障害後に未実行batchへ通信せず、残りtaskをdraft対象へ渡す。
@@ -538,6 +596,7 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
                     errors: vec!["not-attempted-after-terminal".to_string()],
                     reason: FailureReason::Transport,
                     terminal_cause: terminal_cause.expect("transport failure has a cause"),
+                    scope: FailureScope::QBlock,
                 }
             }));
             return Err(partial_plan_error(
@@ -556,7 +615,13 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
         for batch in retry_batches {
             let tracked = batch
                 .iter()
-                .map(|attempt| (attempt.index, attempt.retry_count))
+                .map(|attempt| {
+                    (
+                        attempt.index,
+                        attempt.retry_count,
+                        retry_cause(&attempt.feedback),
+                    )
+                })
                 .collect::<Vec<_>>();
             let failures = run_port_batch(
                 intermediate,
@@ -574,7 +639,7 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
             retry_batch_number += 1;
             let terminal =
                 enqueue_port_failures(&mut retry_queue, failures, policy.max_content_retries);
-            for (task_index, retry_count) in tracked {
+            for (task_index, retry_count, cause) in tracked {
                 let task_id = scaffold.tasks[task_index].id.clone();
                 let result = if completed.contains_key(&task_id) {
                     RetryResult::Success
@@ -586,6 +651,7 @@ pub(crate) fn compose_with_question_composer_prepared_with_terminal_cause(
                 progress.emit(ProgressEvent::Retry {
                     task_id,
                     attempt: retry_count,
+                    cause,
                     result,
                 });
             }
@@ -714,31 +780,27 @@ fn partial_plan_error(
 }
 
 fn validate_port_policy(
-    scaffold: &ScaffoldDocument,
+    _scaffold: &ScaffoldDocument,
     policy: ComposeExecutionPolicy,
 ) -> Result<(), ComposePlanError> {
     if policy.max_content_retries > 2
         || policy.batch_policy.max_tasks_per_batch == 0
         || policy.batch_policy.max_estimated_input_tokens == 0
+        || policy.batch_policy.max_estimated_output_tokens == 0
+        || policy.batch_policy.max_blanks_per_batch == 0
         || policy.batch_policy.max_concurrent_batches == 0
     {
         return Err(ComposePlanError::Configuration {
             id: "policy".to_string(),
         });
     }
-    let estimator = CharHeuristicTokenEstimator;
-    if let Some(task) = scaffold.tasks.iter().find(|task| {
-        estimate_task_tokens(task, &estimator) > policy.batch_policy.max_estimated_input_tokens
-    }) {
-        return Err(ComposePlanError::Configuration {
-            id: task.id.clone(),
-        });
-    }
+    // BatchPolicyはpacking用のsoft budget。単独qblockが超える場合は
+    // oversized singletonとして許可し、provider hard limitはquota側で検査する。
     Ok(())
 }
 
-/// policy 検証と単独 task の token 予算検査を、実行前にまとめて行う。
-/// 呼び出し側が開始イベントを出す前に使う。
+/// policy 検証と初回batch計画を、実行前にまとめて行う。
+/// qblock単独がsoft budgetを超える場合はsingletonとして許可する。
 pub fn prepare_initial_batch_count(
     scaffold: &ScaffoldDocument,
     policy: ComposeExecutionPolicy,
@@ -848,6 +910,10 @@ fn run_port_batch(
                     errors: vec!["invalid-provider-content".to_string()],
                     reason: FailureReason::Content,
                     terminal_cause: TerminalCause::Content,
+                    scope: FailureScope::Batch {
+                        group: batch_number,
+                        previous_size: attempts.len(),
+                    },
                 })
                 .collect());
         }
@@ -874,6 +940,7 @@ fn run_port_batch(
                     errors: vec![error_class(&error).to_string()],
                     reason: FailureReason::Transport,
                     terminal_cause,
+                    scope: FailureScope::QBlock,
                 })
                 .collect());
         }
@@ -957,6 +1024,7 @@ fn run_port_batch(
                 errors: vec!["id-mismatch".to_string()],
                 reason: FailureReason::Content,
                 terminal_cause: TerminalCause::Content,
+                scope: FailureScope::QBlock,
             });
             continue;
         }
@@ -968,6 +1036,7 @@ fn run_port_batch(
                 errors: vec!["missing-id".to_string()],
                 reason: FailureReason::Content,
                 terminal_cause: TerminalCause::Content,
+                scope: FailureScope::QBlock,
             });
             continue;
         };
@@ -984,6 +1053,7 @@ fn run_port_batch(
                     errors: vec![error.to_string()],
                     reason: FailureReason::Content,
                     terminal_cause: TerminalCause::Content,
+                    scope: FailureScope::QBlock,
                 });
                 continue;
             }
@@ -1037,6 +1107,7 @@ fn run_port_batch(
                 errors: build_retry_feedback(&qblock.id, &generated, &report.errors),
                 reason: FailureReason::Content,
                 terminal_cause: TerminalCause::Content,
+                scope: FailureScope::QBlock,
             });
         }
     }
@@ -1116,7 +1187,7 @@ fn error_class(error: &ComposeError) -> &'static str {
     match error {
         ComposeError::InvalidResponse | ComposeError::EmptyResponse => "content",
         ComposeError::Configuration | ComposeError::Authentication => "configuration",
-        ComposeError::RateLimited => "rate_limited",
+        ComposeError::RateLimited { .. } => "rate_limited",
         ComposeError::Timeout => "timeout",
         ComposeError::Transport => "transport",
         ComposeError::Api { .. } => "api",
@@ -1128,7 +1199,7 @@ fn terminal_cause_for_error(error: &ComposeError) -> TerminalCause {
         ComposeError::InvalidResponse | ComposeError::EmptyResponse => TerminalCause::Content,
         ComposeError::Configuration => TerminalCause::Configuration,
         ComposeError::Authentication => TerminalCause::Authentication,
-        ComposeError::RateLimited => TerminalCause::RateLimited,
+        ComposeError::RateLimited { kind } => TerminalCause::RateLimited { kind: *kind },
         ComposeError::Timeout => TerminalCause::Timeout,
         ComposeError::Transport => TerminalCause::Transport,
         ComposeError::Api { status, .. } => TerminalCause::Api { status: *status },
@@ -1138,7 +1209,7 @@ fn terminal_cause_for_error(error: &ComposeError) -> TerminalCause {
 fn transport_fallbackable(error: &ComposeError) -> bool {
     matches!(
         error,
-        ComposeError::RateLimited
+        ComposeError::RateLimited { .. }
             | ComposeError::Timeout
             | ComposeError::Transport
             | ComposeError::Api {
@@ -1180,18 +1251,70 @@ fn enqueue_port_failures(
             continue;
         }
         let next_retry_count = failure.retry_count + 1;
+        let final_retry = next_retry_count >= max_content_retries;
+        let (retry_group, max_batch_size) = if final_retry {
+            (None, Some(1))
+        } else {
+            match failure.scope {
+                FailureScope::QBlock => (None, None),
+                FailureScope::Batch {
+                    group,
+                    previous_size,
+                } => (
+                    Some(group),
+                    Some((previous_size.saturating_add(1) / 2).max(1)),
+                ),
+            }
+        };
         queue.push(TaskAttempt {
             index: failure.index,
             retry_count: next_retry_count,
-            mode: if next_retry_count < max_content_retries {
-                ComposeMode::Batched
-            } else {
+            mode: if final_retry {
                 ComposeMode::SingleTask
+            } else {
+                ComposeMode::Batched
             },
             feedback: failure.errors,
+            retry_group,
+            max_batch_size,
         });
     }
     terminal
+}
+
+fn retry_cause(feedback: &[String]) -> RetryCause {
+    const CAUSES: &[(&str, RetryCause)] = &[
+        (
+            "invalid-provider-content",
+            RetryCause::InvalidProviderContent,
+        ),
+        ("id-mismatch", RetryCause::IdMismatch),
+        ("missing-id", RetryCause::MissingId),
+        ("empty-question", RetryCause::EmptyQuestion),
+        ("blank-count-mismatch", RetryCause::BlankCountMismatch),
+        ("answer-not-in-targets", RetryCause::AnswerNotInTargets),
+        ("answer-leakage", RetryCause::AnswerLeakage),
+        ("missing-target-answer", RetryCause::MissingTargetAnswer),
+        ("fixed-field-mismatch", RetryCause::FixedFieldMismatch),
+        ("duplicate-id", RetryCause::DuplicateId),
+        ("unknown-id", RetryCause::UnknownId),
+        ("order-mismatch", RetryCause::OrderMismatch),
+        ("anonymous-blank", RetryCause::AnonymousBlank),
+        ("missing-sentinel", RetryCause::MissingSentinel),
+        ("duplicate-sentinel", RetryCause::DuplicateSentinel),
+        ("sentinel-order", RetryCause::SentinelOrder),
+        ("malformed-sentinel", RetryCause::MalformedSentinel),
+        ("unknown-sentinel", RetryCause::UnknownSentinel),
+        ("foreign-sentinel", RetryCause::ForeignSentinel),
+    ];
+    for item in feedback {
+        for (marker, cause) in CAUSES {
+            if item.contains(marker) {
+                return *cause;
+            }
+        }
+    }
+    RetryCause::ContentValidation
 }
 
 fn quota_adjusted_batch_policy<E>(
@@ -1209,6 +1332,15 @@ where
     let mut policy = base;
     if let Some(tpm) = quota.tpm {
         let tpm = usize::try_from(tpm).unwrap_or(usize::MAX);
+        if let Some(task) = scaffold
+            .tasks
+            .iter()
+            .find(|task| estimate_task_tokens(task, estimator) > tpm)
+        {
+            return Err(ComposePlanError::Configuration {
+                id: task.id.clone(),
+            });
+        }
         policy.max_estimated_input_tokens = policy.max_estimated_input_tokens.min(tpm);
     }
     let Some(request_budget) = quota.request_budget() else {
@@ -1224,13 +1356,21 @@ where
         .adaptive_max_tasks_per_batch
         .unwrap_or(policy.max_tasks_per_batch)
         .max(policy.max_tasks_per_batch);
-    let mut hard_tokens = quota
+    let mut hard_input = quota
         .adaptive_max_input_tokens
         .unwrap_or(policy.max_estimated_input_tokens)
         .max(policy.max_estimated_input_tokens);
     if let Some(tpm) = quota.tpm {
-        hard_tokens = hard_tokens.min(usize::try_from(tpm).unwrap_or(usize::MAX));
+        hard_input = hard_input.min(usize::try_from(tpm).unwrap_or(usize::MAX));
     }
+    let hard_output = quota
+        .adaptive_max_output_tokens
+        .unwrap_or(policy.max_estimated_output_tokens)
+        .max(policy.max_estimated_output_tokens);
+    let hard_blanks = quota
+        .adaptive_max_blanks_per_batch
+        .unwrap_or(policy.max_blanks_per_batch)
+        .max(policy.max_blanks_per_batch);
 
     let mut batch_count = plan_batches(scaffold, policy, estimator).len();
     while batch_count > request_budget {
@@ -1239,10 +1379,18 @@ where
             policy.max_tasks_per_batch += 1;
             changed = true;
         }
-        if policy.max_estimated_input_tokens < hard_tokens {
-            let remaining = hard_tokens - policy.max_estimated_input_tokens;
-            let step = remaining.clamp(1, 1_000);
-            policy.max_estimated_input_tokens += step;
+        if policy.max_estimated_input_tokens < hard_input {
+            let remaining = hard_input - policy.max_estimated_input_tokens;
+            policy.max_estimated_input_tokens += remaining.clamp(1, 1_000);
+            changed = true;
+        }
+        if policy.max_estimated_output_tokens < hard_output {
+            let remaining = hard_output - policy.max_estimated_output_tokens;
+            policy.max_estimated_output_tokens += remaining.clamp(1, 500);
+            changed = true;
+        }
+        if policy.max_blanks_per_batch < hard_blanks {
+            policy.max_blanks_per_batch += 1;
             changed = true;
         }
         if !changed {
@@ -1267,34 +1415,190 @@ fn plan_retry_attempts<E>(
 where
     E: TokenEstimator,
 {
-    let mut batches = Vec::new();
-    let mut current = Vec::new();
-    let mut current_tokens = 0usize;
+    let mut singletons = Vec::new();
+    let mut ungrouped = Vec::new();
+    let mut groups = BTreeMap::<usize, Vec<TaskAttempt>>::new();
 
     for attempt in attempts {
         if attempt.mode == ComposeMode::SingleTask {
-            if !current.is_empty() {
-                batches.push(std::mem::take(&mut current));
-                current_tokens = 0;
-            }
-            batches.push(vec![attempt]);
-            continue;
+            singletons.push(vec![attempt]);
+        } else if let Some(group) = attempt.retry_group {
+            groups.entry(group).or_default().push(attempt);
+        } else {
+            ungrouped.push(attempt);
         }
-        let estimated_tokens = estimate_task_tokens(&scaffold.tasks[attempt.index], estimator);
-        let would_exceed_tasks = current.len() >= policy.max_tasks_per_batch;
-        let would_exceed_tokens = !current.is_empty()
-            && current_tokens + estimated_tokens > policy.max_estimated_input_tokens;
-        if would_exceed_tasks || would_exceed_tokens {
-            batches.push(std::mem::take(&mut current));
-            current_tokens = 0;
-        }
-        current_tokens += estimated_tokens;
-        current.push(attempt);
     }
-    if !current.is_empty() {
-        batches.push(current);
+
+    let mut batches = pack_attempts(
+        scaffold,
+        ungrouped,
+        policy,
+        policy.max_tasks_per_batch,
+        estimator,
+    );
+    for (_, group) in groups {
+        let max_qblocks = group
+            .iter()
+            .filter_map(|attempt| attempt.max_batch_size)
+            .min()
+            .unwrap_or(policy.max_tasks_per_batch)
+            .min(policy.max_tasks_per_batch)
+            .max(1);
+        batches.extend(pack_attempts(
+            scaffold,
+            group,
+            policy,
+            max_qblocks,
+            estimator,
+        ));
     }
+    batches.extend(singletons);
+    batches.sort_by_key(|batch| {
+        batch
+            .iter()
+            .map(|attempt| attempt.index)
+            .min()
+            .unwrap_or(usize::MAX)
+    });
     batches
+}
+
+fn plan_batches<E>(
+    scaffold: &ScaffoldDocument,
+    policy: BatchPolicy,
+    estimator: &E,
+) -> Vec<Vec<TaskAttempt>>
+where
+    E: TokenEstimator,
+{
+    let attempts = scaffold
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(index, _)| TaskAttempt {
+            index,
+            retry_count: 0,
+            mode: ComposeMode::Batched,
+            feedback: Vec::new(),
+            retry_group: None,
+            max_batch_size: None,
+        })
+        .collect();
+    pack_attempts(
+        scaffold,
+        attempts,
+        policy,
+        policy.max_tasks_per_batch,
+        estimator,
+    )
+}
+
+fn pack_attempts<E>(
+    scaffold: &ScaffoldDocument,
+    attempts: Vec<TaskAttempt>,
+    policy: BatchPolicy,
+    max_qblocks: usize,
+    estimator: &E,
+) -> Vec<Vec<TaskAttempt>>
+where
+    E: TokenEstimator,
+{
+    if attempts.is_empty() {
+        return Vec::new();
+    }
+    let max_qblocks = max_qblocks.max(1);
+    let mut heavy = Vec::new();
+    let mut light = Vec::new();
+
+    for attempt in attempts {
+        let cost = estimate_qblock_cost(&scaffold.tasks[attempt.index], estimator);
+        if is_heavy_qblock(cost, policy) || exceeds_soft_budget(cost, policy) {
+            heavy.push(vec![attempt]);
+        } else {
+            light.push((attempt, cost));
+        }
+    }
+
+    light.sort_by(|(left_attempt, left_cost), (right_attempt, right_cost)| {
+        cost_score(*right_cost, policy)
+            .cmp(&cost_score(*left_cost, policy))
+            .then_with(|| left_attempt.index.cmp(&right_attempt.index))
+    });
+
+    let mut bins = Vec::<(Vec<TaskAttempt>, BatchLoad)>::new();
+    for (attempt, cost) in light {
+        let mut pending = Some(attempt);
+        for (batch, load) in &mut bins {
+            if load.can_fit(cost, policy, max_qblocks) {
+                batch.push(pending.take().expect("attempt is inserted once"));
+                load.add(cost);
+                break;
+            }
+        }
+        if let Some(attempt) = pending {
+            let mut load = BatchLoad::default();
+            load.add(cost);
+            bins.push((vec![attempt], load));
+        }
+    }
+
+    let mut batches = bins
+        .into_iter()
+        .map(|(mut batch, _)| {
+            batch.sort_by_key(|attempt| attempt.index);
+            batch
+        })
+        .collect::<Vec<_>>();
+    batches.extend(heavy);
+    batches.sort_by_key(|batch| {
+        batch
+            .iter()
+            .map(|attempt| attempt.index)
+            .min()
+            .unwrap_or(usize::MAX)
+    });
+    batches
+}
+
+fn estimate_qblock_cost<E>(task: &ScaffoldTask, estimator: &E) -> QBlockCost
+where
+    E: TokenEstimator,
+{
+    let output_base = estimator.estimate(&task.scaffold_question);
+    QBlockCost {
+        input_tokens: estimate_task_tokens(task, estimator),
+        output_tokens: output_base.saturating_mul(6).saturating_add(4) / 5 + 24,
+        blanks: task.blank_count,
+    }
+}
+
+fn exceeds_soft_budget(cost: QBlockCost, policy: BatchPolicy) -> bool {
+    cost.input_tokens > policy.max_estimated_input_tokens
+        || cost.output_tokens > policy.max_estimated_output_tokens
+        || cost.blanks > policy.max_blanks_per_batch
+}
+
+fn is_heavy_qblock(cost: QBlockCost, policy: BatchPolicy) -> bool {
+    consumes_at_least(cost.input_tokens, policy.max_estimated_input_tokens, 3, 5)
+        || consumes_at_least(cost.output_tokens, policy.max_estimated_output_tokens, 3, 5)
+        || consumes_at_least(cost.blanks, policy.max_blanks_per_batch, 3, 5)
+}
+
+fn consumes_at_least(value: usize, limit: usize, numerator: usize, denominator: usize) -> bool {
+    value.saturating_mul(denominator) >= limit.saturating_mul(numerator)
+}
+
+fn cost_score(cost: QBlockCost, policy: BatchPolicy) -> usize {
+    normalized_cost(cost.input_tokens, policy.max_estimated_input_tokens)
+        .max(normalized_cost(
+            cost.output_tokens,
+            policy.max_estimated_output_tokens,
+        ))
+        .max(normalized_cost(cost.blanks, policy.max_blanks_per_batch))
+}
+
+fn normalized_cost(value: usize, limit: usize) -> usize {
+    value.saturating_mul(10_000) / limit.max(1)
 }
 
 fn validation_error_id(error: &ValidationError) -> String {
@@ -1377,47 +1681,6 @@ where
     Ok(ComposedDocument { questions })
 }
 
-/// token budgetとtask数上限に従って初回batchを作る．
-fn plan_batches<E>(
-    scaffold: &ScaffoldDocument,
-    policy: BatchPolicy,
-    estimator: &E,
-) -> Vec<Vec<TaskAttempt>>
-where
-    E: TokenEstimator,
-{
-    let mut batches = Vec::new();
-    let mut current = Vec::new();
-    let mut current_tokens = 0;
-
-    for (index, task) in scaffold.tasks.iter().enumerate() {
-        let estimated_tokens = estimate_task_tokens(task, estimator);
-        let would_exceed_tasks = current.len() >= policy.max_tasks_per_batch;
-        let would_exceed_tokens = !current.is_empty()
-            && current_tokens + estimated_tokens > policy.max_estimated_input_tokens;
-
-        if would_exceed_tasks || would_exceed_tokens {
-            batches.push(current);
-            current = Vec::new();
-            current_tokens = 0;
-        }
-
-        current.push(TaskAttempt {
-            index,
-            retry_count: 0,
-            mode: ComposeMode::Batched,
-            feedback: Vec::new(),
-        });
-        current_tokens += estimated_tokens;
-    }
-
-    if !current.is_empty() {
-        batches.push(current);
-    }
-
-    batches
-}
-
 /// 初回実行だけのbatch数。retry/fallbackはこの計画に含めない。
 pub fn initial_batch_count(scaffold: &ScaffoldDocument, policy: BatchPolicy) -> usize {
     plan_batches(scaffold, policy, &CharHeuristicTokenEstimator).len()
@@ -1481,6 +1744,7 @@ where
                     errors: vec![format!("生成結果JSONを読めません: {error}")],
                     reason: FailureReason::Content,
                     terminal_cause: TerminalCause::Content,
+                    scope: FailureScope::QBlock,
                 })
                 .collect());
         }
@@ -1539,6 +1803,7 @@ where
                 errors: vec![format!("{}: {:?}", qblock.id, issue)],
                 reason: FailureReason::Content,
                 terminal_cause: TerminalCause::Content,
+                scope: FailureScope::QBlock,
             });
             continue;
         }
@@ -1550,6 +1815,7 @@ where
                 errors: vec![format!("{}: LLM出力にidが含まれていません", qblock.id)],
                 reason: FailureReason::Content,
                 terminal_cause: TerminalCause::Content,
+                scope: FailureScope::QBlock,
             });
             continue;
         };
@@ -1588,6 +1854,7 @@ where
                 errors: build_retry_feedback(qblock.id.as_str(), &generated, &report.errors),
                 reason: FailureReason::Content,
                 terminal_cause: TerminalCause::Content,
+                scope: FailureScope::QBlock,
             });
         }
     }
@@ -1620,6 +1887,8 @@ fn enqueue_failures(
             retry_count: failure.retry_count + 1,
             mode: ComposeMode::SingleTask,
             feedback: failure.errors,
+            retry_group: None,
+            max_batch_size: Some(1),
         });
     }
 
@@ -1742,6 +2011,8 @@ mod tests {
             BatchPolicy {
                 max_tasks_per_batch: 8,
                 max_estimated_input_tokens: 12_000,
+                max_estimated_output_tokens: 12_000,
+                max_blanks_per_batch: 64,
                 max_retry_count: 2,
                 max_concurrent_batches: 1,
             },
@@ -1776,6 +2047,8 @@ mod tests {
             BatchPolicy {
                 max_tasks_per_batch: 8,
                 max_estimated_input_tokens: 12_000,
+                max_estimated_output_tokens: 12_000,
+                max_blanks_per_batch: 64,
                 max_retry_count: 2,
                 max_concurrent_batches: 1,
             },
@@ -1901,6 +2174,8 @@ mod tests {
                 batch_policy: BatchPolicy {
                     max_tasks_per_batch: 2,
                     max_estimated_input_tokens: 12_000,
+                    max_estimated_output_tokens: 12_000,
+                    max_blanks_per_batch: 64,
                     max_retry_count: 0,
                     max_concurrent_batches: 1,
                 },
@@ -1936,13 +2211,15 @@ mod tests {
     }
 
     #[test]
-    fn port_policy_rejects_zero_limits_and_oversize_before_composer_call() {
+    fn port_policy_rejects_zero_limits_but_allows_oversize_singleton() {
         let intermediate = intermediate();
         let scaffold = build_scaffold_document(&intermediate);
         let zero = ComposeExecutionPolicy {
             batch_policy: BatchPolicy {
                 max_tasks_per_batch: 0,
                 max_estimated_input_tokens: 1,
+                max_estimated_output_tokens: 1,
+                max_blanks_per_batch: 1,
                 max_retry_count: 0,
                 max_concurrent_batches: 1,
             },
@@ -1957,15 +2234,17 @@ mod tests {
             batch_policy: BatchPolicy {
                 max_tasks_per_batch: 1,
                 max_estimated_input_tokens: 1,
+                max_estimated_output_tokens: 1,
+                max_blanks_per_batch: 1,
                 max_retry_count: 0,
                 max_concurrent_batches: 1,
             },
             max_content_retries: 0,
         };
-        assert!(matches!(
-            compose_with_question_composer(&intermediate, &scaffold, oversize, &IdentityComposer),
-            Err(ComposePlanError::Configuration { id }) if id == "q1"
-        ));
+        let generated =
+            compose_with_question_composer(&intermediate, &scaffold, oversize, &IdentityComposer)
+                .expect("soft batch budgets must allow an oversized singleton");
+        assert_eq!(generated.questions.len(), 2);
     }
 
     struct EmptyThenValidComposer(Mutex<u32>);
@@ -2015,10 +2294,46 @@ mod tests {
     }
 
     #[test]
+    fn batch_level_content_failure_halves_the_first_retry_batch() {
+        let mut intermediate = intermediate();
+        for (id, answer) in [("q3", "three"), ("q4", "four")] {
+            intermediate.qblocks.push(IntermediateQBlock {
+                id: id.to_string(),
+                section: None,
+                source_text: format!("{answer} is a value."),
+                targets: vec![IntermediateTarget {
+                    answer: answer.to_string(),
+                    target_type: "term".to_string(),
+                }],
+                warnings: Vec::new(),
+            });
+        }
+        let scaffold = build_scaffold_document(&intermediate);
+        let composer = EmptyThenValidComposer(Mutex::new(0));
+
+        let generated = compose_with_question_composer(
+            &intermediate,
+            &scaffold,
+            ComposeExecutionPolicy {
+                batch_policy: BatchPolicy::gemini_default(),
+                max_content_retries: 2,
+            },
+            &composer,
+        )
+        .unwrap();
+
+        assert_eq!(generated.questions.len(), 4);
+        // 4 qblocks in the failed batch shrink to two 2-qblock retries.
+        assert_eq!(*composer.0.lock().unwrap(), 3);
+    }
+
+    #[test]
     fn public_composer_error_payload_matches_compose_error_display() {
         let errors = [
             ComposeError::Authentication,
-            ComposeError::RateLimited,
+            ComposeError::RateLimited {
+                kind: RateLimitKind::Unknown,
+            },
             ComposeError::Timeout,
             ComposeError::Transport,
             ComposeError::Api {
@@ -2114,6 +2429,8 @@ mod quota_planner_tests {
             batch_policy: BatchPolicy {
                 max_tasks_per_batch: 1,
                 max_estimated_input_tokens: 1_000,
+                max_estimated_output_tokens: 1_000,
+                max_blanks_per_batch: 8,
                 max_retry_count: 2,
                 max_concurrent_batches: 1,
             },
@@ -2127,6 +2444,8 @@ mod quota_planner_tests {
             reserve_requests: 1,
             adaptive_max_tasks_per_batch: Some(3),
             adaptive_max_input_tokens: Some(2_000),
+            adaptive_max_output_tokens: Some(2_000),
+            adaptive_max_blanks_per_batch: Some(16),
         };
         let plan = prepare_compose_plan_with_quota(&scaffold, policy, Some(&quota)).unwrap();
         assert_eq!(plan.batch_count(), 2);
@@ -2140,6 +2459,8 @@ mod quota_planner_tests {
             batch_policy: BatchPolicy {
                 max_tasks_per_batch: 1,
                 max_estimated_input_tokens: 1_000,
+                max_estimated_output_tokens: 1_000,
+                max_blanks_per_batch: 8,
                 max_retry_count: 2,
                 max_concurrent_batches: 1,
             },
@@ -2153,6 +2474,8 @@ mod quota_planner_tests {
             reserve_requests: 1,
             adaptive_max_tasks_per_batch: Some(2),
             adaptive_max_input_tokens: Some(1_000),
+            adaptive_max_output_tokens: Some(1_000),
+            adaptive_max_blanks_per_batch: Some(8),
         };
         assert!(matches!(
             prepare_compose_plan_with_quota(&scaffold, policy, Some(&quota)),
@@ -2161,11 +2484,113 @@ mod quota_planner_tests {
     }
 
     #[test]
+    fn planner_repacks_noncontiguous_light_qblocks_and_isolates_heavy_qblock() {
+        let task = |id: &str, source_len: usize| ScaffoldTask {
+            id: id.to_string(),
+            source_text: "a".repeat(source_len),
+            cloze_template: "b".repeat(10),
+            scaffold_question: "b".repeat(10),
+            blank_count: 1,
+            answers: vec!["z".to_string()],
+        };
+        let scaffold = ScaffoldDocument {
+            tasks: vec![
+                task("q0", 10),
+                task("q1", 70),
+                task("q2", 10),
+                task("q3", 10),
+            ],
+        };
+        let policy = BatchPolicy {
+            max_tasks_per_batch: 4,
+            max_estimated_input_tokens: 100,
+            max_estimated_output_tokens: 200,
+            max_blanks_per_batch: 10,
+            max_retry_count: 2,
+            max_concurrent_batches: 1,
+        };
+
+        let planned = plan_batches(&scaffold, policy, &CharHeuristicTokenEstimator)
+            .into_iter()
+            .map(|batch| {
+                batch
+                    .into_iter()
+                    .map(|attempt| attempt.index)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(planned, vec![vec![0, 2, 3], vec![1]]);
+    }
+
+    #[test]
+    fn output_and_blank_budgets_can_make_qblocks_singletons() {
+        let scaffold = ScaffoldDocument {
+            tasks: vec![
+                ScaffoldTask {
+                    id: "light-a".into(),
+                    source_text: "a".repeat(5),
+                    cloze_template: "b".repeat(10),
+                    scaffold_question: "b".repeat(10),
+                    blank_count: 1,
+                    answers: vec!["z".into()],
+                },
+                ScaffoldTask {
+                    id: "output-heavy".into(),
+                    source_text: "a".repeat(5),
+                    cloze_template: "b".repeat(50),
+                    scaffold_question: "b".repeat(50),
+                    blank_count: 1,
+                    answers: vec!["z".into()],
+                },
+                ScaffoldTask {
+                    id: "blank-heavy".into(),
+                    source_text: "a".repeat(5),
+                    cloze_template: "b".repeat(10),
+                    scaffold_question: "b".repeat(10),
+                    blank_count: 6,
+                    answers: vec!["z".into(); 6],
+                },
+                ScaffoldTask {
+                    id: "light-b".into(),
+                    source_text: "a".repeat(5),
+                    cloze_template: "b".repeat(10),
+                    scaffold_question: "b".repeat(10),
+                    blank_count: 1,
+                    answers: vec!["z".into()],
+                },
+            ],
+        };
+        let policy = BatchPolicy {
+            max_tasks_per_batch: 4,
+            max_estimated_input_tokens: 1_000,
+            max_estimated_output_tokens: 100,
+            max_blanks_per_batch: 10,
+            max_retry_count: 2,
+            max_concurrent_batches: 1,
+        };
+
+        let planned = plan_batches(&scaffold, policy, &CharHeuristicTokenEstimator)
+            .into_iter()
+            .map(|batch| {
+                batch
+                    .into_iter()
+                    .map(|attempt| attempt.index)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(planned, vec![vec![0, 3], vec![1], vec![2]]);
+    }
+
+    #[test]
     fn first_content_retry_is_rebatched_and_last_retry_is_single_task() {
         let scaffold = scaffold(3);
         let policy = BatchPolicy {
             max_tasks_per_batch: 3,
             max_estimated_input_tokens: 10_000,
+            max_estimated_output_tokens: 10_000,
+            max_blanks_per_batch: 32,
             max_retry_count: 2,
             max_concurrent_batches: 1,
         };
@@ -2175,6 +2600,8 @@ mod quota_planner_tests {
                 retry_count: 1,
                 mode: ComposeMode::Batched,
                 feedback: vec!["retry".into()],
+                retry_group: None,
+                max_batch_size: None,
             })
             .collect();
         assert_eq!(
@@ -2190,6 +2617,8 @@ mod quota_planner_tests {
                 retry_count: 2,
                 mode: ComposeMode::SingleTask,
                 feedback: vec!["retry".into()],
+                retry_group: None,
+                max_batch_size: Some(1),
             })
             .collect();
         assert_eq!(

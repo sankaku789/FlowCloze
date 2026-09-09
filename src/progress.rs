@@ -3,6 +3,8 @@
 use std::io::{self, Write};
 use std::sync::Mutex;
 
+use crate::rate_limit::RateLimitKind;
+
 /// 失敗した処理段階。表示・機械判定の双方で安定した有限集合にする。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressStage {
@@ -103,6 +105,7 @@ pub enum ProgressEvent {
     Retry {
         task_id: String,
         attempt: u32,
+        cause: RetryCause,
         result: RetryResult,
     },
     Fallback {
@@ -119,11 +122,63 @@ pub enum ProgressEvent {
     ProviderError {
         class: FailureClass,
         status: Option<u16>,
+        rate_limit: Option<RateLimitKind>,
     },
     Failed {
         stage: ProgressStage,
         class: FailureClass,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryCause {
+    InvalidProviderContent,
+    IdMismatch,
+    MissingId,
+    EmptyQuestion,
+    BlankCountMismatch,
+    AnswerNotInTargets,
+    AnswerLeakage,
+    MissingTargetAnswer,
+    FixedFieldMismatch,
+    DuplicateId,
+    UnknownId,
+    OrderMismatch,
+    AnonymousBlank,
+    MissingSentinel,
+    DuplicateSentinel,
+    SentinelOrder,
+    MalformedSentinel,
+    UnknownSentinel,
+    ForeignSentinel,
+    ContentValidation,
+}
+
+impl RetryCause {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidProviderContent => "invalid_provider_content",
+            Self::IdMismatch => "id_mismatch",
+            Self::MissingId => "missing_id",
+            Self::EmptyQuestion => "empty_question",
+            Self::BlankCountMismatch => "blank_count_mismatch",
+            Self::AnswerNotInTargets => "answer_not_in_targets",
+            Self::AnswerLeakage => "answer_leakage",
+            Self::MissingTargetAnswer => "missing_target_answer",
+            Self::FixedFieldMismatch => "fixed_field_mismatch",
+            Self::DuplicateId => "duplicate_id",
+            Self::UnknownId => "unknown_id",
+            Self::OrderMismatch => "order_mismatch",
+            Self::AnonymousBlank => "anonymous_blank",
+            Self::MissingSentinel => "missing_sentinel",
+            Self::DuplicateSentinel => "duplicate_sentinel",
+            Self::SentinelOrder => "sentinel_order",
+            Self::MalformedSentinel => "malformed_sentinel",
+            Self::UnknownSentinel => "unknown_sentinel",
+            Self::ForeignSentinel => "foreign_sentinel",
+            Self::ContentValidation => "content_validation",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,23 +264,16 @@ impl ProgressSink for PlainProgressSink {
                 total,
                 successes,
                 retries,
-            } => {
-                let retry_detail = if retries == 0 {
-                    String::new()
-                } else {
-                    " (cause=content_validation)".to_string()
-                };
-                format!(
-                    "      batch {number}/{total}: {successes}成功, {retries} retry{retry_detail}"
-                )
-            }
+            } => format!("      batch {number}/{total}: {successes}成功, {retries} retry"),
             ProgressEvent::Retry {
                 task_id,
                 attempt,
+                cause,
                 result,
             } => format!(
-                "      retry: task={} attempt={attempt} cause=content_validation result={}",
+                "      retry: task={} attempt={attempt} cause={} result={}",
                 escape(&task_id),
+                cause.as_str(),
                 result.as_str()
             ),
             ProgressEvent::Fallback { task_id, reason } => format!(
@@ -237,7 +285,11 @@ impl ProgressSink for PlainProgressSink {
             ProgressEvent::Validated { tasks } => format!("[3/4] 検証完了: {tasks}/{tasks}"),
             ProgressEvent::Saved { path } => format!("[4/4] 保存完了: {}", escape(&path)),
             ProgressEvent::Stdout => "[4/4] stdout出力完了".to_string(),
-            ProgressEvent::ProviderError { class, status } => format_provider_error(class, status),
+            ProgressEvent::ProviderError {
+                class,
+                status,
+                rate_limit,
+            } => format_provider_error(class, status, rate_limit),
             ProgressEvent::Failed { stage, class } => format!(
                 "[failed] stage={} class={} detail={}",
                 stage.as_str(),
@@ -251,26 +303,34 @@ impl ProgressSink for PlainProgressSink {
     }
 }
 
-fn format_provider_error(class: FailureClass, status: Option<u16>) -> String {
+fn format_provider_error(
+    class: FailureClass,
+    status: Option<u16>,
+    rate_limit: Option<RateLimitKind>,
+) -> String {
+    let quota = rate_limit
+        .filter(|kind| *kind != RateLimitKind::Unknown)
+        .map(|kind| format!(", quota={}", kind.as_str()))
+        .unwrap_or_default();
+
     if let Some(status) = status {
-        if let Some(reason) = http_status_reason(status) {
-            return format!(
-                "Provider error: HTTP {status} {reason} (class={}, detail={})",
-                class.as_str(),
-                class.detail()
-            );
-        }
-        return format!(
-            "Provider error: HTTP {status} (class={}, detail={})",
+        let details = format!(
+            "class={}, detail={}{}",
             class.as_str(),
-            class.detail()
+            class.detail(),
+            quota
         );
+        if let Some(reason) = http_status_reason(status) {
+            return format!("Provider error: HTTP {status} {reason} ({details})");
+        }
+        return format!("Provider error: HTTP {status} ({details})");
     }
 
     format!(
-        "Provider error: {} (class={})",
+        "Provider error: {} (class={}{})",
         class.detail(),
-        class.as_str()
+        class.as_str(),
+        quota
     )
 }
 
@@ -349,12 +409,13 @@ mod tests {
         sink.emit(ProgressEvent::Retry {
             task_id: "qblock-003".to_string(),
             attempt: 1,
+            cause: RetryCause::AnswerLeakage,
             result: RetryResult::Success,
         });
 
         assert_eq!(
             String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
-            "      batch 1/2: 2成功, 1 retry (cause=content_validation)\n      retry: task=qblock-003 attempt=1 cause=content_validation result=success\n"
+            "      batch 1/2: 2成功, 1 retry\n      retry: task=qblock-003 attempt=1 cause=answer_leakage result=success\n"
         );
     }
 
@@ -365,11 +426,12 @@ mod tests {
         sink.emit(ProgressEvent::ProviderError {
             class: FailureClass::RateLimited,
             status: Some(429),
+            rate_limit: Some(RateLimitKind::RequestsPerDay),
         });
 
         assert_eq!(
             String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
-            "Provider error: HTTP 429 Too Many Requests (class=rate_limited, detail=provider rate limit reached)\n"
+            "Provider error: HTTP 429 Too Many Requests (class=rate_limited, detail=provider rate limit reached, quota=rpd)\n"
         );
     }
 
@@ -380,6 +442,7 @@ mod tests {
         sink.emit(ProgressEvent::ProviderError {
             class: FailureClass::Timeout,
             status: None,
+            rate_limit: None,
         });
 
         assert_eq!(

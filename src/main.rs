@@ -954,12 +954,16 @@ fn resolve_batch_policy(
         Some(BatchPolicyOverride::Small) => flowcloze::planner::BatchPolicy {
             max_tasks_per_batch: 2,
             max_estimated_input_tokens: 4_000,
+            max_estimated_output_tokens: 1_500,
+            max_blanks_per_batch: 8,
             max_retry_count: 2,
             max_concurrent_batches: 1,
         },
         Some(BatchPolicyOverride::OneTask) => flowcloze::planner::BatchPolicy {
             max_tasks_per_batch: 1,
             max_estimated_input_tokens: 12_000,
+            max_estimated_output_tokens: 6_000,
+            max_blanks_per_batch: 24,
             max_retry_count: 2,
             max_concurrent_batches: 1,
         },

@@ -8,6 +8,7 @@ use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
 
 use crate::quota::{estimate_request_tokens, QuotaProfile, RateGate};
+use crate::rate_limit::RateLimitKind;
 
 pub const MAX_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
 const MAX_ATTEMPTS: u32 = 3;
@@ -29,6 +30,7 @@ pub enum HttpError {
     },
     RateLimited {
         status: u16,
+        kind: RateLimitKind,
     },
     Timeout,
     Transport,
@@ -43,7 +45,7 @@ impl HttpError {
     pub fn status(&self) -> Option<u16> {
         match self {
             Self::Authentication { status }
-            | Self::RateLimited { status }
+            | Self::RateLimited { status, .. }
             | Self::Api { status, .. } => Some(*status),
             _ => None,
         }
@@ -161,20 +163,32 @@ impl HttpTransport {
                     if (200..300).contains(&status) {
                         return Ok(response_body);
                     }
-                    let retryable = status == 408 || status == 429 || (500..600).contains(&status);
+                    let rate_limit_kind = if status == 429 {
+                        classify_rate_limit(&response_body)
+                    } else {
+                        RateLimitKind::Unknown
+                    };
+                    let retryable = retryable_status(status, rate_limit_kind);
                     if retryable && attempt < MAX_ATTEMPTS {
                         let delay = retry_after.unwrap_or_else(|| backoff(attempt));
                         self.observe_retry(
                             attempt,
                             delay,
-                            if status == 429 { "rate_limited" } else { "api" },
+                            if status == 429 {
+                                retry_error_class(rate_limit_kind)
+                            } else {
+                                "api"
+                            },
                         );
                         (self.sleeper)(delay);
                         continue;
                     }
                     return Err(match status {
                         401 | 403 => HttpError::Authentication { status },
-                        429 => HttpError::RateLimited { status },
+                        429 => HttpError::RateLimited {
+                            status,
+                            kind: rate_limit_kind,
+                        },
                         _ => HttpError::Api {
                             status,
                             retryable,
@@ -217,6 +231,93 @@ impl HttpTransport {
             });
         }
     }
+}
+
+fn retryable_status(status: u16, rate_limit_kind: RateLimitKind) -> bool {
+    status == 408 || (status == 429 && !rate_limit_kind.is_daily()) || (500..600).contains(&status)
+}
+
+fn retry_error_class(kind: RateLimitKind) -> &'static str {
+    match kind {
+        RateLimitKind::RequestsPerDay => "rate_limited_rpd",
+        RateLimitKind::TokensPerDay => "rate_limited_tpd",
+        RateLimitKind::RequestsPerMinute => "rate_limited_rpm",
+        RateLimitKind::TokensPerMinute => "rate_limited_tpm",
+        RateLimitKind::Spend => "rate_limited_spend",
+        RateLimitKind::Unknown => "rate_limited",
+    }
+}
+
+/// Structured quota identifiers only are used for terminal daily-limit detection.
+/// Free-form provider messages are intentionally ignored to avoid false positives.
+fn classify_rate_limit(body: &str) -> RateLimitKind {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return RateLimitKind::Unknown;
+    };
+    let mut descriptors = Vec::new();
+    collect_quota_descriptors(&value, &mut descriptors);
+    descriptors
+        .iter()
+        .filter_map(|descriptor| classify_quota_descriptor(descriptor))
+        .max_by_key(|kind| match kind {
+            RateLimitKind::RequestsPerDay | RateLimitKind::TokensPerDay => 4,
+            RateLimitKind::RequestsPerMinute | RateLimitKind::TokensPerMinute => 3,
+            RateLimitKind::Spend => 2,
+            RateLimitKind::Unknown => 1,
+        })
+        .unwrap_or(RateLimitKind::Unknown)
+}
+
+fn collect_quota_descriptors(value: &serde_json::Value, descriptors: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object {
+                let key = key.to_ascii_lowercase();
+                if key.contains("quotaid")
+                    || key.contains("quota_id")
+                    || key.contains("quotametric")
+                    || key.contains("quota_metric")
+                {
+                    if let Some(value) = value.as_str() {
+                        descriptors.push(value.to_ascii_lowercase());
+                    }
+                }
+                collect_quota_descriptors(value, descriptors);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_quota_descriptors(value, descriptors);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn classify_quota_descriptor(value: &str) -> Option<RateLimitKind> {
+    let compact = value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>();
+    let tokens = compact.contains("token");
+    if compact.contains("perday") || compact.contains("daily") {
+        return Some(if tokens {
+            RateLimitKind::TokensPerDay
+        } else {
+            RateLimitKind::RequestsPerDay
+        });
+    }
+    if compact.contains("perminute") {
+        return Some(if tokens {
+            RateLimitKind::TokensPerMinute
+        } else {
+            RateLimitKind::RequestsPerMinute
+        });
+    }
+    if compact.contains("spend") || compact.contains("cost") {
+        return Some(RateLimitKind::Spend);
+    }
+    None
 }
 
 fn bounded_body(response: reqwest::blocking::Response) -> Result<String, HttpError> {
@@ -264,6 +365,48 @@ mod tests {
     fn retry_after_accepts_seconds_and_date() {
         assert_eq!(retry_after("2"), Some(Duration::from_secs(2)));
         assert!(retry_after("Wed, 21 Oct 2015 07:28:00 GMT").is_some());
+    }
+
+    #[test]
+    fn daily_quota_is_not_bounded_retryable_but_minute_limit_is() {
+        assert!(!retryable_status(429, RateLimitKind::RequestsPerDay));
+        assert!(!retryable_status(429, RateLimitKind::TokensPerDay));
+        assert!(retryable_status(429, RateLimitKind::RequestsPerMinute));
+        assert!(retryable_status(429, RateLimitKind::Unknown));
+    }
+
+    #[test]
+    fn classifies_structured_google_daily_request_quota() {
+        let body = r#"{
+            "error": {
+                "details": [{
+                    "violations": [{
+                        "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+                    }]
+                }]
+            }
+        }"#;
+        assert_eq!(classify_rate_limit(body), RateLimitKind::RequestsPerDay);
+    }
+
+    #[test]
+    fn classifies_structured_token_per_minute_quota() {
+        let body = r#"{
+            "error": {
+                "details": [{
+                    "violations": [{
+                        "quotaMetric": "GenerateContentInputTokensPerModelPerMinute-FreeTier"
+                    }]
+                }]
+            }
+        }"#;
+        assert_eq!(classify_rate_limit(body), RateLimitKind::TokensPerMinute);
+    }
+
+    #[test]
+    fn free_form_429_message_does_not_claim_daily_quota() {
+        let body = r#"{"error":{"message":"quota exceeded; retry later"}}"#;
+        assert_eq!(classify_rate_limit(body), RateLimitKind::Unknown);
     }
 
     #[test]

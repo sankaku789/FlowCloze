@@ -18,6 +18,7 @@ pub mod progress;
 pub mod prompt;
 pub mod providers;
 pub mod quota;
+pub mod rate_limit;
 pub mod scaffold;
 pub mod validation;
 
@@ -51,7 +52,7 @@ pub use planner::{
 };
 pub use progress::{
     FailureClass, NoopProgressSink, PlainProgressSink, ProgressEvent, ProgressSink, ProgressStage,
-    RetryResult,
+    RetryCause, RetryResult,
 };
 pub use prompt::{build_compose_request_prompt, build_generation_prompt};
 pub use providers::capability::StructuredOutputMode;
@@ -60,6 +61,7 @@ pub use providers::openai_compatible::{
     OpenAiCompatiblePool, OpenAiEndpointConfig,
 };
 pub use quota::QuotaProfile;
+pub use rate_limit::RateLimitKind;
 pub use validation::{
     validate_generated_document, validate_generated_json, FixedField, GeneratedDocument,
     ValidationError, ValidationReport,

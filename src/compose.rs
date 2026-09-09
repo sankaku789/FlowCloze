@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::json::IntermediateDocument;
+use crate::rate_limit::RateLimitKind;
 use crate::scaffold::BLANK;
 use crate::validation::{GeneratedDocument, GeneratedQuestion, GeneratedTarget};
 
@@ -72,7 +73,7 @@ pub enum WritingStyle {
 pub enum ComposeError {
     Configuration,
     Authentication,
-    RateLimited,
+    RateLimited { kind: RateLimitKind },
     Timeout,
     Transport,
     Api { status: u16, retryable: bool },
@@ -85,7 +86,7 @@ impl std::fmt::Display for ComposeError {
         let class = match self {
             Self::Configuration => "configuration",
             Self::Authentication => "authentication",
-            Self::RateLimited => "rate-limited",
+            Self::RateLimited { .. } => "rate-limited",
             Self::Timeout => "timeout",
             Self::Transport => "transport",
             Self::Api {
