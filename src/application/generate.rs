@@ -141,7 +141,7 @@ pub fn generate_markdown_with_composer_observed_with_progress(
         .map(|qblock| qblock.qblock.clone())
         .collect::<Vec<_>>();
     let intermediate = IntermediateDocument::from_qblocks(options.source, &qblocks);
-    let (scaffold, leakage_baselines) = match build_sentinel_scaffold(markdown, &parsed) {
+    let (scaffold, leakage_baselines) = match build_blank_scaffold(markdown, &parsed) {
         Ok(value) => value,
         Err(error) => {
             progress.emit(ProgressEvent::Failed {
@@ -182,7 +182,6 @@ pub fn generate_markdown_with_composer_observed_with_progress(
     let mut fallback_summary = Vec::new();
     if !task_indexes.is_empty() {
         let batch_progress = BatchProgressSink::new(progress, identity_batches, initial_batches);
-        // fallback方針は初回batchの形を変えない。plannerが失敗taskだけを単独retryする。
         match compose_indexes(
             &intermediate,
             &scaffold,
@@ -276,7 +275,6 @@ pub fn generate_markdown_with_composer_observed_with_progress(
             }
         }
     }
-    // 分割実行しても中間表現の順番を唯一の出力順として保つ。
     questions.sort_by_key(|question| {
         intermediate
             .qblocks
@@ -285,7 +283,6 @@ pub fn generate_markdown_with_composer_observed_with_progress(
             .unwrap_or(usize::MAX)
     });
     let document = GeneratedDocument { questions };
-    // fallbackを含めても、部分文書を成功として返さない。
     let report = crate::validation::validate_generated_documents(&intermediate, &document);
     if let Some(error) = report.errors.first() {
         progress.emit(ProgressEvent::Failed {
@@ -323,7 +320,6 @@ pub(crate) fn prepare_selected_plan(
     crate::planner::prepare_compose_plan_with_quota(&selected, policy, quota)
 }
 
-/// planner が実測時点で出す batch 番号を、auto の通し番号へ変換する。
 struct BatchProgressSink<'a> {
     inner: &'a dyn ProgressSink,
     offset: usize,
@@ -443,12 +439,10 @@ fn compose_indexes(
     )
 }
 
-pub(crate) fn build_sentinel_scaffold(
+pub(crate) fn build_blank_scaffold(
     markdown: &str,
     parsed: &ParsedDocument,
 ) -> Result<(ScaffoldDocument, HashMap<String, Vec<usize>>), MarkdownParseError> {
-    let namespace = SentinelNamespace::for_document(markdown, parsed);
-    let mut global_index = 0usize;
     let mut tasks = Vec::with_capacity(parsed.qblocks.len());
     let mut leakage_baselines = HashMap::new();
     for qblock in &parsed.qblocks {
@@ -463,7 +457,13 @@ pub(crate) fn build_sentinel_scaffold(
             }
         }
         let mut replacements = Vec::new();
-        for (target, location) in qblock.qblock.targets.iter().zip(&qblock.target_locations) {
+        for (index, (target, location)) in qblock
+            .qblock
+            .targets
+            .iter()
+            .zip(&qblock.target_locations)
+            .enumerate()
+        {
             validate_target_location(
                 markdown,
                 qblock.raw_body.clone(),
@@ -472,11 +472,9 @@ pub(crate) fn build_sentinel_scaffold(
                 location.source_text.clone(),
                 qblock.qblock.source_text.as_str(),
             )?;
-            replacements.push((location.source_text.clone(), namespace.token(global_index)));
-            global_index += 1;
+            replacements.push((location.source_text.clone(), format!("<BLANK_{index}>")));
         }
         let mut scaffold_question = qblock.qblock.source_text.clone();
-        // 後ろから置換してsource_text上のbyte位置をずらさない。
         for (span, token) in replacements.iter().rev() {
             scaffold_question.replace_range(span.clone(), token);
         }
@@ -488,7 +486,6 @@ pub(crate) fn build_sentinel_scaffold(
                 .targets
                 .iter()
                 .map(|target| {
-                    // target間を連結すると、元の本文にないanswer一致を作ってしまう。
                     non_target_segments
                         .iter()
                         .map(|segment| segment.match_indices(&target.answer).count())
@@ -513,7 +510,6 @@ pub(crate) fn build_sentinel_scaffold(
     Ok((ScaffoldDocument { tasks }, leakage_baselines))
 }
 
-/// target spanで分割した、連結しないtarget外の本文断片を返す。
 fn non_target_segments<'a>(
     source_text: &'a str,
     replacements: &[(Range<usize>, String)],
@@ -558,44 +554,6 @@ fn validate_target_location(
     Ok(())
 }
 
-/// 文書全体で一意なnamespaceを決定する。
-struct SentinelNamespace(u64);
-
-impl SentinelNamespace {
-    fn for_document(markdown: &str, parsed: &ParsedDocument) -> Self {
-        let mut input = markdown.as_bytes().to_vec();
-        input.push(0);
-        for qblock in &parsed.qblocks {
-            input.extend_from_slice(qblock.qblock.id.as_bytes());
-            input.push(0);
-        }
-        let source = parsed
-            .qblocks
-            .iter()
-            .map(|qblock| qblock.qblock.source_text.as_str())
-            .collect::<String>();
-        for counter in 0u64.. {
-            let mut candidate = input.clone();
-            candidate.extend_from_slice(&counter.to_le_bytes());
-            let value = fnv1a(&candidate);
-            if !source.contains(&format!("⟦FC_{value:016x}_")) {
-                return Self(value);
-            }
-        }
-        unreachable!("u64 counter is exhaustive")
-    }
-
-    fn token(&self, index: usize) -> String {
-        format!("⟦FC_{:016x}_{index:06}⟧", self.0)
-    }
-}
-
-fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use crate::compose::IdentityComposer;
@@ -622,18 +580,14 @@ mod tests {
     }
 
     #[test]
-    fn namespace_avoids_prefix_already_in_source_text() {
-        let markdown = "#qblock{\n[alpha]{term}\n}\n";
+    fn blank_placeholders_are_numbered_per_qblock() {
+        let markdown = "#qblock{\n[alpha]{term} と [beta]{term}\n}\n#qblock{\n[gamma]{term}\n}\n";
         let parsed = parse_markdown_located(markdown).unwrap();
-        let first = SentinelNamespace::for_document(markdown, &parsed);
-        let collision = format!("⟦FC_{:016x}_", first.0);
-        let markdown_with_collision = format!("#qblock{{\n{collision}[alpha]{{term}}\n}}\n");
-        let parsed = parse_markdown_located(&markdown_with_collision).unwrap();
-        let namespace = SentinelNamespace::for_document(&markdown_with_collision, &parsed);
-        assert!(!parsed.qblocks[0]
-            .qblock
-            .source_text
-            .contains(&format!("⟦FC_{:016x}_", namespace.0)));
+        let (scaffold, _) = build_blank_scaffold(markdown, &parsed).unwrap();
+        assert!(scaffold.tasks[0].scaffold_question.contains("<BLANK_0>"));
+        assert!(scaffold.tasks[0].scaffold_question.contains("<BLANK_1>"));
+        assert!(scaffold.tasks[1].scaffold_question.contains("<BLANK_0>"));
+        assert!(!scaffold.tasks[1].scaffold_question.contains("<BLANK_1>"));
     }
 
     #[test]
