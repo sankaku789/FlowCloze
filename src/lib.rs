@@ -41,8 +41,9 @@ pub use observability::{
 pub use orchestration::{
     generate_markdown_with_composer, generate_markdown_with_composer_observed,
     generate_markdown_with_composer_observed_with_progress,
-    generate_markdown_with_composer_with_progress, GenerateMarkdownError, GenerateMarkdownOptions,
-    GenerateMarkdownOutcome,
+    generate_markdown_with_composer_with_progress, plan_markdown, GenerateMarkdownError,
+    GenerateMarkdownOptions, GenerateMarkdownOutcome, PlanBatchSummary, PlanIdentitySummary,
+    PlanMarkdownOptions, PlanMarkdownOutcome, PlanQBlockSummary,
 };
 pub use parser::{parse_markdown, parse_qblocks, MarkdownParseError};
 pub use pdf::{compile_pdf, default_pdf_output_path, PdfError, PdfOptions};

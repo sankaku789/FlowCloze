@@ -66,6 +66,61 @@ pub enum RewriteReason {
     Short,
 }
 
+/// APIへ接続せず、Markdownから実際の初回batch計画だけを作る設定。
+#[derive(Debug, Clone)]
+pub struct PlanMarkdownOptions {
+    pub policy: ComposeExecutionPolicy,
+    pub rewrite: RewritePolicy,
+    pub quota: Option<QuotaProfile>,
+}
+
+impl Default for PlanMarkdownOptions {
+    fn default() -> Self {
+        Self {
+            policy: ComposeExecutionPolicy::default(),
+            rewrite: RewritePolicy::Always,
+            quota: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanQBlockSummary {
+    /// Markdown中の1始まりqblock番号。
+    pub position: usize,
+    pub id: String,
+    pub input_tokens: usize,
+    pub expected_output_tokens: usize,
+    pub blanks: usize,
+    pub isolated_heavy: bool,
+    pub oversized: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanBatchSummary {
+    pub number: usize,
+    pub qblocks: Vec<PlanQBlockSummary>,
+    pub input_tokens: usize,
+    pub expected_output_tokens: usize,
+    pub blanks: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanIdentitySummary {
+    pub position: usize,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanMarkdownOutcome {
+    pub total_qblocks: usize,
+    pub provider_qblocks: usize,
+    pub provider_batches: Vec<PlanBatchSummary>,
+    pub identity_qblocks: Vec<PlanIdentitySummary>,
+    pub identity_batches: usize,
+    pub effective_policy: crate::planner::BatchPolicy,
+}
+
 /// task本文だけから自然化の必要性を決める。理由の順序は表示・テストで安定させる。
 pub fn auto_rewrite_reasons(source: &str) -> Vec<RewriteReason> {
     let trimmed = source.trim();
@@ -100,6 +155,21 @@ pub fn auto_rewrite_reasons(source: &str) -> Vec<RewriteReason> {
     reasons
 }
 
+fn rewrite_indexes_for(scaffold: &ScaffoldDocument, rewrite: RewritePolicy) -> Vec<usize> {
+    scaffold
+        .tasks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, task)| match rewrite {
+            RewritePolicy::Always => Some(index),
+            RewritePolicy::Never => None,
+            RewritePolicy::Auto => {
+                (!auto_rewrite_reasons(&task.source_text).is_empty()).then_some(index)
+            }
+        })
+        .collect()
+}
+
 /// located生成経路で起きる、provider呼び出し前後の失敗。
 #[derive(Debug)]
 pub enum GenerateMarkdownError {
@@ -117,6 +187,83 @@ impl std::fmt::Display for GenerateMarkdownError {
 }
 
 impl std::error::Error for GenerateMarkdownError {}
+
+/// APIへ接続せず、生成時と同じscaffold・rewrite判定・quota-aware plannerで初回計画を返す。
+pub fn plan_markdown(
+    markdown: &str,
+    options: PlanMarkdownOptions,
+) -> Result<PlanMarkdownOutcome, GenerateMarkdownError> {
+    let parsed = parse_markdown_located(markdown).map_err(GenerateMarkdownError::Markdown)?;
+    let (scaffold, _) =
+        build_sentinel_scaffold(markdown, &parsed).map_err(GenerateMarkdownError::Markdown)?;
+    let rewrite_indexes = rewrite_indexes_for(&scaffold, options.rewrite);
+    let identity_indexes = (0..scaffold.tasks.len())
+        .filter(|index| !rewrite_indexes.contains(index))
+        .collect::<Vec<_>>();
+
+    // Identity側もgenerateと同じpolicy検証を通すが、API request数には含めない。
+    let identity_plan = prepare_selected_plan(&scaffold, &identity_indexes, options.policy, None)
+        .map_err(GenerateMarkdownError::Compose)?;
+    let provider_plan = prepare_selected_plan(
+        &scaffold,
+        &rewrite_indexes,
+        options.policy,
+        options.quota.as_ref(),
+    )
+    .map_err(GenerateMarkdownError::Compose)?;
+
+    let selected_scaffold = ScaffoldDocument {
+        tasks: rewrite_indexes
+            .iter()
+            .map(|index| scaffold.tasks[*index].clone())
+            .collect(),
+    };
+    let summary = provider_plan.summary(&selected_scaffold);
+    let effective_policy = summary.effective_policy;
+    let provider_batches = summary
+        .batches
+        .into_iter()
+        .enumerate()
+        .map(|(batch_index, batch)| PlanBatchSummary {
+            number: batch_index + 1,
+            qblocks: batch
+                .qblocks
+                .into_iter()
+                .map(|qblock| {
+                    let original_index = rewrite_indexes[qblock.index];
+                    PlanQBlockSummary {
+                        position: original_index + 1,
+                        id: qblock.id,
+                        input_tokens: qblock.input_tokens,
+                        expected_output_tokens: qblock.expected_output_tokens,
+                        blanks: qblock.blanks,
+                        isolated_heavy: qblock.isolated_heavy,
+                        oversized: qblock.oversized,
+                    }
+                })
+                .collect(),
+            input_tokens: batch.input_tokens,
+            expected_output_tokens: batch.expected_output_tokens,
+            blanks: batch.blanks,
+        })
+        .collect();
+    let identity_qblocks = identity_indexes
+        .iter()
+        .map(|index| PlanIdentitySummary {
+            position: index + 1,
+            id: scaffold.tasks[*index].id.clone(),
+        })
+        .collect();
+
+    Ok(PlanMarkdownOutcome {
+        total_qblocks: scaffold.tasks.len(),
+        provider_qblocks: rewrite_indexes.len(),
+        provider_batches,
+        identity_qblocks,
+        identity_batches: identity_plan.batch_count(),
+        effective_policy,
+    })
+}
 
 /// 位置情報を使った安全な標準生成経路。
 pub fn generate_markdown_with_composer(
@@ -198,18 +345,7 @@ pub fn generate_markdown_with_composer_observed_with_progress(
     progress.emit(ProgressEvent::Parsed {
         tasks: scaffold.tasks.len(),
     });
-    let rewrite_indexes = scaffold
-        .tasks
-        .iter()
-        .enumerate()
-        .filter_map(|(index, task)| match options.rewrite {
-            RewritePolicy::Always => Some(index),
-            RewritePolicy::Never => None,
-            RewritePolicy::Auto => {
-                (!auto_rewrite_reasons(&task.source_text).is_empty()).then_some(index)
-            }
-        })
-        .collect::<Vec<_>>();
+    let rewrite_indexes = rewrite_indexes_for(&scaffold, options.rewrite);
     if options.rewrite == RewritePolicy::Auto {
         for (index, task) in scaffold.tasks.iter().enumerate() {
             let reasons = auto_rewrite_reasons(&task.source_text);
@@ -758,6 +894,45 @@ mod tests {
             ]
         );
         assert!(auto_rewrite_reasons(&format!("{}。", "あ".repeat(40))).is_empty());
+    }
+
+    #[test]
+    fn plan_reports_exact_provider_batches_without_a_composer() {
+        let markdown = "#qblock{\n[alpha]{term}。\n}\n#qblock{\n[beta]{term}。\n}\n#qblock{\n[gamma]{term}。\n}\n";
+        let mut options = PlanMarkdownOptions::default();
+        options.policy.batch_policy.max_tasks_per_batch = 2;
+        options.policy.batch_policy.max_estimated_input_tokens = 100_000;
+        options.policy.batch_policy.max_estimated_output_tokens = 100_000;
+        options.policy.batch_policy.max_blanks_per_batch = 100;
+        let plan = plan_markdown(markdown, options).unwrap();
+        assert_eq!(plan.provider_qblocks, 3);
+        assert_eq!(plan.provider_batches.len(), 2);
+        let mut positions = plan
+            .provider_batches
+            .iter()
+            .flat_map(|batch| batch.qblocks.iter().map(|qblock| qblock.position))
+            .collect::<Vec<_>>();
+        positions.sort_unstable();
+        assert_eq!(positions, vec![1, 2, 3]);
+        assert!(plan.identity_qblocks.is_empty());
+    }
+
+    #[test]
+    fn plan_auto_lists_non_rewritten_qblocks_as_no_api() {
+        let markdown = format!(
+            "#qblock{{\n{}[answer]{{term}}。\n}}\n#qblock{{\n[short]{{term}}\n}}\n",
+            "これは十分に長い通常の文章として扱われるため自動書き換えを必要としない文です。"
+                .repeat(2)
+        );
+        let options = PlanMarkdownOptions {
+            rewrite: RewritePolicy::Auto,
+            ..PlanMarkdownOptions::default()
+        };
+        let plan = plan_markdown(&markdown, options).unwrap();
+        assert_eq!(plan.provider_qblocks, 1);
+        assert_eq!(plan.identity_qblocks.len(), 1);
+        assert_eq!(plan.identity_qblocks[0].position, 1);
+        assert_eq!(plan.provider_batches[0].qblocks[0].position, 2);
     }
 
     #[test]

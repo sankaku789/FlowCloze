@@ -179,6 +179,16 @@ flowcloze pdf --template path/to/template.typ \
 flowcloze csv -o sample/sample.csv sample/generated.json
 ```
 
+## API送信前にbatch計画を確認
+
+`plan` はProvider APIへ接続せず、`generate` が使うものと同じplannerでqblockのまとめ方を表示します。
+
+```bash
+flowcloze plan sample/sample.md
+```
+
+各batchに含まれるqblock番号、推定input/output、空欄数、重いqblockの単独処理を確認できます。`rewrite=auto` でAPIへ送らないqblockは `identity (no API)` として別表示します。
+
 ## 生成設定
 
 FlowCloze 2.2では、設定をユーザー単位の標準ディレクトリへ集約します。

@@ -312,9 +312,78 @@ pub struct PreparedComposePlan {
     effective_policy: BatchPolicy,
 }
 
+/// API送信前に確認できる、1 qblock分の計画情報。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedQBlockSummary {
+    /// 選択済みscaffold内での0始まりindex。
+    pub index: usize,
+    pub id: String,
+    pub input_tokens: usize,
+    pub expected_output_tokens: usize,
+    pub blanks: usize,
+    pub isolated_heavy: bool,
+    pub oversized: bool,
+}
+
+/// 実際のPreparedComposePlanに含まれる1 batch分の集計。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedBatchSummary {
+    pub qblocks: Vec<PreparedQBlockSummary>,
+    pub input_tokens: usize,
+    pub expected_output_tokens: usize,
+    pub blanks: usize,
+}
+
+/// API送信前に表示するためのPreparedComposePlanの読み取り専用表現。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedPlanSummary {
+    pub batches: Vec<PreparedBatchSummary>,
+    pub effective_policy: BatchPolicy,
+}
+
 impl PreparedComposePlan {
     pub fn batch_count(&self) -> usize {
         self.batches.len()
+    }
+
+    /// 実行時と同じbatchを再計算せず、そのまま表示用に展開する。
+    pub fn summary(&self, scaffold: &ScaffoldDocument) -> PreparedPlanSummary {
+        let estimator = CharHeuristicTokenEstimator;
+        let batches = self
+            .batches
+            .iter()
+            .map(|batch| {
+                let mut load = BatchLoad::default();
+                let qblocks = batch
+                    .iter()
+                    .map(|attempt| {
+                        let task = &scaffold.tasks[attempt.index];
+                        let cost = estimate_qblock_cost(task, &estimator);
+                        load.add(cost);
+                        PreparedQBlockSummary {
+                            index: attempt.index,
+                            id: task.id.clone(),
+                            input_tokens: cost.input_tokens,
+                            expected_output_tokens: cost.output_tokens,
+                            blanks: cost.blanks,
+                            isolated_heavy: batch.len() == 1
+                                && is_heavy_qblock(cost, self.effective_policy),
+                            oversized: exceeds_soft_budget(cost, self.effective_policy),
+                        }
+                    })
+                    .collect();
+                PreparedBatchSummary {
+                    qblocks,
+                    input_tokens: load.input_tokens,
+                    expected_output_tokens: load.output_tokens,
+                    blanks: load.blanks,
+                }
+            })
+            .collect();
+        PreparedPlanSummary {
+            batches,
+            effective_policy: self.effective_policy,
+        }
     }
 }
 
