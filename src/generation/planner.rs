@@ -36,7 +36,7 @@ impl TokenEstimator for CharHeuristicTokenEstimator {
     }
 }
 
-/// backendごとのbatch作成とretry上限を表す設定．
+/// backendごとのbatch作成条件を表す設定．
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchPolicy {
     /// 1回のLLM呼び出しに含めるqblock数の上限．
@@ -47,13 +47,11 @@ pub struct BatchPolicy {
     pub max_estimated_output_tokens: usize,
     /// 1回のLLM呼び出しに含めるblank総数のsoft上限．
     pub max_blanks_per_batch: usize,
-    /// task単位で再試行する最大回数．
-    pub max_retry_count: u32,
     /// 将来の並列実行用の上限値．初期実装では逐次実行する．
     pub max_concurrent_batches: usize,
 }
 
-/// port経由の標準実行で使うcontent retry設定．
+/// QuestionComposer実行のcontent retry設定．
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComposeExecutionPolicy {
     pub batch_policy: BatchPolicy,
@@ -77,7 +75,6 @@ impl BatchPolicy {
             max_estimated_input_tokens: 18_000,
             max_estimated_output_tokens: 6_000,
             max_blanks_per_batch: 24,
-            max_retry_count: 2,
             max_concurrent_batches: 3,
         }
     }
@@ -89,7 +86,6 @@ impl BatchPolicy {
             max_estimated_input_tokens: 4_000,
             max_estimated_output_tokens: 1_500,
             max_blanks_per_batch: 8,
-            max_retry_count: 2,
             max_concurrent_batches: 1,
         }
     }
@@ -98,14 +94,10 @@ impl BatchPolicy {
 /// compose plannerで発生しうる失敗を呼び出し側へ伝えるエラー．
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposePlanError {
-    /// port標準入口のpolicyまたはtask設定が不正だった．
+    /// policyまたはtask設定が不正だった．
     Configuration { id: String },
-    /// prompt構築に失敗した．
-    Prompt(String),
-    /// LLMクライアント呼び出しに失敗した．
+    /// provider/composer呼び出しに失敗した．
     Llm(String),
-    /// LLM応答をJSONとして解釈できなかった．
-    Json(String),
     /// retry上限後もtaskの検証に失敗した．
     Validation { id: String, errors: Vec<String> },
     /// 一部taskを確定済みのまま、content retry上限に達した。
@@ -127,9 +119,7 @@ impl std::fmt::Display for ComposePlanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Configuration { id } => write!(f, "compose configuration error: task={id}"),
-            Self::Prompt(_) => write!(f, "compose error: prompt"),
             Self::Llm(_) => write!(f, "compose error: llm"),
-            Self::Json(_) => write!(f, "compose error: json"),
             Self::Validation { id, .. } => write!(f, "compose error: validation task={id}"),
             Self::Partial { .. } => write!(f, "compose error: generation incomplete"),
         }
@@ -422,13 +412,12 @@ pub(crate) fn compose_with_question_composer_prepared(
     .map_err(ComposeExecutionError::into_public)
 }
 
-/// orchestration用に、公開エラーへ落とす前の終端原因を返す。
+/// orchestration用のpolicyを検証する。
 pub(crate) fn validate_port_policy(
     _scaffold: &ScaffoldDocument,
     policy: ComposeExecutionPolicy,
 ) -> Result<(), ComposePlanError> {
-    if policy.max_content_retries > 2
-        || policy.batch_policy.max_tasks_per_batch == 0
+    if policy.batch_policy.max_tasks_per_batch == 0
         || policy.batch_policy.max_estimated_input_tokens == 0
         || policy.batch_policy.max_estimated_output_tokens == 0
         || policy.batch_policy.max_blanks_per_batch == 0
@@ -438,8 +427,6 @@ pub(crate) fn validate_port_policy(
             id: "policy".to_string(),
         });
     }
-    // BatchPolicyはpacking用のsoft budget。単独qblockが超える場合は
-    // oversized singletonとして許可し、provider hard limitはquota側で検査する。
     Ok(())
 }
 
