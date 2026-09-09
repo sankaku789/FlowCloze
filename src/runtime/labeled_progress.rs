@@ -1,14 +1,13 @@
-//! 人間向けprogress出力へINFO/WARN/ERRORラベルを付与する。
+//! 人間向けprogress出力へ時刻とINFO/WARN/ERRORラベルを付与する。
 //!
 //! PlainProgressSinkの表示内容とheartbeatはそのまま利用し、severityだけを
 //! ProgressEventから決定して行頭へ付加する。
 
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::progress::{
-    PlainProgressSink, ProgressEvent, ProgressSink, RetryResult,
-};
+use crate::progress::{PlainProgressSink, ProgressEvent, ProgressSink, RetryResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LogLevel {
@@ -25,6 +24,18 @@ impl LogLevel {
             Self::Error => "[ERROR] ",
         }
     }
+}
+
+fn utc_timestamp() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+        % 86_400;
+    let hour = seconds / 3_600;
+    let minute = (seconds % 3_600) / 60;
+    let second = seconds % 60;
+    format!("[{hour:02}:{minute:02}:{second:02}Z] ")
 }
 
 fn level_for_event(event: &ProgressEvent) -> LogLevel {
@@ -46,7 +57,7 @@ fn level_for_event(event: &ProgressEvent) -> LogLevel {
     }
 }
 
-/// PlainProgressSinkの各行へseverityラベルを付与するsink。
+/// PlainProgressSinkの各行へUTC時刻とseverityラベルを付与するsink。
 /// retryはWARN、retry失敗・provider error・終端失敗はERRORとして表示する。
 pub struct LabeledProgressSink {
     inner: PlainProgressSink,
@@ -93,12 +104,17 @@ struct LabeledWriter {
 
 impl Write for LabeledWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let level = self.level.lock().map(|level| *level).unwrap_or(LogLevel::Info);
-        let prefix = level.label().as_bytes();
-        let mut output = Vec::with_capacity(buf.len() + prefix.len());
+        let level = self
+            .level
+            .lock()
+            .map(|level| *level)
+            .unwrap_or(LogLevel::Info);
+        let level_prefix = level.label().as_bytes();
+        let mut output = Vec::with_capacity(buf.len() + level_prefix.len() + 12);
         for &byte in buf {
             if self.at_line_start {
-                output.extend_from_slice(prefix);
+                output.extend_from_slice(utc_timestamp().as_bytes());
+                output.extend_from_slice(level_prefix);
                 self.at_line_start = false;
             }
             output.push(byte);
@@ -137,8 +153,16 @@ mod tests {
         }
     }
 
+    fn strip_timestamp(line: &str) -> &str {
+        assert_eq!(line.as_bytes().get(0), Some(&b'['));
+        assert_eq!(line.as_bytes().get(9), Some(&b'Z'));
+        assert_eq!(line.as_bytes().get(10), Some(&b']'));
+        assert_eq!(line.as_bytes().get(11), Some(&b' '));
+        &line[12..]
+    }
+
     #[test]
-    fn labels_info_warn_error_and_exposes_retry_cause() {
+    fn labels_info_warn_error_with_utc_time_and_exposes_retry_cause() {
         let writer = SharedWriter::default();
         let sink = LabeledProgressSink::new(writer.clone(), "Provider");
 
@@ -154,9 +178,20 @@ mod tests {
             class: FailureClass::Content,
         });
 
+        let output = String::from_utf8(writer.0.lock().unwrap().clone()).unwrap();
+        let lines = output.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3);
         assert_eq!(
-            String::from_utf8(writer.0.lock().unwrap().clone()).unwrap(),
-            "[INFO] [1/4] Markdown解析: 2 tasks\n[WARN]       retry: task=qblock-003 attempt=1 cause=missing_sentinel result=success\n[ERROR] [failed] stage=generate class=content detail=provider output was invalid or failed content checks\n"
+            strip_timestamp(lines[0]),
+            "[INFO] [1/4] Markdown解析: 2 tasks"
+        );
+        assert_eq!(
+            strip_timestamp(lines[1]),
+            "[WARN]       retry: task=qblock-003 attempt=1 cause=missing_sentinel result=success"
+        );
+        assert_eq!(
+            strip_timestamp(lines[2]),
+            "[ERROR] [failed] stage=generate class=content detail=provider output was invalid or failed content checks"
         );
     }
 }
