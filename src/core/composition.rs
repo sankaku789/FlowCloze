@@ -157,8 +157,7 @@ pub fn compose_task_from_scaffold(task: &crate::scaffold::ScaffoldTask) -> Compo
 }
 
 /// <BLANK_n> の個数・重複・順序を検証し、最終JSON用の標準空欄へ変換する。
-/// 関数名は既存executorとの互換のため維持する。
-pub(crate) fn normalize_sentinel_question(
+pub(crate) fn normalize_blank_placeholders(
     question: &str,
     task: &ComposeTask,
 ) -> Result<String, &'static str> {
@@ -169,16 +168,16 @@ pub(crate) fn normalize_sentinel_question(
         let marker = blank_token(index);
         let mut matches = question.match_indices(&marker);
         let Some((position, _)) = matches.next() else {
-            return Err("missing-sentinel");
+            return Err("missing-placeholder");
         };
         if matches.next().is_some() {
-            return Err("duplicate-sentinel");
+            return Err("duplicate-placeholder");
         }
         positions.push(position);
     }
 
     if positions.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err("sentinel-order");
+        return Err("placeholder-order");
     }
 
     let mut rest = question;
@@ -186,27 +185,27 @@ pub(crate) fn normalize_sentinel_question(
     while let Some(start) = rest.find("<BLANK_") {
         rest = &rest[start..];
         let Some(end) = rest.find('>') else {
-            return Err("malformed-sentinel");
+            return Err("malformed-placeholder");
         };
         let candidate = &rest[..=end];
         let Some(index_text) = candidate
             .strip_prefix("<BLANK_")
             .and_then(|value| value.strip_suffix('>'))
         else {
-            return Err("malformed-sentinel");
+            return Err("malformed-placeholder");
         };
         let Ok(index) = index_text.parse::<usize>() else {
-            return Err("malformed-sentinel");
+            return Err("malformed-placeholder");
         };
         if index >= expected_count {
-            return Err("unknown-sentinel");
+            return Err("unknown-placeholder");
         }
         seen += 1;
         rest = &rest[end + 1..];
     }
 
     if seen != expected_count {
-        return Err("duplicate-sentinel");
+        return Err("duplicate-placeholder");
     }
 
     let mut normalized = question.to_string();
@@ -388,23 +387,37 @@ mod tests {
     #[test]
     fn normalizes_blank_placeholders() {
         let task = blank_task(2);
-        let normalized = normalize_sentinel_question("A<BLANK_0>B<BLANK_1>C", &task).unwrap();
+        let normalized = normalize_blank_placeholders("A<BLANK_0>B<BLANK_1>C", &task).unwrap();
         assert_eq!(normalized, format!("A{BLANK}B{BLANK}C"));
     }
 
     #[test]
     fn blank_placeholders_reject_missing_duplicate_order_and_unknown() {
         let task = blank_task(2);
-        assert_eq!(normalize_sentinel_question("A<BLANK_0>B", &task), Err("missing-sentinel"));
-        assert_eq!(normalize_sentinel_question("<BLANK_0><BLANK_0><BLANK_1>", &task), Err("duplicate-sentinel"));
-        assert_eq!(normalize_sentinel_question("<BLANK_1><BLANK_0>", &task), Err("sentinel-order"));
-        assert_eq!(normalize_sentinel_question("<BLANK_0><BLANK_1><BLANK_9>", &task), Err("unknown-sentinel"));
+        assert_eq!(
+            normalize_blank_placeholders("A<BLANK_0>B", &task),
+            Err("missing-placeholder")
+        );
+        assert_eq!(
+            normalize_blank_placeholders("<BLANK_0><BLANK_0><BLANK_1>", &task),
+            Err("duplicate-placeholder")
+        );
+        assert_eq!(
+            normalize_blank_placeholders("<BLANK_1><BLANK_0>", &task),
+            Err("placeholder-order")
+        );
+        assert_eq!(
+            normalize_blank_placeholders("<BLANK_0><BLANK_1><BLANK_9>", &task),
+            Err("unknown-placeholder")
+        );
     }
 
     #[test]
     fn merges_only_question_from_llm_output() {
         let intermediate = IntermediateDocument {
-            meta: IntermediateMeta { source: "input.md".to_string() },
+            meta: IntermediateMeta {
+                source: "input.md".to_string(),
+            },
             qblocks: vec![IntermediateQBlock {
                 id: "q1".to_string(),
                 section: Some("Section".to_string()),
@@ -429,7 +442,9 @@ mod tests {
 
     fn intermediate_with_ids(ids: &[&str]) -> IntermediateDocument {
         IntermediateDocument {
-            meta: IntermediateMeta { source: "input.md".to_string() },
+            meta: IntermediateMeta {
+                source: "input.md".to_string(),
+            },
             qblocks: ids
                 .iter()
                 .map(|id| IntermediateQBlock {
