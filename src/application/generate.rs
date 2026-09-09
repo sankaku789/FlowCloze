@@ -367,9 +367,7 @@ impl ProgressSink for BatchProgressSink<'_> {
 fn failure_class_for_plan(error: &ComposePlanError) -> FailureClass {
     match error {
         ComposePlanError::Configuration { .. } => FailureClass::Configuration,
-        ComposePlanError::Prompt(_) => FailureClass::Configuration,
         ComposePlanError::Llm(_) => FailureClass::Content,
-        ComposePlanError::Json(_) => FailureClass::Content,
         ComposePlanError::Validation { .. } => FailureClass::Validation,
         ComposePlanError::Partial { .. } => FailureClass::Content,
     }
