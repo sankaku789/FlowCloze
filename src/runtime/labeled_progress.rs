@@ -1,7 +1,8 @@
 //! 人間向けprogress出力へ時刻とINFO/WARN/ERRORラベルを付与する。
 //!
 //! PlainProgressSinkの表示内容とheartbeatはそのまま利用し、severityだけを
-//! ProgressEventから決定して行頭へ付加する。
+//! ProgressEventから決定して行頭へ付加する。provider待機heartbeatは
+//! 改行を増やさず、同じ端末行を更新する。
 
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
@@ -74,7 +75,9 @@ impl LabeledProgressSink {
         let labeled_writer = LabeledWriter {
             inner: Box::new(writer),
             level: Arc::clone(&level),
-            at_line_start: true,
+            line_buffer: Vec::new(),
+            heartbeat_active: false,
+            last_rendered_width: 0,
         };
         Self {
             inner: PlainProgressSink::new(labeled_writer, label),
@@ -99,34 +102,78 @@ impl ProgressSink for LabeledProgressSink {
 struct LabeledWriter {
     inner: Box<dyn Write + Send>,
     level: Arc<Mutex<LogLevel>>,
-    at_line_start: bool,
+    line_buffer: Vec<u8>,
+    heartbeat_active: bool,
+    last_rendered_width: usize,
 }
 
-impl Write for LabeledWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+impl LabeledWriter {
+    fn render_line(&self, line: &str) -> String {
         let level = self
             .level
             .lock()
             .map(|level| *level)
             .unwrap_or(LogLevel::Info);
-        let level_prefix = level.label().as_bytes();
-        let mut output = Vec::with_capacity(buf.len() + level_prefix.len() + 12);
-        for &byte in buf {
-            if self.at_line_start {
-                output.extend_from_slice(utc_timestamp().as_bytes());
-                output.extend_from_slice(level_prefix);
-                self.at_line_start = false;
+        format!("{}{}{line}", utc_timestamp(), level.label())
+    }
+
+    fn flush_complete_line(&mut self) -> io::Result<()> {
+        let line = String::from_utf8_lossy(&self.line_buffer).into_owned();
+        self.line_buffer.clear();
+        let rendered = self.render_line(&line);
+        let is_heartbeat = line.contains("provider待機中...");
+
+        if is_heartbeat {
+            self.inner.write_all(b"\r")?;
+            self.inner.write_all(rendered.as_bytes())?;
+            if self.last_rendered_width > rendered.len() {
+                self.inner
+                    .write_all(&vec![b' '; self.last_rendered_width - rendered.len()])?;
+                self.inner.write_all(b"\r")?;
+                self.inner.write_all(rendered.as_bytes())?;
             }
-            output.push(byte);
+            self.heartbeat_active = true;
+            self.last_rendered_width = rendered.len();
+            self.inner.flush()?;
+            return Ok(());
+        }
+
+        if self.heartbeat_active {
+            self.inner.write_all(b"\r")?;
+            self.inner.write_all(rendered.as_bytes())?;
+            if self.last_rendered_width > rendered.len() {
+                self.inner
+                    .write_all(&vec![b' '; self.last_rendered_width - rendered.len()])?;
+                self.inner.write_all(b"\r")?;
+                self.inner.write_all(rendered.as_bytes())?;
+            }
+        } else {
+            self.inner.write_all(rendered.as_bytes())?;
+        }
+        self.inner.write_all(b"\n")?;
+        self.heartbeat_active = false;
+        self.last_rendered_width = 0;
+        Ok(())
+    }
+}
+
+impl Write for LabeledWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        for &byte in buf {
             if byte == b'\n' {
-                self.at_line_start = true;
+                self.flush_complete_line()?;
+            } else {
+                self.line_buffer.push(byte);
             }
         }
-        self.inner.write_all(&output)?;
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        if !self.line_buffer.is_empty() {
+            let pending = std::mem::take(&mut self.line_buffer);
+            self.inner.write_all(&pending)?;
+        }
         self.inner.flush()
     }
 }
@@ -193,5 +240,30 @@ mod tests {
             strip_timestamp(lines[2]),
             "[ERROR] [failed] stage=generate class=content detail=provider output was invalid or failed content checks"
         );
+    }
+
+    #[test]
+    fn provider_wait_heartbeat_rewrites_one_terminal_line() {
+        let writer = SharedWriter::default();
+        let level = Arc::new(Mutex::new(LogLevel::Warn));
+        let mut labeled = LabeledWriter {
+            inner: Box::new(writer.clone()),
+            level,
+            line_buffer: Vec::new(),
+            heartbeat_active: false,
+            last_rendered_width: 0,
+        };
+
+        writeln!(labeled, "      batch 4/8: provider待機中... 5s").unwrap();
+        writeln!(labeled, "      batch 4/8: provider待機中... 10s").unwrap();
+        writeln!(labeled, "      batch 4/8: 3成功, 0 retry").unwrap();
+
+        let output = String::from_utf8(writer.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(output.matches("provider待機中...").count(), 2);
+        assert!(output.starts_with('\r'));
+        assert!(output.contains("5s\r"));
+        assert!(output.contains("10s\r"));
+        assert_eq!(output.matches('\n').count(), 1);
+        assert!(output.ends_with("3成功, 0 retry\n"));
     }
 }
