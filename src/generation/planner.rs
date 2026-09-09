@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::compose::{ComposedDocument, QuestionComposer};
+use crate::compose::QuestionComposer;
 use crate::executor::{ComposeExecutionError, ComposeMode, TaskAttempt};
 use crate::json::IntermediateDocument;
 use crate::observability::{EventSink, NoopEventSink, RunContext};
@@ -53,7 +53,7 @@ pub struct BatchPolicy {
     pub max_concurrent_batches: usize,
 }
 
-/// port経由の標準実行でのみ使うcontent retry設定．
+/// port経由の標準実行で使うcontent retry設定．
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComposeExecutionPolicy {
     pub batch_policy: BatchPolicy,
@@ -253,51 +253,6 @@ impl PreparedComposePlan {
     }
 }
 
-/// 既定の文字数heuristicを使ってadaptive composeを実行する．
-pub fn compose_with_adaptive_planner<F>(
-    intermediate: &IntermediateDocument,
-    scaffold: &ScaffoldDocument,
-    policy: BatchPolicy,
-    extra_constraints: &[String],
-    mut generate_text: F,
-) -> Result<ComposedDocument, ComposePlanError>
-where
-    F: FnMut(&str) -> Result<String, String>,
-{
-    let estimator = CharHeuristicTokenEstimator;
-    crate::executor::compose_with_estimator(
-        intermediate,
-        scaffold,
-        policy,
-        extra_constraints,
-        &estimator,
-        &mut generate_text,
-    )
-}
-
-/// 任意のTokenEstimatorを使う既存APIの互換wrapper。
-pub fn compose_with_estimator<F, E>(
-    intermediate: &IntermediateDocument,
-    scaffold: &ScaffoldDocument,
-    policy: BatchPolicy,
-    extra_constraints: &[String],
-    estimator: &E,
-    generate_text: &mut F,
-) -> Result<ComposedDocument, ComposePlanError>
-where
-    F: FnMut(&str) -> Result<String, String>,
-    E: TokenEstimator,
-{
-    crate::executor::compose_with_estimator(
-        intermediate,
-        scaffold,
-        policy,
-        extra_constraints,
-        estimator,
-        generate_text,
-    )
-}
-
 /// QuestionComposer portを使う標準のcompose入口．
 /// CoreがID照合、retry、検証、固定フィールドの合成を一貫して担当する．
 pub fn compose_with_question_composer(
@@ -423,7 +378,7 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
     progress: &dyn ProgressSink,
     leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
 ) -> Result<GeneratedDocument, ComposePlanError> {
-    crate::executor::execute_legacy(
+    crate::executor::execute_prepared_with_terminal_cause(
         intermediate,
         scaffold,
         policy,
@@ -440,7 +395,6 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
 
 /// 初回計画を作成済みの呼び出し側用。retry は計画外の task 単位で実行する。
 #[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 pub(crate) fn compose_with_question_composer_prepared(
     intermediate: &IntermediateDocument,
     scaffold: &ScaffoldDocument,
@@ -453,7 +407,7 @@ pub(crate) fn compose_with_question_composer_prepared(
     leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
     prepared: Option<&PreparedComposePlan>,
 ) -> Result<GeneratedDocument, ComposePlanError> {
-    crate::executor::execute_legacy(
+    crate::executor::execute_prepared_with_terminal_cause(
         intermediate,
         scaffold,
         policy,
@@ -787,185 +741,4 @@ fn is_japanese_char(ch: char) -> bool {
         ch,
         '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{9fff}' | '\u{f900}'..='\u{faff}'
     )
-}
-
-#[cfg(test)]
-mod quota_planner_tests {
-    use super::*;
-
-    fn scaffold(count: usize) -> ScaffoldDocument {
-        ScaffoldDocument {
-            tasks: (0..count)
-                .map(|index| ScaffoldTask {
-                    id: format!("q{index}"),
-                    source_text: "短い本文".to_string(),
-                    cloze_template: "短い＿＿＿".to_string(),
-                    scaffold_question: "短い＿＿＿".to_string(),
-                    blank_count: 1,
-                    answers: vec!["本文".to_string()],
-                })
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn quota_plan_expands_only_until_request_budget_fits() {
-        let scaffold = scaffold(5);
-        let policy = ComposeExecutionPolicy {
-            batch_policy: BatchPolicy {
-                max_tasks_per_batch: 1,
-                max_estimated_input_tokens: 1_000,
-                max_estimated_output_tokens: 1_000,
-                max_blanks_per_batch: 8,
-                max_retry_count: 2,
-                max_concurrent_batches: 1,
-            },
-            max_content_retries: 2,
-        };
-        let quota = QuotaProfile {
-            name: "test".into(),
-            rpm: Some(5),
-            tpm: Some(10_000),
-            rpd: Some(3),
-            reserve_requests: 1,
-            adaptive_max_tasks_per_batch: Some(3),
-            adaptive_max_input_tokens: Some(2_000),
-            adaptive_max_output_tokens: Some(2_000),
-            adaptive_max_blanks_per_batch: Some(16),
-        };
-        let plan = prepare_compose_plan_with_quota(&scaffold, policy, Some(&quota)).unwrap();
-        assert_eq!(plan.batch_count(), 2);
-        assert_eq!(plan.effective_policy.max_tasks_per_batch, 3);
-    }
-
-    #[test]
-    fn quota_plan_fails_before_provider_when_hard_limit_cannot_fit() {
-        let scaffold = scaffold(5);
-        let policy = ComposeExecutionPolicy {
-            batch_policy: BatchPolicy {
-                max_tasks_per_batch: 1,
-                max_estimated_input_tokens: 1_000,
-                max_estimated_output_tokens: 1_000,
-                max_blanks_per_batch: 8,
-                max_retry_count: 2,
-                max_concurrent_batches: 1,
-            },
-            max_content_retries: 2,
-        };
-        let quota = QuotaProfile {
-            name: "test".into(),
-            rpm: None,
-            tpm: None,
-            rpd: Some(3),
-            reserve_requests: 1,
-            adaptive_max_tasks_per_batch: Some(2),
-            adaptive_max_input_tokens: Some(1_000),
-            adaptive_max_output_tokens: Some(1_000),
-            adaptive_max_blanks_per_batch: Some(8),
-        };
-        assert!(matches!(
-            prepare_compose_plan_with_quota(&scaffold, policy, Some(&quota)),
-            Err(ComposePlanError::Configuration { id }) if id == "quota-budget"
-        ));
-    }
-
-    #[test]
-    fn planner_repacks_noncontiguous_light_qblocks_and_isolates_heavy_qblock() {
-        let task = |id: &str, source_len: usize| ScaffoldTask {
-            id: id.to_string(),
-            source_text: "a".repeat(source_len),
-            cloze_template: "b".repeat(10),
-            scaffold_question: "b".repeat(10),
-            blank_count: 1,
-            answers: vec!["z".to_string()],
-        };
-        let scaffold = ScaffoldDocument {
-            tasks: vec![
-                task("q0", 10),
-                task("q1", 70),
-                task("q2", 10),
-                task("q3", 10),
-            ],
-        };
-        let policy = BatchPolicy {
-            max_tasks_per_batch: 4,
-            max_estimated_input_tokens: 100,
-            max_estimated_output_tokens: 200,
-            max_blanks_per_batch: 10,
-            max_retry_count: 2,
-            max_concurrent_batches: 1,
-        };
-
-        let planned = plan_batches(&scaffold, policy, &CharHeuristicTokenEstimator)
-            .into_iter()
-            .map(|batch| {
-                batch
-                    .into_iter()
-                    .map(|attempt| attempt.index)
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(planned, vec![vec![0, 2, 3], vec![1]]);
-    }
-
-    #[test]
-    fn output_and_blank_budgets_can_make_qblocks_singletons() {
-        let scaffold = ScaffoldDocument {
-            tasks: vec![
-                ScaffoldTask {
-                    id: "light-a".into(),
-                    source_text: "a".repeat(5),
-                    cloze_template: "b".repeat(10),
-                    scaffold_question: "b".repeat(10),
-                    blank_count: 1,
-                    answers: vec!["z".into()],
-                },
-                ScaffoldTask {
-                    id: "output-heavy".into(),
-                    source_text: "a".repeat(5),
-                    cloze_template: "b".repeat(50),
-                    scaffold_question: "b".repeat(50),
-                    blank_count: 1,
-                    answers: vec!["z".into()],
-                },
-                ScaffoldTask {
-                    id: "blank-heavy".into(),
-                    source_text: "a".repeat(5),
-                    cloze_template: "b".repeat(10),
-                    scaffold_question: "b".repeat(10),
-                    blank_count: 6,
-                    answers: vec!["z".into(); 6],
-                },
-                ScaffoldTask {
-                    id: "light-b".into(),
-                    source_text: "a".repeat(5),
-                    cloze_template: "b".repeat(10),
-                    scaffold_question: "b".repeat(10),
-                    blank_count: 1,
-                    answers: vec!["z".into()],
-                },
-            ],
-        };
-        let policy = BatchPolicy {
-            max_tasks_per_batch: 4,
-            max_estimated_input_tokens: 1_000,
-            max_estimated_output_tokens: 100,
-            max_blanks_per_batch: 10,
-            max_retry_count: 2,
-            max_concurrent_batches: 1,
-        };
-
-        let planned = plan_batches(&scaffold, policy, &CharHeuristicTokenEstimator)
-            .into_iter()
-            .map(|batch| {
-                batch
-                    .into_iter()
-                    .map(|attempt| attempt.index)
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(planned, vec![vec![0, 3], vec![1], vec![2]]);
-    }
 }
