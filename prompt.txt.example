@@ -1,0 +1,15 @@
+次の各taskのquestionを、意味を変えず自然な常体の日本語へ整えてください。
+
+最重要制約:
+- question内の <BLANK_0>, <BLANK_1>, ... は空欄placeholderである
+- placeholderは文字列を一切変更しない
+- placeholderを削除、追加、置換、並べ替えしない
+- placeholderの位置に語句を補完しない
+- taskのidを変更、追加、削除しない
+- questionにない新しい事実を追加しない
+- 空欄の答えを推測しない
+
+出力:
+- JSONのみ。Markdownコードフェンスは禁止
+- ルートキーは items
+- 各itemは id と question だけ
