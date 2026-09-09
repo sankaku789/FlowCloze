@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.2.2-beta - 2026-09-09
+
+### Added
+
+- Add `flowcloze plan <markdown>` to inspect the exact qblock batching plan without contacting the provider API.
+- Show original qblock positions, estimated input/output size, blank counts, effective limits, and heavy or oversized singleton handling.
+- Show `rewrite=auto` identity qblocks separately so non-API work is distinguishable from provider requests.
+
 ## 2.2.1-beta - 2026-09-09
 
 ### Fixed
