@@ -1,6 +1,6 @@
 //! LLMが返すid/questionだけの結果を決定的な生成JSONへ合成する．
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +14,6 @@ pub trait QuestionComposer: Send + Sync {
     fn compose(&self, request: &ComposeBatchRequest) -> Result<ComposeBatchOutput, ComposeError>;
 }
 
-/// composerへ渡す，1回のまとめて処理する要求．
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ComposeBatchRequest {
     pub schema_version: u32,
@@ -22,13 +21,11 @@ pub struct ComposeBatchRequest {
     pub tasks: Vec<ComposeTask>,
     pub style: WritingStyle,
     pub prompt_version: String,
-    /// providerへだけ渡す追加制約。観測・最終出力には含めない。
     pub extra_constraints: Vec<String>,
-    /// 単独再試行時の、本文を含まない失敗分類。
     pub retry_feedback: Vec<String>,
 }
 
-/// Coreが確定した1問分の書き換え素材．
+/// Core内部では元情報を保持するが、providerへはprompt builderがid/questionだけを公開する。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ComposeTask {
     pub id: String,
@@ -40,11 +37,9 @@ pub struct ComposeTask {
     pub blank_count: usize,
 }
 
-/// composerから返る最小の結果．固定フィールドは含めない．
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ComposeBatchOutput {
     pub items: Vec<ComposedItem>,
-    /// provider出力はitemsだけなので、追跡情報はadapter側で補う。
     #[serde(default)]
     pub metadata: ComposeMetadata,
 }
@@ -55,7 +50,6 @@ pub struct ComposedItem {
     pub question: String,
 }
 
-/// 追跡用のprovider情報。最終GeneratedDocumentへは保存しない．
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 pub struct ComposeMetadata {
     pub adapter: String,
@@ -68,7 +62,6 @@ pub enum WritingStyle {
     PlainJapanese,
 }
 
-/// composer境界での安全な失敗分類．本文やprovider応答は表示しない．
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposeError {
     Configuration,
@@ -89,12 +82,8 @@ impl std::fmt::Display for ComposeError {
             Self::RateLimited { .. } => "rate-limited",
             Self::Timeout => "timeout",
             Self::Transport => "transport",
-            Self::Api {
-                retryable: true, ..
-            } => "api-retryable",
-            Self::Api {
-                retryable: false, ..
-            } => "api",
+            Self::Api { retryable: true, .. } => "api-retryable",
+            Self::Api { retryable: false, .. } => "api",
             Self::InvalidResponse => "invalid-response",
             Self::EmptyResponse => "empty-response",
         };
@@ -104,7 +93,6 @@ impl std::fmt::Display for ComposeError {
 
 impl std::error::Error for ComposeError {}
 
-/// APIを使わず、決定的な下書きをそのまま返すcomposer．
 #[derive(Debug, Default)]
 pub struct IdentityComposer;
 
@@ -128,7 +116,6 @@ impl QuestionComposer for IdentityComposer {
     }
 }
 
-/// providerの生出力から共通のbatch出力を読む．
 pub fn parse_compose_output(raw: &str) -> Result<ComposeBatchOutput, ComposeError> {
     let candidate = extract_json_candidate(raw);
     if candidate.trim().is_empty() {
@@ -137,7 +124,6 @@ pub fn parse_compose_output(raw: &str) -> Result<ComposeBatchOutput, ComposeErro
     serde_json::from_str(candidate).map_err(|_| ComposeError::InvalidResponse)
 }
 
-/// provider実装で共通利用するJSON候補抽出．
 pub(crate) fn extract_json_candidate(raw: &str) -> &str {
     let trimmed = raw.trim();
     let without_fence = trimmed
@@ -152,7 +138,6 @@ pub(crate) fn extract_json_candidate(raw: &str) -> &str {
     }
 }
 
-/// scaffold taskからport用taskを構築する．
 pub fn compose_task_from_scaffold(task: &crate::scaffold::ScaffoldTask) -> ComposeTask {
     let blank_tokens = generated_sentinel_tokens(&task.scaffold_question, &task.source_text);
     let is_sentinel_scaffold = blank_tokens.len() == task.blank_count;
@@ -174,7 +159,6 @@ pub fn compose_task_from_scaffold(task: &crate::scaffold::ScaffoldTask) -> Compo
     }
 }
 
-/// sourceに元からあったtokenを差し引き、scaffoldが今回導入したtokenだけを返す。
 fn generated_sentinel_tokens(scaffold: &str, source: &str) -> Vec<String> {
     let mut baseline = sentinel_token_counts(source);
     sentinel_tokens(scaffold)
@@ -189,22 +173,81 @@ fn generated_sentinel_tokens(scaffold: &str, source: &str) -> Vec<String> {
         .collect()
 }
 
-/// sentinel scaffoldのtokenだけを標準空欄へ戻し、LLMの対応崩れを検出する。
+fn provider_blank(index: usize) -> String {
+    format!("<BLANK_{index}>")
+}
+
+/// provider-safe placeholder または旧sentinelを標準空欄へ戻す。
+/// hard validationは空欄の個数・重複・相対順だけに限定する。
 pub(crate) fn normalize_sentinel_question(
     question: &str,
     task: &ComposeTask,
 ) -> Result<String, &'static str> {
-    let Some(namespace) = task
-        .blank_tokens
-        .first()
-        .and_then(|token| sentinel_namespace(token))
-    else {
+    let expected_count = task.blank_count;
+
+    // 新しいprovider境界。<BLANK_n> が1つでもあれば、この形式だけを検証する。
+    if question.contains("<BLANK_") {
+        let mut positions = Vec::with_capacity(expected_count);
+        for index in 0..expected_count {
+            let marker = provider_blank(index);
+            let mut matches = question.match_indices(&marker);
+            let Some((position, _)) = matches.next() else {
+                return Err("missing-sentinel");
+            };
+            if matches.next().is_some() {
+                return Err("duplicate-sentinel");
+            }
+            positions.push(position);
+        }
+        if positions.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err("sentinel-order");
+        }
+
+        // 期待していない番号や壊れたplaceholderを拒否する。
+        let mut rest = question;
+        let mut seen = 0usize;
+        while let Some(start) = rest.find("<BLANK_") {
+            rest = &rest[start..];
+            let Some(end) = rest.find('>') else {
+                return Err("malformed-sentinel");
+            };
+            let candidate = &rest[..=end];
+            let Some(index_text) = candidate
+                .strip_prefix("<BLANK_")
+                .and_then(|value| value.strip_suffix('>'))
+            else {
+                return Err("malformed-sentinel");
+            };
+            let Ok(index) = index_text.parse::<usize>() else {
+                return Err("malformed-sentinel");
+            };
+            if index >= expected_count {
+                return Err("unknown-sentinel");
+            }
+            seen += 1;
+            rest = &rest[end + 1..];
+        }
+        if seen != expected_count {
+            return Err("duplicate-sentinel");
+        }
+
+        let mut normalized = question.to_string();
+        for index in 0..expected_count {
+            normalized = normalized.replace(&provider_blank(index), BLANK);
+        }
+        return Ok(normalized);
+    }
+
+    // 非sentinel scaffoldは従来どおりそのまま扱う。
+    let expected = &task.blank_tokens;
+    let Some(_namespace) = expected.first().and_then(|token| sentinel_namespace(token)) else {
         return Ok(question.to_string());
     };
+
     if question.contains(BLANK) || question.contains("___") {
         return Err("anonymous-blank");
     }
-    let expected = &task.blank_tokens;
+
     let mut positions = Vec::with_capacity(expected.len());
     for token in expected {
         let mut matches = question.match_indices(token);
@@ -219,72 +262,12 @@ pub(crate) fn normalize_sentinel_question(
     if positions.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err("sentinel-order");
     }
-    let active_prefix = format!("⟦FC_{namespace}_");
-    let baseline = sentinel_token_counts(&task.source_text);
-    let mut returned = HashMap::new();
-    let mut rest = question;
-    while let Some(start) = rest.find("⟦FC_") {
-        rest = &rest[start..];
-        let Some(end) = rest.find('⟧') else {
-            if rest.starts_with(&active_prefix) {
-                return Err("malformed-sentinel");
-            }
-            break;
-        };
-        let token_end = end + '⟧'.len_utf8();
-        let candidate = &rest[..token_end];
-        if sentinel_namespace(candidate).is_some() {
-            *returned.entry(candidate).or_insert(0usize) += 1;
-        }
-        if candidate.starts_with(&active_prefix) && !expected.iter().any(|token| token == candidate)
-        {
-            return Err("unknown-sentinel");
-        }
-        rest = &rest[token_end..];
-    }
-    // 元の本文にあった別namespaceのtokenは通常文字列として残せるが、providerが
-    // 新規に注入した完全tokenはsentinelの混入として拒否する。
-    for (token, count) in returned {
-        if !token.starts_with(&active_prefix) && count > baseline.get(token).copied().unwrap_or(0) {
-            return Err("foreign-sentinel");
-        }
-    }
-    let mut marker_baseline = marker_counts(&fc_markers(&task.scaffold_question));
-    for marker in fc_markers(question) {
-        let count = marker_baseline.entry(marker).or_default();
-        if *count == 0 {
-            return Err("foreign-sentinel");
-        }
-        *count -= 1;
-    }
+
     let mut normalized = question.to_string();
     for token in expected {
         normalized = normalized.replace(token, BLANK);
     }
     Ok(normalized)
-}
-
-fn fc_markers(text: &str) -> Vec<String> {
-    let mut markers = Vec::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("⟦FC_") {
-        rest = &rest[start..];
-        let end = rest
-            .find('⟧')
-            .map(|end| end + '⟧'.len_utf8())
-            .unwrap_or(rest.len());
-        markers.push(rest[..end].to_string());
-        rest = &rest[end..];
-    }
-    markers
-}
-
-fn marker_counts(markers: &[String]) -> HashMap<String, usize> {
-    let mut counts = HashMap::new();
-    for marker in markers {
-        *counts.entry(marker.clone()).or_insert(0) += 1;
-    }
-    counts
 }
 
 fn sentinel_token_counts(text: &str) -> HashMap<&str, usize> {
@@ -308,9 +291,7 @@ fn sentinel_tokens(text: &str) -> Vec<String> {
     let mut rest = text;
     while let Some(start) = rest.find("⟦FC_") {
         rest = &rest[start..];
-        let Some(end) = rest.find('⟧') else {
-            break;
-        };
+        let Some(end) = rest.find('⟧') else { break };
         let token_end = end + '⟧'.len_utf8();
         let token = &rest[..token_end];
         if sentinel_namespace(token).is_some() {
@@ -331,7 +312,6 @@ fn sentinel_namespace(token: &str) -> Option<&str> {
     .then_some(namespace)
 }
 
-/// strictな合成時に検出したID整合性の問題．
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposeMergeIssue {
     DuplicateExpectedQuestionId { id: String },
@@ -340,7 +320,6 @@ pub enum ComposeMergeIssue {
     MissingQuestionId { id: String },
 }
 
-/// strictな合成でdocumentを返せない理由．
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposeMergeError {
     pub issues: Vec<ComposeMergeIssue>,
@@ -354,23 +333,17 @@ impl std::fmt::Display for ComposeMergeError {
 
 impl std::error::Error for ComposeMergeError {}
 
-/// LLMが返すid/questionだけのルート構造．
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ComposedDocument {
-    /// taskごとに生成されたquestion本文．固定フィールドは含めない．
     pub questions: Vec<ComposedQuestion>,
 }
 
-/// LLMが1 taskに対して返す最小単位の生成結果．
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ComposedQuestion {
-    /// scaffold task id．中間表現との照合に使う．
     pub id: String,
-    /// LLMが自然化したquestion本文．固定フィールドはここから推測しない．
     pub question: String,
 }
 
-/// LLM出力のquestionだけを採用し，固定フィールドを中間表現から再構築する．
 pub fn merge_composed_questions(
     intermediate: &IntermediateDocument,
     composed: ComposedDocument,
@@ -381,7 +354,6 @@ pub fn merge_composed_questions(
         .map(|question| (question.id, question.question))
         .collect::<HashMap<_, _>>();
 
-    // 中間表現のqblock順を最終JSONの出力順として維持する．
     GeneratedDocument {
         questions: intermediate
             .qblocks
@@ -418,7 +390,6 @@ pub fn merge_composed_questions(
     }
 }
 
-/// ID整合性を確認してから，中間表現の固定フィールドで再構築する．
 pub fn try_merge_composed_questions(
     intermediate: &IntermediateDocument,
     composed: ComposedDocument,
@@ -430,13 +401,12 @@ pub fn try_merge_composed_questions(
     Ok(merge_composed_questions(intermediate, composed))
 }
 
-/// HashMap化で重複を失う前にID整合性を走査する．
 pub(crate) fn preflight_composed_questions(
     intermediate: &IntermediateDocument,
     composed: &ComposedDocument,
 ) -> Vec<ComposeMergeIssue> {
-    let mut expected_ids = std::collections::HashSet::new();
-    let mut duplicate_expected_ids = std::collections::HashSet::new();
+    let mut expected_ids = HashSet::new();
+    let mut duplicate_expected_ids = HashSet::new();
     let mut issues = Vec::new();
     for qblock in &intermediate.qblocks {
         if !expected_ids.insert(qblock.id.as_str())
@@ -447,13 +417,12 @@ pub(crate) fn preflight_composed_questions(
             });
         }
     }
-    // 期待IDが曖昧なら応答を検査しても確定的な対応付けはできない．
     if !issues.is_empty() {
         return issues;
     }
 
-    let mut response_ids = std::collections::HashSet::new();
-    let mut duplicate_response_ids = std::collections::HashSet::new();
+    let mut response_ids = HashSet::new();
+    let mut duplicate_response_ids = HashSet::new();
     for question in &composed.questions {
         if !response_ids.insert(question.id.as_str())
             && duplicate_response_ids.insert(question.id.as_str())
@@ -463,15 +432,16 @@ pub(crate) fn preflight_composed_questions(
             });
         }
     }
-    let mut unknown_ids = std::collections::HashSet::new();
+
+    let mut unknown_ids = HashSet::new();
     for question in &composed.questions {
-        if !expected_ids.contains(question.id.as_str()) && unknown_ids.insert(question.id.as_str())
-        {
+        if !expected_ids.contains(question.id.as_str()) && unknown_ids.insert(question.id.as_str()) {
             issues.push(ComposeMergeIssue::UnknownQuestionId {
                 id: question.id.clone(),
             });
         }
     }
+
     for qblock in &intermediate.qblocks {
         if !response_ids.contains(qblock.id.as_str()) {
             issues.push(ComposeMergeIssue::MissingQuestionId {
@@ -482,7 +452,6 @@ pub(crate) fn preflight_composed_questions(
     issues
 }
 
-/// LLM出力に混じりやすい前後の空白やMarkdown fenceを取り除く．
 pub fn normalize_question(question: &str) -> String {
     question
         .trim()
@@ -500,6 +469,61 @@ mod tests {
     };
 
     use super::*;
+
+    fn sentinel_task(blank_count: usize) -> ComposeTask {
+        let blank_tokens = (0..blank_count)
+            .map(|index| format!("⟦FC_0123456789abcdef_{index:06}⟧"))
+            .collect::<Vec<_>>();
+        ComposeTask {
+            id: "q1".into(),
+            source_text: "source".into(),
+            scaffold_question: blank_tokens.join(" / "),
+            answers: Vec::new(),
+            blank_token: blank_tokens.first().cloned().unwrap_or_default(),
+            blank_tokens,
+            blank_count,
+        }
+    }
+
+    #[test]
+    fn normalizes_provider_safe_placeholders() {
+        let task = sentinel_task(2);
+        let normalized = normalize_sentinel_question("A<BLANK_0>B<BLANK_1>C", &task).unwrap();
+        assert_eq!(normalized, format!("A{BLANK}B{BLANK}C"));
+    }
+
+    #[test]
+    fn provider_safe_placeholders_reject_missing_duplicate_and_order() {
+        let task = sentinel_task(2);
+        assert_eq!(
+            normalize_sentinel_question("A<BLANK_0>B", &task),
+            Err("missing-sentinel")
+        );
+        assert_eq!(
+            normalize_sentinel_question("<BLANK_0><BLANK_0><BLANK_1>", &task),
+            Err("duplicate-sentinel")
+        );
+        assert_eq!(
+            normalize_sentinel_question("<BLANK_1><BLANK_0>", &task),
+            Err("sentinel-order")
+        );
+    }
+
+    #[test]
+    fn provider_safe_placeholders_reject_unknown_index() {
+        let task = sentinel_task(1);
+        assert_eq!(
+            normalize_sentinel_question("<BLANK_0><BLANK_9>", &task),
+            Err("unknown-sentinel")
+        );
+    }
+
+    #[test]
+    fn legacy_sentinel_path_still_normalizes() {
+        let task = sentinel_task(1);
+        let question = format!("A{}B", task.blank_tokens[0]);
+        assert_eq!(normalize_sentinel_question(&question, &task).unwrap(), format!("A{BLANK}B"));
+    }
 
     #[test]
     fn merges_only_question_from_llm_output() {
@@ -526,7 +550,6 @@ mod tests {
         };
 
         let generated = merge_composed_questions(&intermediate, composed);
-
         assert_eq!(generated.questions.len(), 1);
         assert_eq!(generated.questions[0].section.as_deref(), Some("Section"));
         assert_eq!(generated.questions[0].answers, vec!["ワーキングメモリ"]);
@@ -574,69 +597,13 @@ mod tests {
         assert_eq!(
             error.issues,
             vec![
-                ComposeMergeIssue::DuplicateQuestionId {
-                    id: "q2".to_string()
-                },
-                ComposeMergeIssue::DuplicateQuestionId {
-                    id: "unknown".to_string()
-                },
-                ComposeMergeIssue::UnknownQuestionId {
-                    id: "unknown".to_string()
-                },
-                ComposeMergeIssue::MissingQuestionId {
-                    id: "q1".to_string()
-                },
-                ComposeMergeIssue::MissingQuestionId {
-                    id: "q3".to_string()
-                },
+                ComposeMergeIssue::DuplicateQuestionId { id: "q2".into() },
+                ComposeMergeIssue::DuplicateQuestionId { id: "unknown".into() },
+                ComposeMergeIssue::UnknownQuestionId { id: "unknown".into() },
+                ComposeMergeIssue::MissingQuestionId { id: "q1".into() },
+                ComposeMergeIssue::MissingQuestionId { id: "q3".into() },
             ]
         );
-    }
-
-    #[test]
-    fn strict_merge_rebuilds_fixed_fields_on_success() {
-        let generated = try_merge_composed_questions(
-            &intermediate_with_ids(&["q1", "q2"]),
-            composed(&["q1", "q2"]),
-        )
-        .expect("matching IDs should merge");
-
-        assert_eq!(
-            generated
-                .questions
-                .iter()
-                .map(|question| question.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["q1", "q2"]
-        );
-    }
-
-    #[test]
-    fn strict_merge_returns_no_document_for_duplicate_expected_id() {
-        let error = try_merge_composed_questions(
-            &intermediate_with_ids(&["q1", "q1"]),
-            composed(&["unknown", "unknown"]),
-        )
-        .unwrap_err();
-
-        assert_eq!(
-            error.issues,
-            vec![ComposeMergeIssue::DuplicateExpectedQuestionId {
-                id: "q1".to_string()
-            }]
-        );
-    }
-
-    #[test]
-    fn legacy_merge_keeps_last_duplicate_and_ignores_unknown_and_missing() {
-        let generated = merge_composed_questions(
-            &intermediate_with_ids(&["q1", "q2"]),
-            composed(&["q1", "unknown", "q1"]),
-        );
-
-        assert_eq!(generated.questions.len(), 1);
-        assert_eq!(generated.questions[0].id, "q1");
-        assert_eq!(generated.questions[0].question, "q1");
     }
 
     #[test]
@@ -645,12 +612,8 @@ mod tests {
             "result:\n```json\n{\"items\":[{\"id\":\"q1\",\"question\":\"＿＿＿\"}],\"metadata\":{\"adapter\":\"a\",\"provider\":\"p\",\"model\":\"m\"}}\n```\nend",
         )
         .expect("common parser should extract JSON");
-
         assert_eq!(output.items[0].id, "q1");
-        assert_eq!(
-            parse_compose_output(" \n "),
-            Err(ComposeError::EmptyResponse)
-        );
+        assert_eq!(parse_compose_output(" \n "), Err(ComposeError::EmptyResponse));
     }
 
     #[test]
@@ -658,42 +621,21 @@ mod tests {
         let request = ComposeBatchRequest {
             schema_version: 1,
             batch_id: "b1".to_string(),
-            tasks: vec![
-                ComposeTask {
-                    id: "q2".to_string(),
-                    source_text: "source".to_string(),
-                    scaffold_question: "＿＿＿ second".to_string(),
-                    answers: vec!["a".to_string()],
-                    blank_token: BLANK.to_string(),
-                    blank_tokens: vec![BLANK.to_string()],
-                    blank_count: 1,
-                },
-                ComposeTask {
-                    id: "q1".to_string(),
-                    source_text: "source".to_string(),
-                    scaffold_question: "＿＿＿ first".to_string(),
-                    answers: vec!["b".to_string()],
-                    blank_token: BLANK.to_string(),
-                    blank_tokens: vec![BLANK.to_string()],
-                    blank_count: 1,
-                },
-            ],
+            tasks: vec![ComposeTask {
+                id: "q1".to_string(),
+                source_text: "source".to_string(),
+                scaffold_question: "＿＿＿ first".to_string(),
+                answers: vec!["a".to_string()],
+                blank_token: BLANK.to_string(),
+                blank_tokens: vec![BLANK.to_string()],
+                blank_count: 1,
+            }],
             style: WritingStyle::PlainJapanese,
             prompt_version: "compose-v1".to_string(),
             extra_constraints: Vec::new(),
             retry_feedback: Vec::new(),
         };
-
         let output = IdentityComposer.compose(&request).unwrap();
-
-        assert_eq!(
-            output
-                .items
-                .iter()
-                .map(|item| item.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["q2", "q1"]
-        );
-        assert_eq!(output.items[0].question, "＿＿＿ second");
+        assert_eq!(output.items[0].question, "＿＿＿ first");
     }
 }
