@@ -23,6 +23,7 @@ pub use output::csv;
 pub use output::json;
 pub use output::pdf;
 pub use runtime::http;
+pub use runtime::labeled_progress;
 pub use runtime::observability;
 pub use runtime::progress;
 pub use runtime::rate_limit;
@@ -40,6 +41,7 @@ pub use config::{BatchPolicyName, CliOverrides, FallbackPolicy, GenerationConfig
 pub use csv::to_ankilot_csv;
 pub use executor::{ExecutionContext, ExecutionError, Executor};
 pub use json::{to_intermediate_json, IntermediateDocument, IntermediateMeta, IntermediateQBlock};
+pub use labeled_progress::LabeledProgressSink;
 pub use models::{QBlock, Target, ALLOWED_TARGET_TYPES};
 pub use observability::{
     fnv1a_64, ComposeEvent, ComposeEventKind, EventSink, JsonLinesEventSink, MetricsSummary,
