@@ -11,7 +11,6 @@ pub struct GenerationTask {
     pub answers: Vec<String>,
     pub target_types: Vec<Option<String>>,
     pub draft_question: String,
-    pub blank_tokens: Vec<String>,
     pub leakage_baseline: Vec<usize>,
 }
 
@@ -37,25 +36,10 @@ pub fn build_generation_tasks(
                 .iter()
                 .map(|target| Some(target.target_type.clone()))
                 .collect(),
-            blank_tokens: blank_tokens(&task.scaffold_question),
             draft_question: task.scaffold_question,
             leakage_baseline: leakage_baselines.get(&task.id).cloned().unwrap_or_default(),
         })
         .collect())
-}
-
-fn blank_tokens(text: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut index = 0usize;
-    loop {
-        let token = format!("<BLANK_{index}>");
-        if !text.contains(&token) {
-            break;
-        }
-        tokens.push(token);
-        index += 1;
-    }
-    tokens
 }
 
 #[cfg(test)]
@@ -71,7 +55,6 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].section, "Memory");
         assert_eq!(tasks[0].answers, ["ワーキングメモリ"]);
-        assert_eq!(tasks[0].blank_tokens, ["<BLANK_0>"]);
         assert!(tasks[0].draft_question.contains("<BLANK_0>"));
     }
 }
