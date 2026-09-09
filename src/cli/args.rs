@@ -345,9 +345,10 @@ mod tests {
     }
 
     #[test]
-    fn legacy_provider_option_is_rejected() {
+    fn removed_provider_option_is_rejected() {
         assert!(parse(&["generate", "--provider", "google", "notes.md"]).is_err());
     }
+
     #[test]
     fn plan_accepts_model_and_batch_without_output() {
         let parsed = parse(&[
@@ -363,10 +364,12 @@ mod tests {
         assert_eq!(parsed.batch_policy, Some(BatchPolicyOverride::Auto));
         assert_eq!(parsed.input_path.as_deref(), Some("notes.md"));
     }
+
     #[test]
-    fn legacy_api_set_is_rejected() {
+    fn removed_api_set_command_is_rejected() {
         assert!(parse(&["api", "set"]).is_err());
     }
+
     #[test]
     fn catalog_commands_are_parsed() {
         assert_eq!(
@@ -404,6 +407,7 @@ mod tests {
             }
         );
     }
+
     #[test]
     fn generate_accepts_model_profile_and_offline() {
         let parsed =
