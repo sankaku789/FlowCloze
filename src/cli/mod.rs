@@ -3,7 +3,7 @@
 use std::{env, fs, process};
 
 use flowcloze::{
-    CliOverrides, FailureClass, GenerationConfig, PlainProgressSink, ProgressEvent, ProgressSink,
+    CliOverrides, FailureClass, GenerationConfig, LabeledProgressSink, ProgressEvent, ProgressSink,
     ProgressStage,
 };
 
@@ -50,7 +50,7 @@ pub fn run() {
             commands::plan::run(required(&args.input_path), &config);
         }
         Command::Generate => {
-            let progress = PlainProgressSink::stderr("Generate");
+            let progress = LabeledProgressSink::stderr("Generate");
             let config = load_config(&args).unwrap_or_else(|e| {
                 progress.emit(ProgressEvent::Failed {
                     stage: ProgressStage::Config,
