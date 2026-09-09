@@ -25,6 +25,8 @@ jobs:
           gzip --decompress --stdout /tmp/flowcloze.patch.gz > /tmp/flowcloze.patch
           git apply --check /tmp/flowcloze.patch
           git apply /tmp/flowcloze.patch
+          git apply --check .preflight/fix.patch
+          git apply .preflight/fix.patch
       - name: Format staged implementation
         run: cargo fmt --all
       - name: Check formatting
