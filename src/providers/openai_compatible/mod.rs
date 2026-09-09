@@ -135,11 +135,21 @@ impl OpenAiCompatibleAdapter {
             ));
         }
 
-        self.transport.post_json(
+        eprintln!("\n===== FLOWCLOZE PROMPT =====");
+        eprintln!("{prompt}");
+        eprintln!("===== END PROMPT =====\n");
+
+        let raw = self.transport.post_json(
             &format!("{}/chat/completions", self.endpoint.base_url),
             json_headers(extra),
             &body.to_string(),
-        )
+        )?;
+
+        eprintln!("\n===== FLOWCLOZE RAW RESPONSE =====");
+        eprintln!("{raw}");
+        eprintln!("===== END RAW RESPONSE =====\n");
+
+        Ok(raw)
     }
 
     fn compose_once(
