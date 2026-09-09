@@ -188,6 +188,8 @@ FlowCloze 2.2 keeps user-level settings in the standard config directory:
 ~/.config/flowcloze/credentials.toml
 ```
 
+If `config.toml` is missing, FlowCloze creates it from the bundled default configuration on first use. Running `flowcloze api set` first also creates the config. Existing `config.toml` files are never overwritten.
+
 When `XDG_CONFIG_HOME` is set, FlowCloze uses `$XDG_CONFIG_HOME/flowcloze/`. For development, you can isolate settings like this:
 
 ```bash

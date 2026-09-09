@@ -15,6 +15,7 @@ use crate::quota::{QuotaProfile, QuotaProfileConfig};
 
 const GEMINI_OPENAI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const BUNDLED_TYPST_TEMPLATE: &str = include_str!("../templates/cloze.typ");
+const BUNDLED_DEFAULT_CONFIG: &str = include_str!("../config.toml.example");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
@@ -346,6 +347,7 @@ pub fn save_api_key(provider: Provider, api_key: &str) -> Result<(), String> {
         return Err("APIキーに改行またはNULを含めることはできません".into());
     }
 
+    ensure_default_config()?;
     let directory = config_dir()?;
     fs::create_dir_all(&directory)
         .map_err(|error| format!("{} を作成できませんでした: {error}", directory.display()))?;
@@ -372,14 +374,69 @@ pub fn save_api_key(provider: Provider, api_key: &str) -> Result<(), String> {
     write_private_file(&credentials_path()?, body.as_bytes())
 }
 
-fn load_file() -> Result<FileConfig, String> {
-    let path = config_path()?;
-    match fs::read_to_string(&path) {
-        Ok(text) => toml::from_str(&text)
-            .map_err(|error| format!("{} の設定が不正です: {error}", path.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FileConfig::default()),
-        Err(error) => Err(format!("{} を読めませんでした: {error}", path.display())),
+fn ensure_default_config() -> Result<PathBuf, String> {
+    use std::fs::OpenOptions;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let directory = config_dir()?;
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("{} を作成できませんでした: {error}", directory.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            format!(
+                "{} の権限を設定できませんでした: {error}",
+                directory.display()
+            )
+        })?;
     }
+
+    let path = directory.join("config.toml");
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    match options.open(&path) {
+        Ok(mut file) => {
+            if let Err(error) = file
+                .write_all(BUNDLED_DEFAULT_CONFIG.as_bytes())
+                .and_then(|_| file.sync_all())
+            {
+                drop(file);
+                let _ = fs::remove_file(&path);
+                return Err(format!(
+                    "{} を作成できませんでした: {error}",
+                    path.display()
+                ));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|error| {
+                    format!("{} の権限を設定できませんでした: {error}", path.display())
+                })?;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(format!(
+                "{} を作成できませんでした: {error}",
+                path.display()
+            ));
+        }
+    }
+
+    Ok(path)
+}
+
+fn load_file() -> Result<FileConfig, String> {
+    let path = ensure_default_config()?;
+    let text = fs::read_to_string(&path)
+        .map_err(|error| format!("{} を読めませんでした: {error}", path.display()))?;
+    toml::from_str(&text).map_err(|error| format!("{} の設定が不正です: {error}", path.display()))
 }
 
 fn load_credentials() -> Result<Credentials, String> {
@@ -681,6 +738,59 @@ rpd = 30
         assert_eq!(quota.adaptive_max_tasks_per_batch, Some(24));
         assert_eq!(quota.adaptive_max_output_tokens, Some(12_000));
         assert_eq!(quota.adaptive_max_blanks_per_batch, Some(48));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn missing_standard_config_is_materialized_with_quota_defaults() {
+        let _lock = environment_test_lock();
+        let _xdg = EnvironmentVariable::new("XDG_CONFIG_HOME");
+        let directory = temporary_home("bootstrap-config");
+        env::set_var("XDG_CONFIG_HOME", &directory);
+        let path = config_path().unwrap();
+        assert!(!path.exists());
+
+        let config = load(CliOverrides::default()).unwrap();
+        assert_eq!(config.provider, Provider::Gemini);
+        assert_eq!(config.model, "gemini-2.5-flash");
+        assert_eq!(config.max_tasks_per_batch, Some(12));
+        assert_eq!(config.max_input_tokens, Some(18_000));
+        assert_eq!(config.max_output_tokens, Some(6_000));
+        assert_eq!(config.max_blanks_per_batch, Some(24));
+        let quota = config
+            .quota
+            .expect("default Gemini quota profile should be active");
+        assert_eq!(quota.name, "gemini");
+        assert_eq!(quota.rpm, Some(5));
+        assert_eq!(quota.tpm, Some(250_000));
+        assert_eq!(quota.rpd, Some(20));
+        assert_eq!(quota.request_budget(), Some(16));
+        assert_eq!(quota.adaptive_max_tasks_per_batch, Some(24));
+        assert_eq!(quota.adaptive_max_output_tokens, Some(12_000));
+        assert_eq!(quota.adaptive_max_blanks_per_batch, Some(48));
+        assert_eq!(fs::read_to_string(&path).unwrap(), BUNDLED_DEFAULT_CONFIG);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn saving_api_key_also_materializes_standard_config() {
+        let _lock = environment_test_lock();
+        let _xdg = EnvironmentVariable::new("XDG_CONFIG_HOME");
+        let directory = temporary_home("bootstrap-api-set");
+        env::set_var("XDG_CONFIG_HOME", &directory);
+        let path = config_path().unwrap();
+        assert!(!path.exists());
+
+        save_api_key(Provider::Gemini, "gemini-secret").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), BUNDLED_DEFAULT_CONFIG);
         fs::remove_dir_all(directory).unwrap();
     }
 

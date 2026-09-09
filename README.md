@@ -188,6 +188,8 @@ FlowCloze 2.2では、設定をユーザー単位の標準ディレクトリへ�
 ~/.config/flowcloze/credentials.toml
 ```
 
+`config.toml` が存在しない場合は、FlowClozeが内蔵の標準設定を初回利用時に自動生成します。`flowcloze api set` だけを先に実行した場合も同時に生成されます。既存の `config.toml` は上書きしません。
+
 `XDG_CONFIG_HOME` が設定されている場合は、`$XDG_CONFIG_HOME/flowcloze/` を使います。開発時は例えば次のように分離できます。
 
 ```bash
