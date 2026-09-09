@@ -1,0 +1,99 @@
+name: Refresh PR 14
+
+on:
+  push:
+    branches:
+      - feature/bootstrap-default-config
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+      - name: Apply bootstrap update for 2.2.1-beta
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one replacement target, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "src/config.rs",
+              'const BUNDLED_TYPST_TEMPLATE: &str = include_str!("../templates/cloze.typ");\n',
+              'const BUNDLED_TYPST_TEMPLATE: &str = include_str!("../templates/cloze.typ");\nconst BUNDLED_DEFAULT_CONFIG: &str = include_str!("../config.toml.example");\n',
+          )
+
+          replace_once(
+              "src/config.rs",
+              '''    if api_key.contains(['\\r', '\\n', '\\0']) {\n        return Err("APIキーに改行またはNULを含めることはできません".into());\n    }\n\n    let directory = config_dir()?;\n''',
+              '''    if api_key.contains(['\\r', '\\n', '\\0']) {\n        return Err("APIキーに改行またはNULを含めることはできません".into());\n    }\n\n    ensure_default_config()?;\n    let directory = config_dir()?;\n''',
+          )
+
+          replace_once(
+              "src/config.rs",
+              '''fn load_file() -> Result<FileConfig, String> {\n    let path = config_path()?;\n    match fs::read_to_string(&path) {\n        Ok(text) => toml::from_str(&text)\n            .map_err(|error| format!("{} の設定が不正です: {error}", path.display())),\n        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FileConfig::default()),\n        Err(error) => Err(format!("{} を読めませんでした: {error}", path.display())),\n    }\n}\n''',
+              '''fn ensure_default_config() -> Result<PathBuf, String> {\n    use std::fs::OpenOptions;\n    #[cfg(unix)]\n    use std::os::unix::fs::OpenOptionsExt;\n\n    let directory = config_dir()?;\n    fs::create_dir_all(&directory)\n        .map_err(|error| format!("{} を作成できませんでした: {error}", directory.display()))?;\n    #[cfg(unix)]\n    {\n        use std::os::unix::fs::PermissionsExt;\n        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).map_err(|error| {\n            format!(\n                "{} の権限を設定できませんでした: {error}",\n                directory.display()\n            )\n        })?;\n    }\n\n    let path = directory.join("config.toml");\n    let mut options = OpenOptions::new();\n    options.write(true).create_new(true);\n    #[cfg(unix)]\n    options.mode(0o600);\n\n    match options.open(&path) {\n        Ok(mut file) => {\n            if let Err(error) = file\n                .write_all(BUNDLED_DEFAULT_CONFIG.as_bytes())\n                .and_then(|_| file.sync_all())\n            {\n                drop(file);\n                let _ = fs::remove_file(&path);\n                return Err(format!("{} を作成できませんでした: {error}", path.display()));\n            }\n            #[cfg(unix)]\n            {\n                use std::os::unix::fs::PermissionsExt;\n                fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|error| {\n                    format!("{} の権限を設定できませんでした: {error}", path.display())\n                })?;\n            }\n        }\n        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}\n        Err(error) => {\n            return Err(format!("{} を作成できませんでした: {error}", path.display()));\n        }\n    }\n\n    Ok(path)\n}\n\nfn load_file() -> Result<FileConfig, String> {\n    let path = ensure_default_config()?;\n    let text = fs::read_to_string(&path)\n        .map_err(|error| format!("{} を読めませんでした: {error}", path.display()))?;\n    toml::from_str(&text).map_err(|error| format!("{} の設定が不正です: {error}", path.display()))\n}\n''',
+          )
+
+          test_marker = '''    #[test]\n    fn saves_provider_credentials_privately() {\n'''
+          bootstrap_tests = '''    #[test]\n    fn missing_standard_config_is_materialized_with_quota_defaults() {\n        let _lock = environment_test_lock();\n        let _xdg = EnvironmentVariable::new("XDG_CONFIG_HOME");\n        let directory = temporary_home("bootstrap-config");\n        env::set_var("XDG_CONFIG_HOME", &directory);\n        let path = config_path().unwrap();\n        assert!(!path.exists());\n\n        let config = load(CliOverrides::default()).unwrap();\n        assert_eq!(config.provider, Provider::Gemini);\n        assert_eq!(config.model, "gemini-2.5-flash");\n        assert_eq!(config.max_tasks_per_batch, Some(12));\n        assert_eq!(config.max_input_tokens, Some(18_000));\n        assert_eq!(config.max_output_tokens, Some(6_000));\n        assert_eq!(config.max_blanks_per_batch, Some(24));\n        let quota = config\n            .quota\n            .expect("default Gemini quota profile should be active");\n        assert_eq!(quota.name, "gemini");\n        assert_eq!(quota.rpm, Some(5));\n        assert_eq!(quota.tpm, Some(250_000));\n        assert_eq!(quota.rpd, Some(20));\n        assert_eq!(quota.request_budget(), Some(16));\n        assert_eq!(quota.adaptive_max_tasks_per_batch, Some(24));\n        assert_eq!(quota.adaptive_max_output_tokens, Some(12_000));\n        assert_eq!(quota.adaptive_max_blanks_per_batch, Some(48));\n        assert_eq!(fs::read_to_string(&path).unwrap(), BUNDLED_DEFAULT_CONFIG);\n        #[cfg(unix)]\n        {\n            use std::os::unix::fs::PermissionsExt;\n            assert_eq!(\n                fs::metadata(&path).unwrap().permissions().mode() & 0o777,\n                0o600\n            );\n        }\n        fs::remove_dir_all(directory).unwrap();\n    }\n\n    #[test]\n    fn saving_api_key_also_materializes_standard_config() {\n        let _lock = environment_test_lock();\n        let _xdg = EnvironmentVariable::new("XDG_CONFIG_HOME");\n        let directory = temporary_home("bootstrap-api-set");\n        env::set_var("XDG_CONFIG_HOME", &directory);\n        let path = config_path().unwrap();\n        assert!(!path.exists());\n\n        save_api_key(Provider::Gemini, "gemini-secret").unwrap();\n        assert_eq!(fs::read_to_string(&path).unwrap(), BUNDLED_DEFAULT_CONFIG);\n        fs::remove_dir_all(directory).unwrap();\n    }\n\n'''
+          replace_once("src/config.rs", test_marker, bootstrap_tests + test_marker)
+
+          replace_once(
+              "config.toml.example",
+              "# Copy this file to ~/.config/flowcloze/config.toml\n",
+              "# Default FlowCloze configuration. A missing user config is created from this file automatically.\n",
+          )
+
+          replace_once(
+              "README.md",
+              '''~/.config/flowcloze/credentials.toml\n```\n\n`XDG_CONFIG_HOME` が設定されている場合は、''',
+              '''~/.config/flowcloze/credentials.toml\n```\n\n`config.toml` が存在しない場合は、FlowClozeが内蔵の標準設定を初回利用時に自動生成します。`flowcloze api set` だけを先に実行した場合も同時に生成されます。既存の `config.toml` は上書きしません。\n\n`XDG_CONFIG_HOME` が設定されている場合は、''',
+          )
+
+          replace_once(
+              "README.en.md",
+              '''~/.config/flowcloze/credentials.toml\n```\n\nWhen `XDG_CONFIG_HOME` is set,''',
+              '''~/.config/flowcloze/credentials.toml\n```\n\nIf `config.toml` is missing, FlowCloze creates it from the bundled default configuration on first use. Running `flowcloze api set` first also creates the config. Existing `config.toml` files are never overwritten.\n\nWhen `XDG_CONFIG_HOME` is set,''',
+          )
+
+          replace_once("Cargo.toml", 'version = "2.2.0-beta"\n', 'version = "2.2.1-beta"\n')
+          replace_once(
+              "Cargo.lock",
+              'name = "flowcloze"\nversion = "2.2.0-beta"\n',
+              'name = "flowcloze"\nversion = "2.2.1-beta"\n',
+          )
+
+          replace_once(
+              "CHANGELOG.md",
+              "# Changelog\n\n",
+              "# Changelog\n\n## 2.2.1-beta - 2026-09-09\n\n### Fixed\n\n- Materialize the bundled default `config.toml` on first use so quota-aware batching and request pacing are active on fresh installations.\n- Also bootstrap the standard config when `flowcloze api set` is the first command, without overwriting an existing user config.\n\n",
+          )
+          PY
+
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          cargo clippy --locked --all-targets --features gemini-native -- -D warnings
+          cargo test --locked --features gemini-native
+      - name: Commit refreshed PR
+        run: |
+          rm .github/workflows/refresh-pr14.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix: bootstrap default user config for 2.2.1-beta'
+          git push origin HEAD:feature/bootstrap-default-config
