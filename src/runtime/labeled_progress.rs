@@ -27,16 +27,17 @@ impl LogLevel {
     }
 }
 
-fn utc_timestamp() -> String {
-    let seconds = SystemTime::now()
+fn jst_timestamp() -> String {
+    let seconds = (SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+        + 9 * 3_600)
         % 86_400;
     let hour = seconds / 3_600;
     let minute = (seconds % 3_600) / 60;
     let second = seconds % 60;
-    format!("[{hour:02}:{minute:02}:{second:02}Z] ")
+    format!("[{hour:02}:{minute:02}:{second:02}] ")
 }
 
 fn level_for_event(event: &ProgressEvent) -> LogLevel {
@@ -58,7 +59,7 @@ fn level_for_event(event: &ProgressEvent) -> LogLevel {
     }
 }
 
-/// PlainProgressSinkの各行へUTC時刻とseverityラベルを付与するsink。
+/// PlainProgressSinkの各行へJST時刻とseverityラベルを付与するsink。
 /// retryはWARN、retry失敗・provider error・終端失敗はERRORとして表示する。
 pub struct LabeledProgressSink {
     inner: PlainProgressSink,
@@ -114,7 +115,7 @@ impl LabeledWriter {
             .lock()
             .map(|level| *level)
             .unwrap_or(LogLevel::Info);
-        format!("{}{}{line}", utc_timestamp(), level.label())
+        format!("{}{}{line}", jst_timestamp(), level.label())
     }
 
     fn flush_complete_line(&mut self) -> io::Result<()> {
@@ -202,14 +203,13 @@ mod tests {
 
     fn strip_timestamp(line: &str) -> &str {
         assert_eq!(line.as_bytes().get(0), Some(&b'['));
-        assert_eq!(line.as_bytes().get(9), Some(&b'Z'));
-        assert_eq!(line.as_bytes().get(10), Some(&b']'));
-        assert_eq!(line.as_bytes().get(11), Some(&b' '));
-        &line[12..]
+        assert_eq!(line.as_bytes().get(9), Some(&b']'));
+        assert_eq!(line.as_bytes().get(10), Some(&b' '));
+        &line[11..]
     }
 
     #[test]
-    fn labels_info_warn_error_with_utc_time_and_exposes_retry_cause() {
+    fn labels_info_warn_error_with_jst_time_and_exposes_retry_cause() {
         let writer = SharedWriter::default();
         let sink = LabeledProgressSink::new(writer.clone(), "Provider");
 
