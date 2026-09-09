@@ -15,10 +15,8 @@ pub trait QuestionComposer: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ComposeBatchRequest {
-    pub schema_version: u32,
     pub batch_id: String,
     pub tasks: Vec<ComposeTask>,
-    pub style: WritingStyle,
     pub prompt_version: String,
     pub extra_constraints: Vec<String>,
     pub retry_feedback: Vec<String>,
@@ -27,11 +25,7 @@ pub struct ComposeBatchRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ComposeTask {
     pub id: String,
-    pub source_text: String,
     pub scaffold_question: String,
-    pub answers: Vec<String>,
-    pub blank_token: String,
-    pub blank_tokens: Vec<String>,
     pub blank_count: usize,
 }
 
@@ -53,11 +47,6 @@ pub struct ComposeMetadata {
     pub adapter: String,
     pub provider: String,
     pub model: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-pub enum WritingStyle {
-    PlainJapanese,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,17 +130,9 @@ fn blank_token(index: usize) -> String {
 }
 
 pub fn compose_task_from_scaffold(task: &crate::scaffold::ScaffoldTask) -> ComposeTask {
-    let blank_tokens = (0..task.blank_count).map(blank_token).collect::<Vec<_>>();
     ComposeTask {
         id: task.id.clone(),
-        source_text: task.source_text.clone(),
         scaffold_question: task.scaffold_question.clone(),
-        answers: task.answers.clone(),
-        blank_token: blank_tokens
-            .first()
-            .cloned()
-            .unwrap_or_else(|| BLANK.to_string()),
-        blank_tokens,
         blank_count: task.blank_count,
     }
 }
@@ -372,14 +353,12 @@ mod tests {
     use super::*;
 
     fn blank_task(blank_count: usize) -> ComposeTask {
-        let blank_tokens = (0..blank_count).map(blank_token).collect::<Vec<_>>();
         ComposeTask {
             id: "q1".into(),
-            source_text: "source".into(),
-            scaffold_question: blank_tokens.join(" / "),
-            answers: Vec::new(),
-            blank_token: blank_tokens.first().cloned().unwrap_or_default(),
-            blank_tokens,
+            scaffold_question: (0..blank_count)
+                .map(blank_token)
+                .collect::<Vec<_>>()
+                .join(" / "),
             blank_count,
         }
     }
