@@ -386,31 +386,19 @@ pub(crate) fn validate_generated_documents(
     ValidationReport { errors }
 }
 
-/// located scaffoldが得られる標準生成経路用の検証。
-/// JSON互換APIはspanを持たないため従来のbest-effort基準を維持する。
+/// located scaffoldを使う標準生成経路用のaccept/retry判定。
+/// sentinelとIDの対応はこの関数より前で検証済みであり、answer leakageは
+/// 生成結果を構造的に利用不能にしないためcontent retryの理由にはしない。
+/// 公開JSON validatorは引き続きvalidate_generated_documentsで厳格に検証する。
 pub(crate) fn validate_generated_documents_with_leakage_baselines(
     intermediate: &IntermediateDocument,
     generated: &GeneratedDocument,
-    leakage_baselines: &HashMap<String, Vec<usize>>,
+    _leakage_baselines: &HashMap<String, Vec<usize>>,
 ) -> ValidationReport {
     let mut report = validate_generated_documents(intermediate, generated);
     report
         .errors
         .retain(|error| !matches!(error, ValidationError::AnswerLeakage { .. }));
-    for question in &generated.questions {
-        let Some(baselines) = leakage_baselines.get(&question.id) else {
-            continue;
-        };
-        for (index, answer) in question.answers.iter().enumerate() {
-            let baseline = baselines.get(index).copied().unwrap_or(0);
-            if !answer.is_empty() && count_occurrences(&question.question, answer) > baseline {
-                report.errors.push(ValidationError::AnswerLeakage {
-                    id: question.id.clone(),
-                    answer: answer.clone(),
-                });
-            }
-        }
-    }
     report
 }
 
