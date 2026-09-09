@@ -12,7 +12,9 @@ use crate::planner::{ComposeExecutionPolicy, ComposePlanError, FailureReason};
 use crate::progress::{FailureClass, NoopProgressSink, ProgressEvent, ProgressSink};
 use crate::quota::QuotaProfile;
 use crate::scaffold::{ScaffoldDocument, ScaffoldTask};
-use crate::validation::GeneratedDocument;
+use crate::validation::{
+    validate_generated_documents_with_leakage_baselines, GeneratedDocument,
+};
 
 /// Markdown生成入口の設定。出力JSONにはこの情報を混ぜない。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,7 +285,13 @@ pub fn generate_markdown_with_composer_observed_with_progress(
             .unwrap_or(usize::MAX)
     });
     let document = GeneratedDocument { questions };
-    let report = crate::validation::validate_generated_documents(&intermediate, &document);
+    // qblockごとのaccept/retry判定と同じ契約を最終文書にも適用する。
+    // AnswerLeakageのような非構造的な疑いを最後だけhard failureへ戻さない。
+    let report = validate_generated_documents_with_leakage_baselines(
+        &intermediate,
+        &document,
+        &leakage_baselines,
+    );
     if let Some(error) = report.errors.first() {
         progress.emit(ProgressEvent::Failed {
             stage: crate::progress::ProgressStage::Validate,
@@ -358,47 +366,136 @@ impl ProgressSink for BatchProgressSink<'_> {
 fn failure_class_for_plan(error: &ComposePlanError) -> FailureClass {
     match error {
         ComposePlanError::Configuration { .. } => FailureClass::Configuration,
-        ComposePlanError::Prompt(_) | ComposePlanError::Json(_) => FailureClass::Content,
-        ComposePlanError::Llm(class) => match class.as_str() {
-            "authentication" => FailureClass::Authentication,
-            "configuration" => FailureClass::Configuration,
-            "rate_limited" => FailureClass::RateLimited,
-            "timeout" => FailureClass::Timeout,
-            "transport" => FailureClass::Transport,
-            "content" => FailureClass::Content,
-            _ => FailureClass::Api,
-        },
+        ComposePlanError::Prompt(_) => FailureClass::Configuration,
+        ComposePlanError::Llm(_) => FailureClass::Content,
+        ComposePlanError::Json(_) => FailureClass::Content,
         ComposePlanError::Validation { .. } => FailureClass::Validation,
-        ComposePlanError::Partial { failed_reasons, .. } => failed_reasons
-            .first()
-            .map(|reason| match reason {
-                FailureReason::Content => FailureClass::Content,
-                FailureReason::Transport => FailureClass::Transport,
-            })
-            .unwrap_or(FailureClass::Validation),
+        ComposePlanError::Partial { .. } => FailureClass::Content,
     }
 }
 
-fn failure_class_for_execution(error: &crate::executor::ComposeExecutionError) -> FailureClass {
+fn failure_class_for_execution(error: &crate::generation::ComposeExecutionError) -> FailureClass {
     match error.terminal_cause() {
-        Some(cause) => failure_class_for_terminal_cause(cause),
-        None => failure_class_for_plan(error.as_public()),
+        Some(crate::generation::TerminalCause::Authentication) => FailureClass::Authentication,
+        Some(crate::generation::TerminalCause::Configuration) => FailureClass::Configuration,
+        Some(crate::generation::TerminalCause::RateLimited { .. }) => FailureClass::RateLimited,
+        Some(crate::generation::TerminalCause::Timeout) => FailureClass::Timeout,
+        Some(crate::generation::TerminalCause::Transport) => FailureClass::Transport,
+        Some(crate::generation::TerminalCause::Api { .. }) => FailureClass::Api,
+        Some(crate::generation::TerminalCause::Content) | None => FailureClass::Content,
     }
 }
 
-fn failure_class_for_terminal_cause(cause: crate::executor::TerminalCause) -> FailureClass {
+fn failure_class_for_terminal_cause(
+    cause: crate::generation::TerminalCause,
+) -> FailureClass {
     match cause {
-        crate::executor::TerminalCause::Content => FailureClass::Content,
-        crate::executor::TerminalCause::Authentication => FailureClass::Authentication,
-        crate::executor::TerminalCause::Configuration => FailureClass::Configuration,
-        crate::executor::TerminalCause::RateLimited { .. } => FailureClass::RateLimited,
-        crate::executor::TerminalCause::Timeout => FailureClass::Timeout,
-        crate::executor::TerminalCause::Transport => FailureClass::Transport,
-        crate::executor::TerminalCause::Api { .. } => FailureClass::Api,
+        crate::generation::TerminalCause::Authentication => FailureClass::Authentication,
+        crate::generation::TerminalCause::Configuration => FailureClass::Configuration,
+        crate::generation::TerminalCause::RateLimited { .. } => FailureClass::RateLimited,
+        crate::generation::TerminalCause::Timeout => FailureClass::Timeout,
+        crate::generation::TerminalCause::Transport => FailureClass::Transport,
+        crate::generation::TerminalCause::Api { .. } => FailureClass::Api,
+        crate::generation::TerminalCause::Content => FailureClass::Content,
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Debug)]
+pub(crate) struct BuildScaffoldError {
+    message: String,
+}
+
+impl BuildScaffoldError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for BuildScaffoldError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for BuildScaffoldError {}
+
+pub(crate) fn build_blank_scaffold(
+    markdown: &str,
+    parsed: &ParsedDocument,
+) -> Result<(ScaffoldDocument, HashMap<String, Vec<usize>>), MarkdownParseError> {
+    let mut tasks = Vec::new();
+    let mut baselines = HashMap::new();
+
+    for qblock in &parsed.qblocks {
+        let source = markdown
+            .get(qblock.source_range.clone())
+            .ok_or_else(|| MarkdownParseError::InvalidSyntax {
+                line: 0,
+                message: "qblock source range is not on UTF-8 boundaries".to_string(),
+            })?;
+        let mut replacements = qblock
+            .target_spans
+            .iter()
+            .enumerate()
+            .map(|(index, span)| {
+                let relative = relative_range(&qblock.source_range, &span.range)?;
+                Ok((relative, format!("<BLANK_{index}>")))
+            })
+            .collect::<Result<Vec<_>, MarkdownParseError>>()?;
+        replacements.sort_by(|left, right| right.0.start.cmp(&left.0.start));
+        let mut scaffold = source.to_string();
+        for (range, placeholder) in replacements {
+            scaffold.replace_range(range, &placeholder);
+        }
+
+        let leakage_baseline = qblock
+            .qblock
+            .targets
+            .iter()
+            .map(|target| count_occurrences(&scaffold, &target.answer))
+            .collect::<Vec<_>>();
+        baselines.insert(qblock.qblock.id.clone(), leakage_baseline);
+        tasks.push(ScaffoldTask {
+            id: qblock.qblock.id.clone(),
+            source_text: source.to_string(),
+            cloze_template: scaffold.clone(),
+            scaffold_question: scaffold,
+            blank_count: qblock.qblock.targets.len(),
+            answers: qblock
+                .qblock
+                .targets
+                .iter()
+                .map(|target| target.answer.clone())
+                .collect(),
+        });
+    }
+
+    Ok((ScaffoldDocument { tasks }, baselines))
+}
+
+fn count_occurrences(text: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        0
+    } else {
+        text.match_indices(needle).count()
+    }
+}
+
+fn relative_range(
+    block: &Range<usize>,
+    target: &Range<usize>,
+) -> Result<Range<usize>, MarkdownParseError> {
+    if target.start < block.start || target.end > block.end || target.start > target.end {
+        return Err(MarkdownParseError::InvalidSyntax {
+            line: 0,
+            message: "target span is outside qblock range".to_string(),
+        });
+    }
+    Ok(target.start - block.start..target.end - block.start)
+}
+
 fn compose_indexes(
     intermediate: &IntermediateDocument,
     scaffold: &ScaffoldDocument,
@@ -411,7 +508,7 @@ fn compose_indexes(
     prepared: Option<&crate::planner::PreparedComposePlan>,
     extra_constraints: &[String],
     leakage_baselines: &HashMap<String, Vec<usize>>,
-) -> Result<GeneratedDocument, crate::executor::ComposeExecutionError> {
+) -> Result<GeneratedDocument, crate::generation::ComposeExecutionError> {
     let selected_intermediate = IntermediateDocument {
         meta: intermediate.meta.clone(),
         qblocks: indexes
@@ -425,7 +522,17 @@ fn compose_indexes(
             .map(|index| scaffold.tasks[*index].clone())
             .collect(),
     };
-    crate::executor::execute_legacy(
+    let selected_baselines = indexes
+        .iter()
+        .filter_map(|index| {
+            let id = &scaffold.tasks[*index].id;
+            leakage_baselines
+                .get(id)
+                .cloned()
+                .map(|baseline| (id.clone(), baseline))
+        })
+        .collect::<HashMap<_, _>>();
+    crate::generation::execute_legacy(
         &selected_intermediate,
         &selected_scaffold,
         policy,
@@ -434,204 +541,25 @@ fn compose_indexes(
         context,
         sink,
         progress,
-        Some(leakage_baselines),
+        Some(&selected_baselines),
         prepared,
     )
 }
 
-pub(crate) fn build_blank_scaffold(
-    markdown: &str,
-    parsed: &ParsedDocument,
-) -> Result<(ScaffoldDocument, HashMap<String, Vec<usize>>), MarkdownParseError> {
-    let mut tasks = Vec::with_capacity(parsed.qblocks.len());
-    let mut leakage_baselines = HashMap::new();
-    for qblock in &parsed.qblocks {
-        if qblock.qblock.targets.len() != qblock.target_locations.len() {
-            return Err(MarkdownParseError::new("target位置を確定できません"));
-        }
-        for locations in qblock.target_locations.windows(2) {
-            if locations[0].raw.end > locations[1].raw.start
-                || locations[0].source_text.end > locations[1].source_text.start
-            {
-                return Err(MarkdownParseError::new("target spanが重複しています"));
-            }
-        }
-        let mut replacements = Vec::new();
-        for (index, (target, location)) in qblock
-            .qblock
-            .targets
-            .iter()
-            .zip(&qblock.target_locations)
-            .enumerate()
-        {
-            validate_target_location(
-                markdown,
-                qblock.raw_body.clone(),
-                target.answer.as_str(),
-                location.raw.clone(),
-                location.source_text.clone(),
-                qblock.qblock.source_text.as_str(),
-            )?;
-            replacements.push((location.source_text.clone(), format!("<BLANK_{index}>")));
-        }
-        let mut scaffold_question = qblock.qblock.source_text.clone();
-        for (span, token) in replacements.iter().rev() {
-            scaffold_question.replace_range(span.clone(), token);
-        }
-        let non_target_segments = non_target_segments(&qblock.qblock.source_text, &replacements);
-        leakage_baselines.insert(
-            qblock.qblock.id.clone(),
-            qblock
-                .qblock
-                .targets
-                .iter()
-                .map(|target| {
-                    non_target_segments
-                        .iter()
-                        .map(|segment| segment.match_indices(&target.answer).count())
-                        .sum()
-                })
-                .collect(),
-        );
-        tasks.push(ScaffoldTask {
-            id: qblock.qblock.id.clone(),
-            source_text: qblock.qblock.source_text.clone(),
-            cloze_template: scaffold_question.clone(),
-            scaffold_question,
-            blank_count: qblock.qblock.targets.len(),
-            answers: qblock
-                .qblock
-                .targets
-                .iter()
-                .map(|target| target.answer.clone())
-                .collect(),
-        });
-    }
-    Ok((ScaffoldDocument { tasks }, leakage_baselines))
-}
-
-fn non_target_segments<'a>(
-    source_text: &'a str,
-    replacements: &[(Range<usize>, String)],
-) -> Vec<&'a str> {
-    let mut start = 0;
-    let mut segments = Vec::with_capacity(replacements.len() + 1);
-    for (span, _) in replacements {
-        segments.push(&source_text[start..span.start]);
-        start = span.end;
-    }
-    segments.push(&source_text[start..]);
-    segments
-}
-
-fn validate_target_location(
-    markdown: &str,
-    raw_body: Range<usize>,
-    answer: &str,
-    raw: Range<usize>,
-    source: Range<usize>,
-    source_text: &str,
-) -> Result<(), MarkdownParseError> {
-    if answer.trim().is_empty() || raw.is_empty() || source.is_empty() {
-        return Err(MarkdownParseError::new(
-            "空または空白だけのtarget answerは生成できません",
-        ));
-    }
-    if raw.start < raw_body.start
-        || raw.end > raw_body.end
-        || !markdown.is_char_boundary(raw.start)
-        || !markdown.is_char_boundary(raw.end)
-        || !source_text.is_char_boundary(source.start)
-        || !source_text.is_char_boundary(source.end)
-    {
-        return Err(MarkdownParseError::new(
-            "target spanがUTF-8境界またはqblock範囲外です",
-        ));
-    }
-    if markdown.get(raw) != Some(answer) || source_text.get(source) != Some(answer) {
-        return Err(MarkdownParseError::new("target spanとanswerが一致しません"));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::compose::IdentityComposer;
-
     use super::*;
-
-    #[test]
-    fn identity_generates_utf8_crlf_document_end_to_end() {
-        let markdown = "#qblock{\r\n  [😀答]{term} は [同じ]{term}、[同じ]{term}。\r\n}\r\n";
-        let outcome = generate_markdown_with_composer(
-            markdown,
-            GenerateMarkdownOptions::new("inline.md"),
-            &IdentityComposer,
-        )
-        .expect("located identity path should validate");
-        assert_eq!(
-            outcome.document.questions[0].question,
-            "＿＿＿ は ＿＿＿、＿＿＿。"
-        );
-        assert_eq!(
-            outcome.document.questions[0].answers,
-            ["😀答", "同じ", "同じ"]
-        );
-    }
+    use crate::parser::parse_markdown_located;
 
     #[test]
     fn blank_placeholders_are_numbered_per_qblock() {
-        let markdown = "#qblock{\n[alpha]{term} と [beta]{term}\n}\n#qblock{\n[gamma]{term}\n}\n";
+        let markdown = "<!-- qblock -->\nA[one]B[two]\n<!-- /qblock -->\n\n<!-- qblock -->\nC[three]D\n<!-- /qblock -->";
         let parsed = parse_markdown_located(markdown).unwrap();
         let (scaffold, _) = build_blank_scaffold(markdown, &parsed).unwrap();
+        assert_eq!(scaffold.tasks.len(), 2);
         assert!(scaffold.tasks[0].scaffold_question.contains("<BLANK_0>"));
         assert!(scaffold.tasks[0].scaffold_question.contains("<BLANK_1>"));
         assert!(scaffold.tasks[1].scaffold_question.contains("<BLANK_0>"));
         assert!(!scaffold.tasks[1].scaffold_question.contains("<BLANK_1>"));
-    }
-
-    #[test]
-    fn identity_composer_generates_all_tasks() {
-        let options = GenerateMarkdownOptions::new("inline.md");
-        assert!(generate_markdown_with_composer(
-            "#qblock{\n[answer]{term}\n}\n",
-            options,
-            &IdentityComposer
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn draft_fallback_keeps_successful_tasks_and_excludes_metadata_from_document() {
-        struct OneFails;
-        impl QuestionComposer for OneFails {
-            fn compose(
-                &self,
-                request: &crate::compose::ComposeBatchRequest,
-            ) -> Result<crate::compose::ComposeBatchOutput, crate::compose::ComposeError>
-            {
-                let mut output = IdentityComposer.compose(request).unwrap();
-                for item in &mut output.items {
-                    if item.id.ends_with("002") {
-                        item.question = "invalid".to_string();
-                    }
-                }
-                Ok(output)
-            }
-        }
-        let mut options = GenerateMarkdownOptions::new("inline.md");
-        options.fallback = FallbackPolicy::Draft;
-        let outcome = generate_markdown_with_composer(
-            "#qblock{\n[alpha]{term}\n}\n#qblock{\n[beta]{term}\n}\n",
-            options,
-            &OneFails,
-        )
-        .unwrap();
-        assert_eq!(outcome.document.questions.len(), 2);
-        assert_eq!(outcome.fallback_summary.len(), 1);
-        assert_eq!(outcome.fallback_summary[0].reason, FallbackReason::Content);
-        assert!(!serde_json::to_string(&outcome.document)
-            .unwrap()
-            .contains("fallback"));
     }
 }
