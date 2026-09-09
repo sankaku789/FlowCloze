@@ -11,7 +11,6 @@ pub struct GenerationTask {
     pub answers: Vec<String>,
     pub target_types: Vec<Option<String>>,
     pub draft_question: String,
-    pub leakage_baseline: Vec<usize>,
 }
 
 pub type TaskBuildError = MarkdownParseError;
@@ -20,13 +19,13 @@ pub fn build_generation_tasks(
     markdown: &str,
     parsed: &ParsedDocument,
 ) -> Result<Vec<GenerationTask>, TaskBuildError> {
-    let (scaffold, leakage_baselines) = build_blank_scaffold(markdown, parsed)?;
+    let scaffold = build_blank_scaffold(markdown, parsed)?;
     Ok(scaffold
         .tasks
         .into_iter()
         .zip(&parsed.qblocks)
         .map(|(task, parsed)| GenerationTask {
-            id: task.id.clone(),
+            id: task.id,
             section: parsed.qblock.section.clone().unwrap_or_default(),
             source_text: task.source_text,
             answers: task.answers,
@@ -37,7 +36,6 @@ pub fn build_generation_tasks(
                 .map(|target| Some(target.target_type.clone()))
                 .collect(),
             draft_question: task.scaffold_question,
-            leakage_baseline: leakage_baselines.get(&task.id).cloned().unwrap_or_default(),
         })
         .collect())
 }
