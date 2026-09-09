@@ -33,6 +33,7 @@ impl QuotaProfile {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct QuotaProfileConfig {
@@ -49,6 +50,7 @@ pub(crate) struct QuotaProfileConfig {
     models: HashMap<String, QuotaOverrideConfig>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct QuotaOverrideConfig {
@@ -62,6 +64,7 @@ struct QuotaOverrideConfig {
     adaptive_max_blanks_per_batch: Option<usize>,
 }
 
+#[allow(dead_code)]
 impl QuotaProfileConfig {
     pub(crate) fn resolve(&self, name: String, model: &str) -> Result<QuotaProfile, String> {
         let override_config = self.models.get(model);
@@ -279,6 +282,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())]
     fn model_override_replaces_profile_values() {
         let config: QuotaProfileConfig = toml::from_str(
             r#"

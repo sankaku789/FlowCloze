@@ -1,0 +1,22 @@
+default_model: gemini-flash
+generation:
+  fallback: draft
+batch:
+  mode: auto
+  max_retries: 2
+  max_tasks_per_batch: 5
+  max_input_tokens: 18000
+  max_output_tokens: 6000
+  max_blanks_per_batch: 52
+  max_concurrent_batches: 1
+quotas:
+  gemini-flash:
+    rpm: 4
+    tpm: 250000
+    rpd: 20
+    reserve_requests: 10
+    adaptive_max_tasks_per_batch: 6
+    adaptive_max_input_tokens: 18000
+    adaptive_max_output_tokens: 6000
+    adaptive_max_blanks_per_batch: 60
+# typst_template: /path/to/custom.typ

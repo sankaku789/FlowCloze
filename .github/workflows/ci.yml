@@ -41,8 +41,3 @@ jobs:
 
       - name: Run tests
         run: cargo test
-
-      - name: Check optional Gemini native adapter
-        run: |
-          cargo clippy --all-targets --features gemini-native -- -D warnings
-          cargo test --features gemini-native

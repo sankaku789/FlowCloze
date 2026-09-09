@@ -3,18 +3,18 @@
 日本語 | [English](README.en.md)
 
 FlowClozeは、Markdownで書いた学習ノートから文章補完問題を生成するRust製CLIツールです。
-`#qblock{ ... }` で問題化する範囲を囲み、`[答え]` または `[答え]{type}` で解答対象を指定します。
+`#qblock{ ... }`で問題化する範囲を囲み、`[答え]`または`[答え]{type}`で解答対象を指定します。
 
-Gemini、Ollama / LM StudioなどのOpenAI互換ローカルLLM、LLMを呼ばないIdentity生成に対応し、生成結果の検証、TUI表示、PDF / CSV出力までを1つのCLIで扱えます。
+Google Gemini、OllamaなどのOpenAI互換API、LLMを呼ばないIdentity生成に対応し、生成結果の検証、TUI表示、PDF / CSV出力までを1つのCLIで扱えます。
 
 ![FlowCloze TUI](fig/image.png)
 
 ## 主な機能
 
-- Markdownから `qblock` / targetを抽出
+- Markdownから`qblock` / targetを抽出
 - 中間JSONを生成
-- GeminiまたはOpenAI互換ローカルLLMで問題文を生成
-- `--rewrite never` によるオフラインIdentity生成
+- OpenAI互換APIで問題文を生成
+- `--offline`によるオフラインIdentity生成
 - target、answer、空欄、ID、順序などを検証
 - 生成結果をTUIで確認
 - TypstによるPDF出力
@@ -24,7 +24,7 @@ Gemini、Ollama / LM StudioなどのOpenAI互換ローカルLLM、LLMを呼ば�
 Markdown
   -> parse
   -> intermediate JSON
-  -> compose / rewrite
+  -> compose
   -> validate
   -> JSON
   -> TUI / PDF / CSV
@@ -38,8 +38,8 @@ Markdown
 
 必要な機能に応じて:
 
-- Gemini API key: Geminiで書き換え生成する場合
-- OllamaまたはLM Studio: ローカルLLMを使う場合
+- Google API key: Geminiで生成する場合
+- Ollama: ローカルLLMを使う場合
 - Typst CLI: PDF出力を使う場合
 - 日本語フォント: PDFで日本語を表示する場合
 
@@ -65,18 +65,18 @@ cd FlowCloze
 cargo build --release
 ```
 
-`flowcloze` コマンドとしてインストールする場合:
+`flowcloze`コマンドとしてインストールする場合:
 
 ```bash
 cargo install --path . --force
 flowcloze --version
 ```
 
-標準Typstテンプレートはバイナリに内包されています。PDF出力を初めて使うと、FlowCloze自身が `~/.config/flowcloze/templates/cloze.typ`（`XDG_CONFIG_HOME` 設定時はその配下）へ自動展開します。そのため、インストール手順はシェルやOS固有のスクリプトに依存しません。
+標準Typstテンプレートはバイナリに内包されています。PDF出力を初めて使うと、FlowCloze自身が`~/.config/flowcloze/templates/cloze.typ`（`XDG_CONFIG_HOME`設定時はその配下）へ自動展開します。そのため、インストール手順はシェルやOS固有のスクリプトに依存しません。
 
-インストール先は通常 `~/.cargo/bin/flowcloze` です。
+インストール先は通常`~/.cargo/bin/flowcloze`です。
 
-一時的に試すだけなら、インストールせずに `cargo run -- ...` でも実行できます。
+一時的に試すだけなら、インストールせずに`cargo run -- ...`でも実行できます。
 
 ## Markdown記法
 
@@ -115,35 +115,29 @@ flowcloze --json -o sample/sample.json sample/sample.md
 
 ### 問題を生成
 
-Geminiを使う場合:
+組み込みの`gemini-flash` model profileを使う場合:
 
 ```bash
-flowcloze generate --provider gemini \
+flowcloze auth add google
+flowcloze generate --model gemini-flash \
   -o sample/generated.json sample/sample.md
 ```
 
-Gemini 3.8 Flashを使う場合:
-
-```bash
-flowcloze generate --provider gemini \
-  --model gemini-3.8-flash \
-  -o sample/generated.json sample/sample.md
-```
-
-Gemini 3系では非推奨のsampling parameterを送信しません。
+`gemini-flash`はGoogleの`gemini-2.5-flash`へ接続します。Googleを含むすべてのproviderはOpenAI互換adapterを通して呼び出されます。
 
 LLMを呼ばずに生成する場合:
 
 ```bash
-flowcloze generate --rewrite never \
+flowcloze generate --offline \
   -o sample/generated.json sample/sample.md
 ```
 
-ローカルLLMを使う場合:
+Ollamaを使う場合:
 
 ```bash
-flowcloze local check
-flowcloze generate --provider local \
+flowcloze model add local-qwen --provider ollama --model qwen3:14b
+flowcloze provider check ollama
+flowcloze generate --model local-qwen \
   -o sample/generated.json sample/sample.md
 ```
 
@@ -165,7 +159,8 @@ flowcloze view sample/generated.json
 flowcloze pdf -o sample/sample.pdf sample/generated.json
 ```
 
-標準テンプレートはバイナリに内包され、PDF出力時に `~/.config/flowcloze/templates/cloze.typ` へ自動展開されます。`typst_template` を設定した場合は、そのカスタムテンプレートを優先します。
+標準テンプレートはバイナリに内包され、PDF出力時に`~/.config/flowcloze/templates/cloze.typ`へ自動展開されます。`typst_template`を設定した場合は、そのカスタムテンプレートを優先します。
+
 一時的に別のTypstテンプレートを使う場合:
 
 ```bash
@@ -181,70 +176,81 @@ flowcloze csv -o sample/sample.csv sample/generated.json
 
 ## API送信前にbatch計画を確認
 
-`plan` はProvider APIへ接続せず、`generate` が使うものと同じplannerでqblockのまとめ方を表示します。
+`plan`はProvider APIへ接続せず、`generate`が使うものと同じplannerでqblockのまとめ方を表示します。
 
 ```bash
-flowcloze plan sample/sample.md
+flowcloze plan --model gemini-flash sample/sample.md
 ```
 
-各batchに含まれるqblock番号、推定input/output、空欄数、重いqblockの単独処理を確認できます。`rewrite=auto` でAPIへ送らないqblockは `identity (no API)` として別表示します。
+各batchに含まれるqblock番号、推定input/output、空欄数、重いqblockの単独処理を確認できます。
+
+すべてのqblockをAPIへ送らない計画は、次のように確認します。
+
+```bash
+flowcloze plan --offline sample/sample.md
+```
+
+この場合、すべてのqblockが`identity (no API)`として表示され、providerは初期化されません。
 
 ## 生成設定
 
-FlowCloze 2.2では、設定をユーザー単位の標準ディレクトリへ集約します。
+FlowClozeは設定をユーザー単位の標準ディレクトリへ集約します。
 
 ```text
-~/.config/flowcloze/config.toml
-~/.config/flowcloze/credentials.toml
+~/.config/flowcloze/
+  config.yaml
+  model.yaml
+  auth.yaml
+  templates/cloze.typ
 ```
 
-`config.toml` が存在しない場合は、FlowClozeが内蔵の標準設定を初回利用時に自動生成します。`flowcloze api set` だけを先に実行した場合も同時に生成されます。既存の `config.toml` は上書きしません。
-
-`XDG_CONFIG_HOME` が設定されている場合は、`$XDG_CONFIG_HOME/flowcloze/` を使います。開発時は例えば次のように分離できます。
+`XDG_CONFIG_HOME`が設定されている場合は、`$XDG_CONFIG_HOME/flowcloze/`を使います。開発時は例えば次のように分離できます。
 
 ```bash
 export XDG_CONFIG_HOME="$PWD/.dev-config"
 ```
 
-標準TypstテンプレートはPDF出力時に自動展開されるため、テンプレート配置のための追加インストール操作は不要です。
+ファイルの役割:
 
-APIキーは `config.toml` ではなく、専用の `credentials.toml` に保存します。`flowcloze api set` を実行するとproviderを対話式に選択し、APIキーは非表示入力できます。
+- `config.yaml`: 既定model、生成、batch、quota、Typst templateの設定
+- `model.yaml`: provider catalogとmodel profile
+- `auth.yaml`: API keyのみ
+
+GoogleのAPI keyは次のコマンドで非表示入力します。
 
 ```bash
-flowcloze api set
+flowcloze auth add google
 ```
 
-Unix系OSでは `credentials.toml` を `0600`、設定ディレクトリを `0700` で作成します。
+API keyは`auth.yaml`だけへ保存されます。Unix系OSでは設定ディレクトリを`0700`、`auth.yaml`を`0600`で扱います。Ollamaには認証情報が不要です。
 
-`config.toml` の例:
+`config.yaml`の例:
 
-```toml
-provider = "gemini"
-model = "gemini-2.5-flash"
-rewrite = "always"
-fallback = "error"
-structured_output = "auto"
-batch = "auto"
-max_tasks_per_batch = 12
-max_input_tokens = 18000
-max_output_tokens = 6000
-max_blanks_per_batch = 24
-# typst_template = "/path/to/custom.typ"
+```yaml
+default_model: gemini-flash
+generation:
+  fallback: draft
+batch:
+  mode: auto
+  max_retries: 2
+quotas:
+  gemini-flash:
+    rpm: 5
+    tpm: 250000
+# typst_template: /path/to/custom.typ
 ```
 
-`typst_template` は標準テンプレートを差し替えたい場合だけ指定します。未指定時は内蔵テンプレートを自動展開します。`flowcloze pdf --template ...` を指定した場合はCLI指定を優先します。
+`typst_template`は標準テンプレートを差し替えたい場合だけ指定します。未指定時は内蔵テンプレートを自動展開します。`flowcloze pdf --template ...`を指定した場合はCLI指定を優先します。
 
-`batch = "auto"` では、qblock番号ではなく各qblockの推定入力token・推定出力token・blank数を独立したbudgetとして評価します。軽いqblockは同じrequestへ再packingし、いずれかのbudgetを大きく消費するqblockは単独requestにします。最終出力は元のqblock順へ戻します。batch全体の出力が壊れた場合は次回batchを縮小し、qblock固有の検証失敗は成功済みqblockを保持したまま失敗分だけ再試行します。
+`batch.mode: auto`では、qblock番号ではなく各qblockの推定入力token・推定出力token・blank数を独立したbudgetとして評価します。軽いqblockは同じrequestへ再packingし、いずれかのbudgetを大きく消費するqblockは単独requestにします。最終出力は元のqblock順へ戻します。batch全体の出力が壊れた場合は次回batchを縮小し、qblock固有の検証失敗は成功済みqblockを保持したまま失敗分だけ再試行します。
 
-主な `generate` オプション:
+主な`generate`オプション:
 
 ```text
---provider gemini|local
---model <model>
---rewrite always|never|auto
+--model <profile>
 --fallback error|draft
---structured-output auto|on|off
 --batch auto|small|one-task
+--offline
 --verbose
 -s, --skip-constraints
 ```
@@ -253,47 +259,60 @@ max_blanks_per_batch = 24
 
 ```bash
 flowcloze generate \
-  --provider gemini \
-  --model gemini-2.5-flash \
-  --rewrite auto \
+  --model gemini-flash \
   --fallback draft \
-  --structured-output auto \
+  --batch auto \
   --verbose \
   -o sample/generated.json \
   sample/sample.md
 ```
-
-`rewrite`:
-
-- `always`: providerで書き換える
-- `never`: providerを呼ばずIdentity生成する
-- `auto`: 入力内容に応じて書き換えの要否を選ぶ
 
 `fallback`:
 
 - `error`: 失敗をそのままエラーにする
 - `draft`: 通信または内容検証に失敗したtaskをIdentity下書きへ戻す
 
-設定値は **CLI > `~/.config/flowcloze/config.toml` > 組み込み既定値** の順に解決されます。
-`.env`、カレントディレクトリの `config.toml`、旧設定用環境変数は自動では読みません。
+`--offline`はproviderを呼ばず、すべてのtaskをIdentity生成します。
 
-## ローカルLLM
+設定値は**CLI override > `~/.config/flowcloze/config.yaml` > 組み込み既定値**の順に解決されます。未知fieldは設定エラーになります。
 
-OllamaまたはLM StudioのOpenAI互換サーバを利用できます。
+`.env`、カレントディレクトリの設定ファイル、旧設定用環境変数は自動では読みません。
 
-既定ではOllama (`http://localhost:11434/v1`) を先に試し、接続できない場合はLM Studio (`http://localhost:1234/v1`) を試します。
-`FLOWCLOZE_BASE_URL` で接続先を明示できます。
+## ProviderとModel
 
-既定のローカルモデルは `gemma4:e2b-it-qat` です。
+組み込み定義:
+
+- provider `google`: `https://generativelanguage.googleapis.com/v1beta/openai`、API keyが必要
+- provider `ollama`: `http://localhost:11434/v1`、認証不要
+- model profile `gemini-flash`: provider `google`、model `gemini-2.5-flash`
+
+利用可能なmodel profileを確認する:
+
+```bash
+flowcloze model list
+```
+
+Ollamaのmodel profileを追加または上書きする:
+
+```bash
+flowcloze model add local-qwen --provider ollama --model qwen3:14b
+```
+
+`model add`は`model.yaml`のmodel profileだけを変更します。Provider URLやAPI keyはmodelへ保存しません。
+
+providerの到達性を確認する:
+
+```bash
+flowcloze provider check google
+flowcloze provider check ollama
+```
 
 Ollamaの場合:
 
 ```bash
-ollama pull gemma4:e2b-it-qat
-flowcloze local check
+ollama pull qwen3:14b
+flowcloze provider check ollama
 ```
-
-LM Studioの場合は、同じモデルをロードしてLocal Serverを起動したあと `flowcloze local check` を実行してください。
 
 ## Scaffold確認
 
@@ -312,9 +331,9 @@ flowcloze inspect-scaffold \
 
 ## ログ / 観測
 
-`generate` は解析、batch、検証、保存の進捗をstderrへ表示します。
+`generate`は解析、batch、検証、保存の進捗をstderrへ表示します。
 
-`--verbose` または `FLOWCLOZE_LOG=debug` を指定すると、観測用JSON Linesもstderrへ出力します。Markdown本文、prompt、provider応答、認証情報はログに含めません。
+`--verbose`または`FLOWCLOZE_LOG=debug`を指定すると、観測用JSON Linesもstderrへ出力します。Markdown本文、prompt、provider応答、認証情報はログに含めません。
 
 ## 開発
 
@@ -324,16 +343,11 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Gemini native adapterも確認する場合:
-
-```bash
-cargo clippy --all-targets --features gemini-native -- -D warnings
-cargo test --features gemini-native
-```
+GoogleとOllamaは同じOpenAI互換adapterを使うため、Gemini専用featureの追加検証は不要です。
 
 ## エディタサポート
 
-`editors/vscode-flowcloze-syntax` に、`#qblock` と `[答え]` / `[答え]{type}` を見やすくするVS Code用の簡易拡張があります。
+`editors/vscode-flowcloze-syntax`に、`#qblock`と`[答え]` / `[答え]{type}`を見やすくするVS Code用の簡易拡張があります。
 
 WSL上のVS Code:
 
@@ -351,30 +365,25 @@ ln -sfn "$PWD/editors/vscode-flowcloze-syntax" \
   ~/.vscode/extensions/flowcloze.flowcloze-syntax-0.0.1
 ```
 
-その後、VS Codeで `Developer: Reload Window` を実行してください。
+その後、VS Codeで`Developer: Reload Window`を実行してください。
 
 ## リポジトリ構成
 
 ```text
-src/parser.rs          Markdown parser
-src/json.rs            intermediate JSON
-src/planner.rs         generation planning
-src/compose.rs         question composition core
-src/orchestration.rs   generation orchestration
-src/config.rs          configuration resolution
-src/gemini.rs          Gemini adapter
-src/local_openai.rs    local OpenAI-compatible adapter
-src/validation.rs      generated JSON validation
-src/observability.rs   structured events / logging
-src/csv.rs             Ankilot CSV export
-src/pdf.rs             Typst PDF adapter
-src/main.rs            CLI entry point
-templates/             Typst templates
-sample/                sample inputs / outputs
-editors/               editor support
-tests/                 integration tests
+src/application/   use case orchestration
+src/cli/           CLI parsing and commands
+src/config/        YAML configuration and authentication
+src/core/          parser, model, and validation core
+src/generation/    planning and question generation
+src/output/        JSON, TUI, CSV, and PDF output
+src/providers/     provider catalog and OpenAI-compatible adapter
+src/runtime/       progress and observability
+templates/         Typst templates
+sample/            sample inputs / outputs
+editors/           editor support
+tests/             integration tests
 ```
 
 ## ライセンス
 
-Apache License, Version 2.0 または MIT License のいずれかを選択して利用できます。
+Apache License, Version 2.0またはMIT Licenseのいずれかを選択して利用できます。

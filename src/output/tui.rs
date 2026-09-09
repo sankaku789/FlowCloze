@@ -14,8 +14,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wra
 use ratatui::Terminal;
 use ratatui::{backend::CrosstermBackend, Frame};
 
-use flowcloze::validation::GeneratedQuestion;
-use flowcloze::GeneratedDocument;
+use crate::validation::GeneratedQuestion;
+use crate::GeneratedDocument;
 
 const FRAME_TICK: Duration = Duration::from_millis(200);
 
