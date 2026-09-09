@@ -1,0 +1,46 @@
+name: Publish v2.2.2-beta
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/publish-v2.2.2-beta.yml
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view v2.2.2-beta >/dev/null 2>&1; then
+            gh release create v2.2.2-beta \
+              --target ceef9b3ca0181e067ed183dd28ac6aa35865fb49 \
+              --title "v2.2.2-beta" \
+              --notes-file - <<'EOF'
+          API-free batch-plan inspection for FlowCloze.
+
+          - Add `flowcloze plan <markdown>` to inspect qblock batching without contacting a provider API.
+          - Derive the displayed plan from the same prepared planner output used by `generate`.
+          - Show qblock positions, estimated input/output size, blank counts, effective limits, and heavy/oversized singleton handling.
+          - Show `rewrite=auto` identity qblocks separately as no-API work.
+
+          No shell installer or runtime shell dependency is introduced.
+          EOF
+          fi
+      - name: Remove temporary release workflow
+        run: |
+          rm .github/workflows/publish-v2.2.2-beta.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: remove temporary v2.2.2-beta release workflow"
+          git push
