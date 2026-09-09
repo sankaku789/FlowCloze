@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use crate::compose::{
-    compose_task_from_scaffold, merge_composed_questions, normalize_sentinel_question,
+    compose_task_from_scaffold, merge_composed_questions, normalize_blank_placeholders,
     preflight_composed_questions, try_merge_composed_questions, ComposeBatchRequest, ComposeError,
     ComposeMergeIssue, ComposedDocument, ComposedQuestion, QuestionComposer, WritingStyle,
 };
@@ -118,9 +118,7 @@ pub(crate) enum TerminalCause {
 /// taskが現在どのcompose戦略で処理されているかを表す．
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ComposeMode {
-    /// 複数taskをまとめた通常batchで処理する状態．
     Batched,
-    /// 失敗後にtask単独で再試行する状態．
     SingleTask,
 }
 
@@ -134,21 +132,14 @@ enum FailureScope {
 /// retry queue内で追跡するqblockの状態．
 #[derive(Debug, Clone)]
 pub(crate) struct TaskAttempt {
-    /// scaffold.tasks / intermediate.qblocks のindex．
     pub(crate) index: usize,
-    /// このqblockを再試行した回数．
     pub(crate) retry_count: u32,
-    /// 現在のcompose mode．将来のログ出力にも使う．
     pub(crate) mode: ComposeMode,
-    /// 前回失敗時の検証理由．retry promptへ渡す．
     pub(crate) feedback: Vec<String>,
-    /// batch全体の失敗を別batch由来のretryと再結合しないためのgroup。
     pub(crate) retry_group: Option<usize>,
-    /// batch全体の失敗時に次回batchを縮小するqblock数上限。
     pub(crate) max_batch_size: Option<usize>,
 }
 
-/// 1 qblockの生成・検証に失敗した理由．
 #[derive(Debug)]
 struct TaskFailure {
     index: usize,
@@ -160,7 +151,6 @@ struct TaskFailure {
     scope: FailureScope,
 }
 
-/// 公開エラーへ変換する前だけ、実際に実行を止めた原因を保持する。
 #[derive(Debug)]
 pub struct ComposeExecutionError {
     error: ComposePlanError,
@@ -688,7 +678,7 @@ fn run_port_batch(
             });
             continue;
         };
-        question.question = match normalize_sentinel_question(
+        question.question = match normalize_blank_placeholders(
             &question.question,
             &compose_task_from_scaffold(&scaffold.tasks[attempt.index]),
         ) {
@@ -944,12 +934,11 @@ fn retry_cause(feedback: &[String]) -> RetryCause {
         ("unknown-id", RetryCause::UnknownId),
         ("order-mismatch", RetryCause::OrderMismatch),
         ("anonymous-blank", RetryCause::AnonymousBlank),
-        ("missing-sentinel", RetryCause::MissingSentinel),
-        ("duplicate-sentinel", RetryCause::DuplicateSentinel),
-        ("sentinel-order", RetryCause::SentinelOrder),
-        ("malformed-sentinel", RetryCause::MalformedSentinel),
-        ("unknown-sentinel", RetryCause::UnknownSentinel),
-        ("foreign-sentinel", RetryCause::ForeignSentinel),
+        ("missing-placeholder", RetryCause::MissingPlaceholder),
+        ("duplicate-placeholder", RetryCause::DuplicatePlaceholder),
+        ("placeholder-order", RetryCause::PlaceholderOrder),
+        ("malformed-placeholder", RetryCause::MalformedPlaceholder),
+        ("unknown-placeholder", RetryCause::UnknownPlaceholder),
     ];
     for item in feedback {
         for (marker, cause) in CAUSES {
