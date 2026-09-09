@@ -3,7 +3,7 @@ use crate::planner::ComposeExecutionPolicy;
 use crate::quota::QuotaProfile;
 use crate::scaffold::ScaffoldDocument;
 
-use super::generate::{build_sentinel_scaffold, prepare_selected_plan, GenerateMarkdownError};
+use super::generate::{build_blank_scaffold, prepare_selected_plan, GenerateMarkdownError};
 
 #[derive(Debug, Clone, Default)]
 pub struct PlanMarkdownOptions {
@@ -54,7 +54,7 @@ pub fn plan_markdown(
 ) -> Result<PlanMarkdownOutcome, GenerateMarkdownError> {
     let parsed = parse_markdown_located(markdown).map_err(GenerateMarkdownError::Markdown)?;
     let (scaffold, _) =
-        build_sentinel_scaffold(markdown, &parsed).map_err(GenerateMarkdownError::Markdown)?;
+        build_blank_scaffold(markdown, &parsed).map_err(GenerateMarkdownError::Markdown)?;
     let all_indexes = (0..scaffold.tasks.len()).collect::<Vec<_>>();
     let (provider_indexes, identity_indexes) = if options.offline {
         (Vec::new(), all_indexes)
