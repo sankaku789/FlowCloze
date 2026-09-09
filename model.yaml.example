@@ -1,0 +1,12 @@
+providers:
+  google:
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    auth: api_key
+  ollama:
+    base_url: http://localhost:11434/v1
+    auth: none
+
+models:
+  gemini-flash:
+    provider: google
+    model: gemini-2.5-flash

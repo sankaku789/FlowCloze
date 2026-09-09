@@ -1,4 +1,5 @@
 pub(crate) fn check(provider: &str) -> Result<(), String> {
+    flowcloze::config::ensure_default_files()?;
     let (providers, _) =
         flowcloze::config::model_file::load_catalogs(&flowcloze::config::model_path()?)?;
     let definition = providers

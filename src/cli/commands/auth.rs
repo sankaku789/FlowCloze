@@ -1,6 +1,7 @@
 use flowcloze::config::auth_store::AuthStore;
 
 pub(crate) fn run(provider: &str) -> Result<(), String> {
+    flowcloze::config::ensure_default_files()?;
     let (providers, _) =
         flowcloze::config::model_file::load_catalogs(&flowcloze::config::model_path()?)?;
     if providers.get(provider).is_none() {

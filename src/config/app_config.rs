@@ -27,13 +27,18 @@ pub struct GenerationSettings {
     pub fallback: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatchSettings {
     #[serde(default = "default_batch_mode")]
     pub mode: String,
     #[serde(default = "default_retries")]
     pub max_retries: u32,
+    pub max_tasks_per_batch: Option<usize>,
+    pub max_input_tokens: Option<usize>,
+    pub max_output_tokens: Option<usize>,
+    pub max_blanks_per_batch: Option<usize>,
+    pub max_concurrent_batches: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -41,6 +46,13 @@ pub struct BatchSettings {
 pub struct QuotaSettings {
     pub rpm: Option<u32>,
     pub tpm: Option<u32>,
+    pub rpd: Option<u32>,
+    #[serde(default)]
+    pub reserve_requests: u32,
+    pub adaptive_max_tasks_per_batch: Option<usize>,
+    pub adaptive_max_input_tokens: Option<usize>,
+    pub adaptive_max_output_tokens: Option<usize>,
+    pub adaptive_max_blanks_per_batch: Option<usize>,
 }
 
 impl Default for AppConfig {
@@ -68,25 +80,42 @@ impl Default for BatchSettings {
         Self {
             mode: default_batch_mode(),
             max_retries: default_retries(),
+            max_tasks_per_batch: Some(5),
+            max_input_tokens: Some(18_000),
+            max_output_tokens: Some(6_000),
+            max_blanks_per_batch: Some(52),
+            max_concurrent_batches: Some(1),
         }
     }
 }
 
 impl QuotaSettings {
     pub fn resolve(&self, name: &str) -> Result<crate::quota::QuotaProfile, String> {
-        if self.rpm == Some(0) || self.tpm == Some(0) {
-            return Err(format!("quota '{name}' rpm/tpm must be greater than zero"));
+        if self.rpm == Some(0)
+            || self.tpm == Some(0)
+            || self.rpd == Some(0)
+            || self.adaptive_max_tasks_per_batch == Some(0)
+            || self.adaptive_max_input_tokens == Some(0)
+            || self.adaptive_max_output_tokens == Some(0)
+            || self.adaptive_max_blanks_per_batch == Some(0)
+        {
+            return Err(format!("quota '{name}' limits must be greater than zero"));
+        }
+        if self.rpd.is_some_and(|rpd| self.reserve_requests >= rpd) {
+            return Err(format!(
+                "quota '{name}' reserve_requests must be less than rpd"
+            ));
         }
         Ok(crate::quota::QuotaProfile {
             name: name.to_string(),
             rpm: self.rpm,
             tpm: self.tpm.map(u64::from),
-            rpd: None,
-            reserve_requests: 0,
-            adaptive_max_tasks_per_batch: None,
-            adaptive_max_input_tokens: None,
-            adaptive_max_output_tokens: None,
-            adaptive_max_blanks_per_batch: None,
+            rpd: self.rpd,
+            reserve_requests: self.reserve_requests,
+            adaptive_max_tasks_per_batch: self.adaptive_max_tasks_per_batch,
+            adaptive_max_input_tokens: self.adaptive_max_input_tokens,
+            adaptive_max_output_tokens: self.adaptive_max_output_tokens,
+            adaptive_max_blanks_per_batch: self.adaptive_max_blanks_per_batch,
         })
     }
 }

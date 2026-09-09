@@ -1,4 +1,5 @@
 pub(crate) fn list() -> Result<(), String> {
+    flowcloze::config::ensure_default_files()?;
     let (_, models) =
         flowcloze::config::model_file::load_catalogs(&flowcloze::config::model_path()?)?;
     let mut entries: Vec<_> = models.iter().collect();
@@ -10,6 +11,7 @@ pub(crate) fn list() -> Result<(), String> {
 }
 
 pub(crate) fn add(name: &str, provider: &str, provider_model: &str) -> Result<(), String> {
+    flowcloze::config::ensure_default_files()?;
     let path = flowcloze::config::model_path()?;
     let (providers, _) = flowcloze::config::model_file::load_catalogs(&path)?;
     if providers.get(provider).is_none() {

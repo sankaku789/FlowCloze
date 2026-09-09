@@ -57,6 +57,7 @@ impl From<serde_yaml::Error> for AuthError {
 
 impl AuthStore {
     pub fn load() -> Result<Self, AuthError> {
+        crate::config::ensure_default_files().map_err(AuthError::Config)?;
         let directory = crate::config::config_dir().map_err(AuthError::Config)?;
         Self::load_from(directory.join("auth.yaml"))
     }
