@@ -25,6 +25,35 @@ const LEGACY_SIMPLE_COMPOSE_PROMPT: &str = r#"次の各taskのquestionを、意�
 - ルートキーは items
 - 各itemは id と question だけ
 "#;
+const LEGACY_STRONG_COMPOSE_PROMPT: &str = r#"次の各taskのquestion本文だけを、自然な常体の日本語へ再構成してください。
+
+目的:
+- 元のMarkdownや箇条書きをそのまま言い換えるのではなく、学習用の文章補完問題として自然な文章へ再構成する
+- targetをblankへ単純置換しただけの出力にしない
+
+再構成ルール:
+- 各空欄を判断するために必要な事実、関係、条件は保持する
+- 元文全文、説明順、文構造、語順をそのまま保持する必要はない
+- question全体として、空欄以外の変更可能な表現を実質的に再構成する
+- 句読点、語尾、表記、同義語だけの変更で済ませない
+- 文の統合、分割、接続、説明順の変更を行ってよい
+- 接続詞、指示語、文末調整など、新しい命題を追加しない文法的補完は行ってよい
+- 固有名詞、標準専門用語、数値、式、意味保持に不可欠な短句は無理に言い換えない
+- 入力にない新しい事実、評価、因果、具体例、定義を追加しない
+
+空欄の固定条件:
+- question内の <BLANK_0>, <BLANK_1>, ... は空欄placeholderである
+- placeholderの文字列、個数、相対順、意味対応を変更しない
+- placeholderを削除、追加、置換、並べ替えしない
+- placeholderの位置に語句を補完しない
+- 空欄の答えを推測して本文へ戻さない
+
+出力:
+- taskのidを変更、追加、削除しない
+- JSONのみを出力する。Markdownコードフェンスは禁止
+- ルートキーは items
+- 各itemは id と question だけ
+"#;
 
 /// 旧generation経路用のプロンプト。
 /// compose経路とは独立しており、既存の中間JSON契約を維持する。
@@ -74,13 +103,15 @@ pub fn build_question_composer_prompt(
     Ok(prompt)
 }
 
-fn is_legacy_simple_prompt(prompt: &str) -> bool {
-    prompt.trim() == LEGACY_SIMPLE_COMPOSE_PROMPT.trim()
+fn is_legacy_managed_prompt(prompt: &str) -> bool {
+    let prompt = prompt.trim();
+    prompt == LEGACY_SIMPLE_COMPOSE_PROMPT.trim()
+        || prompt == LEGACY_STRONG_COMPOSE_PROMPT.trim()
 }
 
 /// 現在のcompose経路で使うuser-editable promptを読む。
 /// ~/.config/flowcloze/prompt.txt が無ければ同梱の既定値を一度だけ作成する。
-/// 過去にFlowCloze自身が生成した旧最小promptだけは新しい既定値へ移行する。
+/// 過去にFlowCloze自身が生成した既知の旧promptだけは新しい既定値へ移行する。
 /// ユーザーが内容を編集したpromptは上書きしない。
 fn load_compose_prompt() -> Result<String, String> {
     let directory = crate::config::config_dir()?;
@@ -111,7 +142,7 @@ fn load_compose_prompt() -> Result<String, String> {
     let mut prompt = fs::read_to_string(&path)
         .map_err(|error| format!("{}: {error}", path.display()))?;
 
-    if is_legacy_simple_prompt(&prompt) {
+    if is_legacy_managed_prompt(&prompt) {
         fs::write(&path, BUNDLED_COMPOSE_PROMPT)
             .map_err(|error| format!("{}: {error}", path.display()))?;
         prompt = BUNDLED_COMPOSE_PROMPT.to_string();
@@ -223,16 +254,19 @@ mod tests {
         assert!(BUNDLED_COMPOSE_PROMPT.contains("実質的に再構成"));
         assert!(BUNDLED_COMPOSE_PROMPT.contains("targetをblankへ単純置換しただけの出力にしない"));
         assert!(BUNDLED_COMPOSE_PROMPT.contains("文の統合、分割、接続、説明順の変更"));
+        assert!(BUNDLED_COMPOSE_PROMPT.contains("疑問文・問いかけ形式へ変換しない"));
+        assert!(BUNDLED_COMPOSE_PROMPT.contains("すべての <BLANK_n> を必ずそのまま含める"));
         assert!(BUNDLED_COMPOSE_PROMPT.contains("<BLANK_0>"));
         assert!(!BUNDLED_COMPOSE_PROMPT.contains("⟦FC_"));
     }
 
     #[test]
-    fn recognizes_only_the_old_managed_simple_prompt_for_migration() {
-        assert!(is_legacy_simple_prompt(LEGACY_SIMPLE_COMPOSE_PROMPT));
-        assert!(is_legacy_simple_prompt(&format!("\n{LEGACY_SIMPLE_COMPOSE_PROMPT}\n")));
-        assert!(!is_legacy_simple_prompt("CUSTOM PROMPT"));
-        assert!(!is_legacy_simple_prompt(BUNDLED_COMPOSE_PROMPT));
+    fn recognizes_only_known_managed_prompts_for_migration() {
+        assert!(is_legacy_managed_prompt(LEGACY_SIMPLE_COMPOSE_PROMPT));
+        assert!(is_legacy_managed_prompt(&format!("\n{LEGACY_SIMPLE_COMPOSE_PROMPT}\n")));
+        assert!(is_legacy_managed_prompt(LEGACY_STRONG_COMPOSE_PROMPT));
+        assert!(!is_legacy_managed_prompt("CUSTOM PROMPT"));
+        assert!(!is_legacy_managed_prompt(BUNDLED_COMPOSE_PROMPT));
     }
 
     #[test]
