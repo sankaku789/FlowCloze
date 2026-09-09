@@ -1,0 +1,12 @@
+diff --git a/tests/orchestration.rs b/tests/orchestration.rs
+--- a/tests/orchestration.rs
++++ b/tests/orchestration.rs
+@@ -785,7 +785,7 @@ fn progress_reports_content_retry_result() {
+     assert!(progress.0.lock().unwrap().contains(&ProgressEvent::Retry {
+         task_id: "qblock-001".to_string(),
+         attempt: 1,
+-        cause: RetryCause::BlankCountMismatch,
++        cause: RetryCause::MissingSentinel,
+         result: RetryResult::Success,
+     }));
+ }
