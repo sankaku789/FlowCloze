@@ -4,7 +4,7 @@ use std::time::Instant;
 use crate::compose::{
     compose_task_from_scaffold, merge_composed_questions, normalize_blank_placeholders,
     preflight_composed_questions, try_merge_composed_questions, ComposeBatchRequest, ComposeError,
-    ComposeMergeIssue, ComposedDocument, ComposedQuestion, QuestionComposer, WritingStyle,
+    ComposeMergeIssue, ComposedDocument, ComposedQuestion, QuestionComposer,
 };
 use crate::json::{IntermediateDocument, IntermediateMeta, IntermediateQBlock, IntermediateTarget};
 use crate::observability::{fnv1a_64, ComposeEvent, ComposeEventKind, EventSink, RunContext};
@@ -115,21 +115,18 @@ pub(crate) enum TerminalCause {
     Api { status: u16 },
 }
 
-/// taskが現在どのcompose戦略で処理されているかを表す．
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ComposeMode {
     Batched,
     SingleTask,
 }
 
-/// content failureがqblock固有か、batch全体の崩れかを区別する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FailureScope {
     QBlock,
     Batch { group: usize, previous_size: usize },
 }
 
-/// retry queue内で追跡するqblockの状態．
 #[derive(Debug, Clone)]
 pub(crate) struct TaskAttempt {
     pub(crate) index: usize,
@@ -494,7 +491,6 @@ fn run_port_batch(
     leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
 ) -> Result<Vec<TaskFailure>, ComposeExecutionError> {
     let request = ComposeBatchRequest {
-        schema_version: 1,
         batch_id: format!(
             "compose-{batch_number}-{}-attempt-{}",
             attempts
@@ -508,7 +504,6 @@ fn run_port_batch(
             .iter()
             .map(|attempt| compose_task_from_scaffold(&scaffold.tasks[attempt.index]))
             .collect(),
-        style: WritingStyle::PlainJapanese,
         prompt_version: "compose-v2".to_string(),
         extra_constraints: extra_constraints.to_vec(),
         retry_feedback: attempts
