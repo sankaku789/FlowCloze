@@ -38,6 +38,13 @@ jobs:
               '    let report = validate_runtime_generated_documents(&intermediate, &document);'
           )
           text = re.sub(
+              r'#\[derive\(Debug\)\]\npub\(crate\) struct BuildScaffoldError \{.*?impl std::error::Error for BuildScaffoldError \{\}\n\n',
+              '',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          text = re.sub(
               r'pub\(crate\) fn build_blank_scaffold\(.*?\nfn compose_indexes\(',
               '''pub(crate) fn build_blank_scaffold(\n    _markdown: &str,\n    parsed: &ParsedDocument,\n) -> Result<ScaffoldDocument, MarkdownParseError> {\n    let mut tasks = Vec::new();\n\n    for qblock in &parsed.qblocks {\n        let source = qblock.qblock.source_text.clone();\n        let mut replacements = qblock\n            .target_locations\n            .iter()\n            .enumerate()\n            .map(|(index, location)| {\n                (location.source_text.clone(), format!("<BLANK_{index}>"))\n            })\n            .collect::<Vec<_>>();\n        replacements.sort_by(|left, right| right.0.start.cmp(&left.0.start));\n\n        let mut scaffold = source.clone();\n        for (range, placeholder) in replacements {\n            scaffold.replace_range(range, &placeholder);\n        }\n\n        tasks.push(ScaffoldTask {\n            id: qblock.qblock.id.clone(),\n            source_text: source,\n            cloze_template: scaffold.clone(),\n            scaffold_question: scaffold,\n            blank_count: qblock.qblock.targets.len(),\n            answers: qblock\n                .qblock\n                .targets\n                .iter()\n                .map(|target| target.answer.clone())\n                .collect(),\n        });\n    }\n\n    Ok(ScaffoldDocument { tasks })\n}\n\nfn compose_indexes(''',
               text,
@@ -57,6 +64,10 @@ jobs:
           text = text.replace(
               '        let (scaffold, _) = build_blank_scaffold(markdown, &parsed).unwrap();',
               '        let scaffold = build_blank_scaffold(markdown, &parsed).unwrap();'
+          )
+          text = text.replace(
+              'let markdown = "<!-- qblock -->\\nA[one]B[two]\\n<!-- /qblock -->\\n\\n<!-- qblock -->\\nC[three]D\\n<!-- /qblock -->";',
+              'let markdown = "#qblock{\\nA[one]B[two]\\n}\\n\\n#qblock{\\nC[three]D\\n}";'
           )
           app.write_text(text)
 
@@ -119,13 +130,22 @@ jobs:
               ''
           )
           text = re.sub(r'^\s*leakage_baselines,\n', '', text, flags=re.M)
+          text = re.sub(
+              r'\n/// 初回計画を作成済みの呼び出し側用。retry は計画外の task 単位で実行する。\n#\[allow\(clippy::too_many_arguments\)\]\npub\(crate\) fn compose_with_question_composer_prepared\(.*?\n\}\n\n/// orchestration用のpolicyを検証する。',
+              '\n/// orchestration用のpolicyを検証する。',
+              text,
+              count=1,
+              flags=re.S,
+          )
           planner.write_text(text)
 
           labeled = Path('src/runtime/labeled_progress.rs')
-          text = labeled.read_text()
-          text = text.replace('RetryCause::MissingSentinel', 'RetryCause::MissingPlaceholder')
-          text = text.replace('cause=missing_sentinel', 'cause=missing_placeholder')
-          labeled.write_text(text)
+          original = labeled.read_text()
+          tests = original[original.index('#[cfg(test)]'):]
+          tests = tests.replace('RetryCause::MissingSentinel', 'RetryCause::MissingPlaceholder')
+          tests = tests.replace('cause=missing_sentinel', 'cause=missing_placeholder')
+          preamble = '''//! PlainProgressSinkの互換ラッパー。\n//!\n//! severity/JST timestamp/heartbeatはPlainProgressSink側で一元管理する。\n\nuse std::io::{self, Write};\n\nuse crate::progress::{PlainProgressSink, ProgressEvent, ProgressSink};\n\npub struct LabeledProgressSink {\n    inner: PlainProgressSink,\n}\n\nimpl LabeledProgressSink {\n    pub fn stderr(label: impl Into<String>) -> Self {\n        Self::new(io::stderr(), label)\n    }\n\n    pub fn new(writer: impl Write + Send + 'static, label: impl Into<String>) -> Self {\n        Self {\n            inner: PlainProgressSink::new(writer, label),\n        }\n    }\n\n    pub fn set_label(&self, label: impl Into<String>) {\n        self.inner.set_label(label);\n    }\n}\n\nimpl ProgressSink for LabeledProgressSink {\n    fn emit(&self, event: ProgressEvent) {\n        self.inner.emit(event);\n    }\n}\n\n'''
+          labeled.write_text(preamble + tests)
           PY
 
       - name: Show remaining obsolete references
@@ -137,6 +157,9 @@ jobs:
 
       - name: Run tests
         run: cargo test
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Commit repaired build
         run: |
