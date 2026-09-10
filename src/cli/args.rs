@@ -10,6 +10,7 @@ pub(super) struct Args {
     pub fallback: Option<String>,
     pub verbose: bool,
     pub offline: bool,
+    pub legacy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +64,7 @@ impl Args {
         let mut fallback = None;
         let mut verbose = false;
         let mut offline = false;
+        let mut legacy = false;
         let mut command = Command::Parse;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -156,6 +158,12 @@ impl Args {
                     }
                     offline = true;
                 }
+                "--legacy" => {
+                    if !matches!(command, Command::Generate) {
+                        return Err("--legacy はgenerateコマンドでのみ使えます".into());
+                    }
+                    legacy = true;
+                }
                 "-s" | "--skip-constraints" => skip_constraints = true,
                 "--batch" => {
                     let value = args.next().ok_or_else(|| {
@@ -229,6 +237,7 @@ impl Args {
             fallback,
             verbose,
             offline,
+            legacy,
         })
     }
 }
@@ -245,6 +254,7 @@ fn command_args(command: Command, skip_constraints: bool, verbose: bool, offline
         fallback: None,
         verbose,
         offline,
+        legacy: false,
     }
 }
 
@@ -414,5 +424,16 @@ mod tests {
             parse(&["generate", "--model", "local-qwen", "--offline", "notes.md"]).unwrap();
         assert_eq!(parsed.model.as_deref(), Some("local-qwen"));
         assert!(parsed.offline);
+    }
+
+    #[test]
+    fn generate_accepts_legacy_compose_protocol() {
+        let parsed = parse(&["generate", "--legacy", "notes.md"]).unwrap();
+        assert!(parsed.legacy);
+    }
+
+    #[test]
+    fn legacy_is_rejected_outside_generate() {
+        assert!(parse(&["plan", "--legacy", "notes.md"]).is_err());
     }
 }

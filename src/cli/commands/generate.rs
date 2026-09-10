@@ -42,6 +42,7 @@ pub(crate) fn run(
     config: &GenerationConfig,
     skip_constraints: bool,
     verbose: bool,
+    legacy: bool,
     progress: &dyn ProgressSink,
 ) {
     let markdown = fs::read_to_string(input_path).unwrap_or_else(|e| {
@@ -95,6 +96,7 @@ pub(crate) fn run(
                 eprintln!("{e}");
                 process::exit(2)
             })
+            .with_legacy_compose(legacy)
             .with_transport(transport);
         flowcloze::generate_markdown_with_composer_observed_with_progress(
             &markdown, options, &adapter, &context, &*sink, progress,
