@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::json::IntermediateDocument;
 
@@ -22,13 +22,13 @@ pub struct GeneratedQuestion {
     pub question_type: String,
     pub targets: Option<Vec<GeneratedTarget>>,
     pub question: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flatten_answers")]
     pub answers: Vec<String>,
     pub source_text: Option<String>,
     pub explanation: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub tags: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub warnings: Vec<String>,
 }
 
@@ -223,7 +223,12 @@ pub(crate) fn validate_generated_documents(
                 field: FixedField::QuestionType,
             });
         }
-        if check_fixed_fields && question.section != qblock.section {
+        // 旧生成器は未設定sectionを空文字列で出していたため、Noneと""は互換扱いにする。
+        if check_fixed_fields
+            && question.section.is_some()
+            && !(qblock.section.is_none() && question.section.as_deref() == Some(""))
+            && question.section != qblock.section
+        {
             errors.push(ValidationError::FixedFieldMismatch {
                 id: question.id.clone(),
                 field: FixedField::Section,
@@ -237,7 +242,10 @@ pub(crate) fn validate_generated_documents(
                 target_type: target.target_type.clone(),
             })
             .collect::<Vec<_>>();
-        if check_fixed_fields && question.targets.as_ref() != Some(&expected_targets) {
+        if check_fixed_fields
+            && question.targets.is_some()
+            && question.targets.as_ref() != Some(&expected_targets)
+        {
             errors.push(ValidationError::FixedFieldMismatch {
                 id: question.id.clone(),
                 field: FixedField::Targets,
@@ -254,7 +262,10 @@ pub(crate) fn validate_generated_documents(
                 field: FixedField::Answers,
             });
         }
-        if check_fixed_fields && question.source_text.as_deref() != Some(&qblock.source_text) {
+        if check_fixed_fields
+            && question.source_text.is_some()
+            && question.source_text.as_deref() != Some(&qblock.source_text)
+        {
             errors.push(ValidationError::FixedFieldMismatch {
                 id: question.id.clone(),
                 field: FixedField::SourceText,
@@ -407,4 +418,46 @@ fn count_blanks(question: &str) -> usize {
 
 fn count_occurrences(text: &str, needle: &str) -> usize {
     text.match_indices(needle).count()
+}
+
+/// JSONでnullが来ても空配列などの既定値として扱う互換用deserializer．
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+/// 旧出力で混ざりうる入れ子answersを，単一の文字列配列へ平坦化する．
+fn flatten_answers<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Option::<Vec<AnswerValue>>::deserialize(deserializer)?.unwrap_or_default();
+    let mut answers = Vec::new();
+    for value in values {
+        value.flatten_into(&mut answers);
+    }
+    Ok(answers)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+enum AnswerValue {
+    Text(String),
+    Many(Vec<AnswerValue>),
+}
+
+impl AnswerValue {
+    fn flatten_into(self, answers: &mut Vec<String>) {
+        match self {
+            Self::Text(answer) => answers.push(answer),
+            Self::Many(values) => {
+                for value in values {
+                    value.flatten_into(answers);
+                }
+            }
+        }
+    }
 }
