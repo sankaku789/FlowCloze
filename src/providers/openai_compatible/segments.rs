@@ -133,14 +133,14 @@ fn split_task_segments(task: &ComposeTask) -> Result<Vec<String>, String> {
         segments.push(rest[..position].to_string());
         rest = &rest[position + marker.len()..];
     }
+    segments.push(rest.to_string());
 
-    if rest.contains("<BLANK_") {
+    if segments.iter().any(|segment| segment.contains("<BLANK_")) {
         return Err(format!(
             "task {} scaffold contains an unexpected placeholder",
             task.id
         ));
     }
-    segments.push(rest.to_string());
     Ok(segments)
 }
 
@@ -250,5 +250,15 @@ mod tests {
             ),
             Err(ComposeError::InvalidResponse)
         );
+    }
+
+    #[test]
+    fn segment_split_rejects_unexpected_placeholder_inside_a_segment() {
+        let task = ComposeTask {
+            id: "q1".into(),
+            scaffold_question: "A<BLANK_0>B<BLANK_0>C<BLANK_1>D".into(),
+            blank_count: 2,
+        };
+        assert!(split_task_segments(&task).is_err());
     }
 }
