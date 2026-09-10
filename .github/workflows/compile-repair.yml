@@ -60,6 +60,14 @@ jobs:
           )
           app.write_text(text)
 
+          plan = Path('src/application/plan.rs')
+          text = plan.read_text()
+          text = text.replace(
+              '    let (scaffold, _) =\n        build_blank_scaffold(markdown, &parsed).map_err(GenerateMarkdownError::Markdown)?;',
+              '    let scaffold =\n        build_blank_scaffold(markdown, &parsed).map_err(GenerateMarkdownError::Markdown)?;'
+          )
+          plan.write_text(text)
+
           executor = Path('src/generation/executor.rs')
           text = executor.read_text()
           text = text.replace(
@@ -102,6 +110,17 @@ jobs:
           )
           executor.write_text(text)
 
+          planner = Path('src/generation/planner.rs')
+          text = planner.read_text()
+          text = text.replace('use std::collections::HashMap;\n\n', '')
+          text = text.replace('        None,\n    )\n}\n\n/// located経路で確定したtarget外本文の漏洩基準を使う内部入口。', '    )\n}\n\n/// runtime生成契約を使う内部入口。')
+          text = text.replace(
+              '    leakage_baselines: Option<&HashMap<String, Vec<usize>>>,\n',
+              ''
+          )
+          text = re.sub(r'^\s*leakage_baselines,\n', '', text, flags=re.M)
+          planner.write_text(text)
+
           labeled = Path('src/runtime/labeled_progress.rs')
           text = labeled.read_text()
           text = text.replace('RetryCause::MissingSentinel', 'RetryCause::MissingPlaceholder')
@@ -111,7 +130,7 @@ jobs:
 
       - name: Show remaining obsolete references
         run: |
-          rg -n 'leakage_baseline|leakage_baselines|validate_generated_documents_with_leakage_baselines|source_range|target_spans|MissingSentinel' src || true
+          grep -RInE 'leakage_baseline|leakage_baselines|validate_generated_documents_with_leakage_baselines|source_range|target_spans|MissingSentinel' src || true
 
       - name: Check build
         run: cargo check --all-targets
