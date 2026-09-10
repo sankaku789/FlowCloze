@@ -1,7 +1,10 @@
+mod calibration;
 mod local;
 mod response;
 mod segments;
 mod structured;
+
+use std::sync::{Arc, OnceLock};
 
 use crate::compose::{
     ComposeBatchOutput, ComposeBatchRequest, ComposeError, ComposeMetadata, QuestionComposer,
@@ -9,6 +12,10 @@ use crate::compose::{
 use crate::http::{json_headers, HttpError, HttpTransport};
 use crate::prompt::build_compose_request_prompt;
 use crate::providers::capability::StructuredOutputMode;
+use calibration::{
+    analyze_segment_calibration_output, build_segment_calibration_request,
+    segment_calibration_error_feedback,
+};
 use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::json;
 
@@ -61,6 +68,7 @@ pub struct OpenAiCompatibleAdapter {
     capability: StructuredCapabilityProbe,
     transport: HttpTransport,
     legacy_compose: bool,
+    segment_calibration: Arc<OnceLock<Vec<String>>>,
 }
 
 impl Clone for OpenAiCompatibleAdapter {
@@ -71,6 +79,7 @@ impl Clone for OpenAiCompatibleAdapter {
             capability: self.capability.clone(),
             transport: self.transport.clone(),
             legacy_compose: self.legacy_compose,
+            segment_calibration: self.segment_calibration.clone(),
         }
     }
 }
@@ -96,6 +105,7 @@ impl OpenAiCompatibleAdapter {
             capability: StructuredCapabilityProbe::default(),
             transport: HttpTransport::default(),
             legacy_compose: false,
+            segment_calibration: Arc::new(OnceLock::new()),
         }
     }
 
@@ -206,10 +216,11 @@ impl OpenAiCompatibleAdapter {
         };
         Ok(output)
     }
-}
 
-impl QuestionComposer for OpenAiCompatibleAdapter {
-    fn compose(&self, request: &ComposeBatchRequest) -> Result<ComposeBatchOutput, ComposeError> {
+    fn compose_request(
+        &self,
+        request: &ComposeBatchRequest,
+    ) -> Result<ComposeBatchOutput, ComposeError> {
         match self.mode {
             StructuredOutputMode::Off => self.compose_once(request, StructuredStrategy::PromptOnly),
             StructuredOutputMode::On => {
@@ -265,6 +276,38 @@ impl QuestionComposer for OpenAiCompatibleAdapter {
                 Err(ComposeError::InvalidResponse)
             }
         }
+    }
+
+    fn segment_calibration_feedback(&self) -> Vec<String> {
+        if self.legacy_compose {
+            return Vec::new();
+        }
+        self.segment_calibration
+            .get_or_init(|| {
+                let request = build_segment_calibration_request();
+                match self.compose_request(&request) {
+                    Ok(output) => analyze_segment_calibration_output(&output),
+                    Err(error) => segment_calibration_error_feedback(&error),
+                }
+            })
+            .clone()
+    }
+}
+
+impl QuestionComposer for OpenAiCompatibleAdapter {
+    fn compose(&self, request: &ComposeBatchRequest) -> Result<ComposeBatchOutput, ComposeError> {
+        if self.legacy_compose {
+            return self.compose_request(request);
+        }
+
+        let calibration_feedback = self.segment_calibration_feedback();
+        if calibration_feedback.is_empty() {
+            return self.compose_request(request);
+        }
+
+        let mut calibrated_request = request.clone();
+        calibrated_request.retry_feedback.extend(calibration_feedback);
+        self.compose_request(&calibrated_request)
     }
 }
 
