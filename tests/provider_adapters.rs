@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -25,6 +25,41 @@ fn request() -> ComposeBatchRequest {
     }
 }
 
+fn read_complete_request(stream: &mut TcpStream) {
+    let mut request = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    let mut expected_len = None;
+
+    loop {
+        let read = stream.read(&mut chunk).unwrap();
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&chunk[..read]);
+
+        if expected_len.is_none() {
+            if let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                let header_end = header_end + 4;
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_len = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                expected_len = Some(header_end + content_len);
+            }
+        }
+
+        if expected_len.is_some_and(|len| request.len() >= len) {
+            break;
+        }
+    }
+}
+
 fn mock(responses: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<usize>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -33,8 +68,7 @@ fn mock(responses: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<usize>>) {
     thread::spawn(move || {
         for (status, body) in responses {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 4096];
-            let _ = stream.read(&mut request);
+            read_complete_request(&mut stream);
             *counter.lock().unwrap() += 1;
             let reason = if status == 200 { "OK" } else { "Bad Request" };
             write!(
