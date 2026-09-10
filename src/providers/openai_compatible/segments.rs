@@ -25,7 +25,7 @@ struct SegmentComposedItem {
 fn load_segment_compose_prompt() -> Result<String, String> {
     let directory = crate::config::config_dir()?;
     fs::create_dir_all(&directory).map_err(|error| format!("{}: {error}", directory.display()))?;
-    let path = directory.join("prompt.segments.txt");
+    let path = directory.join("prompt.segments-v2.txt");
 
     if !path.exists() {
         let mut options = fs::OpenOptions::new();
@@ -70,9 +70,18 @@ fn build_segment_compose_request_prompt_with_base(
         .tasks
         .iter()
         .map(|task| {
+            if task.targets.len() != task.blank_count {
+                return Err(format!(
+                    "task {} has {} targets for {} blanks",
+                    task.id,
+                    task.targets.len(),
+                    task.blank_count
+                ));
+            }
             Ok(json!({
                 "id": task.id,
                 "segments": split_task_segments(task)?,
+                "targets": task.targets,
             }))
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -204,8 +213,9 @@ mod tests {
             batch_id: "batch".into(),
             tasks: vec![ComposeTask {
                 id: "q1".into(),
-                scaffold_question: "- HTTPは<BLANK_0>のプロトコル\n- TCPは<BLANK_1>のプロトコル"
+                scaffold_question: "- 共通鍵暗号では暗号化と復号に<BLANK_0>\n- 公開鍵暗号では暗号化と復号に<BLANK_1>"
                     .into(),
+                targets: vec!["同じ鍵を使う".into(), "異なる鍵を使う".into()],
                 blank_count: 2,
             }],
             prompt_version: "test".into(),
@@ -215,13 +225,14 @@ mod tests {
     }
 
     #[test]
-    fn segment_prompt_hides_placeholder_tokens_but_preserves_boundaries() {
+    fn segment_prompt_hides_placeholder_tokens_and_exposes_target_values() {
         let prompt =
             build_segment_compose_request_prompt_with_base(&request(), "SEGMENT PROMPT").unwrap();
         assert!(prompt.starts_with("SEGMENT PROMPT"));
         assert!(prompt.contains("\"segments\""));
-        assert!(prompt.contains("- HTTPは"));
-        assert!(prompt.contains("のプロトコル\\n- TCPは"));
+        assert!(prompt.contains("\"targets\""));
+        assert!(prompt.contains("同じ鍵を使う"));
+        assert!(prompt.contains("異なる鍵を使う"));
         assert!(!prompt.contains("<BLANK_0>"));
         assert!(!prompt.contains("<BLANK_1>"));
         assert!(!prompt.contains("\"question\""));
@@ -230,22 +241,29 @@ mod tests {
     #[test]
     fn segment_response_reconstructs_placeholders_in_core_order() {
         let output = parse_segment_compose_output(
-            r#"{"items":{"q1":{"segments":["HTTPは","のプロトコルであり、TCPは","のプロトコルである。"]}}}"#,
+            r#"{"items":{"q1":{"segments":["共通鍵暗号では暗号化と復号に","。一方、公開鍵暗号では暗号化と復号に","。"]}}}"#,
             &request(),
         )
         .unwrap();
         assert_eq!(output.items.len(), 1);
         assert_eq!(
             output.items[0].question,
-            "HTTPは<BLANK_0>のプロトコルであり、TCPは<BLANK_1>のプロトコルである。"
+            "共通鍵暗号では暗号化と復号に<BLANK_0>。一方、公開鍵暗号では暗号化と復号に<BLANK_1>。"
         );
+    }
+
+    #[test]
+    fn segment_prompt_rejects_target_count_mismatch() {
+        let mut request = request();
+        request.tasks[0].targets.pop();
+        assert!(build_segment_compose_request_prompt_with_base(&request, "PROMPT").is_err());
     }
 
     #[test]
     fn segment_response_rejects_wrong_segment_count() {
         assert_eq!(
             parse_segment_compose_output(
-                r#"{"items":{"q1":{"segments":["HTTPは","だけ"]}}}"#,
+                r#"{"items":{"q1":{"segments":["only","two"]}}}"#,
                 &request(),
             ),
             Err(ComposeError::InvalidResponse)
@@ -257,6 +275,7 @@ mod tests {
         let task = ComposeTask {
             id: "q1".into(),
             scaffold_question: "A<BLANK_0>B<BLANK_0>C<BLANK_1>D".into(),
+            targets: vec!["x".into(), "y".into()],
             blank_count: 2,
         };
         assert!(split_task_segments(&task).is_err());

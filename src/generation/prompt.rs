@@ -118,6 +118,7 @@ mod tests {
             tasks: vec![ComposeTask {
                 id: "q1".into(),
                 scaffold_question: "答えは<BLANK_0>である".into(),
+                targets: vec!["answer".into()],
                 blank_count: 1,
             }],
             prompt_version: "compose-v2".into(),
@@ -133,6 +134,7 @@ mod tests {
         assert!(prompt.contains("\"id\": \"q1\""));
         assert!(prompt.contains("<BLANK_0>"));
         assert!(!prompt.contains("\"answers\""));
+        assert!(!prompt.contains("\"targets\""));
         assert!(!prompt.contains("\"source_text\""));
         assert!(!prompt.contains("\"blank_count\""));
         assert!(!prompt.contains("\"batch_id\""));

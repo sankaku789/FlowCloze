@@ -17,6 +17,7 @@ fn request() -> ComposeBatchRequest {
         tasks: vec![ComposeTask {
             id: "q1".into(),
             scaffold_question: "<BLANK_0>".into(),
+            targets: vec!["answer".into()],
             blank_count: 1,
         }],
         prompt_version: "test".into(),
@@ -87,7 +88,8 @@ fn openai_adapter_uses_the_common_fence_parser() {
     let openai_body = r#"{"choices":[{"message":{"content":"```json\n{\"items\":[{\"id\":\"q1\",\"question\":\"<BLANK_0>\"}]}\n```"}}]}"#;
     let (url, _) = mock(vec![(200, openai_body)]);
     let openai = OpenAiCompatibleAdapter::new(url, "model", None)
-        .with_structured_output(StructuredOutputMode::Off);
+        .with_structured_output(StructuredOutputMode::Off)
+        .with_legacy_compose(true);
     assert_eq!(openai.compose(&request()).unwrap().items[0].id, "q1");
 }
 
@@ -118,6 +120,7 @@ fn google_catalog_and_factory_use_the_openai_compatible_contract() {
     let output = build_adapter(&model, &auth)
         .unwrap()
         .with_structured_output(StructuredOutputMode::Off)
+        .with_legacy_compose(true)
         .compose(&request())
         .unwrap();
 
@@ -137,10 +140,20 @@ fn openai_auto_falls_back_to_json_object_and_caches_it() {
         (200, body),
         (200, body),
     ]);
-    let adapter = OpenAiCompatibleAdapter::new(url, "model", None);
+    let adapter = OpenAiCompatibleAdapter::new(url, "model", None).with_legacy_compose(true);
     adapter.compose(&request()).unwrap();
     adapter.compose(&request()).unwrap();
     assert_eq!(*calls.lock().unwrap(), 3);
+}
+
+#[test]
+fn openai_adapter_defaults_to_target_aware_segment_protocol() {
+    let body = r#"{"choices":[{"message":{"content":"{\"items\":{\"q1\":{\"segments\":[\"before \",\" after\"]}}}"}}]}"#;
+    let (url, _) = mock(vec![(200, body)]);
+    let adapter = OpenAiCompatibleAdapter::new(url, "model", None)
+        .with_structured_output(StructuredOutputMode::Off);
+    let output = adapter.compose(&request()).unwrap();
+    assert_eq!(output.items[0].question, "before <BLANK_0> after");
 }
 
 #[test]
@@ -167,7 +180,7 @@ fn openai_auto_falls_back_to_prompt_only_and_caches_it() {
         (200, body),
         (200, body),
     ]);
-    let adapter = OpenAiCompatibleAdapter::new(url, "model", None);
+    let adapter = OpenAiCompatibleAdapter::new(url, "model", None).with_legacy_compose(true);
     adapter.compose(&request()).unwrap();
     adapter.compose(&request()).unwrap();
     assert_eq!(*calls.lock().unwrap(), 4);
@@ -178,6 +191,7 @@ fn openai_normalizes_content_parts() {
     let body = r#"{"choices":[{"message":{"content":[{"type":"text","text":"{\"items\":["},{"type":"text","text":"{\"id\":\"q1\",\"question\":\"<BLANK_0>\"}]}"}]}}]}"#;
     let (url, _) = mock(vec![(200, body)]);
     let adapter = OpenAiCompatibleAdapter::new(url, "model", None)
-        .with_structured_output(StructuredOutputMode::Off);
+        .with_structured_output(StructuredOutputMode::Off)
+        .with_legacy_compose(true);
     assert_eq!(adapter.compose(&request()).unwrap().items[0].id, "q1");
 }

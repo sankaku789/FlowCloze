@@ -203,11 +203,13 @@ mod tests {
                 ComposeTask {
                     id: "q1".into(),
                     scaffold_question: "<BLANK_0>".into(),
+                    targets: vec!["one".into()],
                     blank_count: 1,
                 },
                 ComposeTask {
                     id: "q2".into(),
                     scaffold_question: "<BLANK_0> / <BLANK_1>".into(),
+                    targets: vec!["one".into(), "two".into()],
                     blank_count: 2,
                 },
             ],

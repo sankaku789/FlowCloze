@@ -26,6 +26,8 @@ pub struct ComposeBatchRequest {
 pub struct ComposeTask {
     pub id: String,
     pub scaffold_question: String,
+    /// 各blank境界に入るtarget値。segments composeでは文法確認用にLLMへ見せる。
+    pub targets: Vec<String>,
     pub blank_count: usize,
 }
 
@@ -133,6 +135,7 @@ pub fn compose_task_from_scaffold(task: &crate::scaffold::ScaffoldTask) -> Compo
     ComposeTask {
         id: task.id.clone(),
         scaffold_question: task.scaffold_question.clone(),
+        targets: task.answers.clone(),
         blank_count: task.blank_count,
     }
 }
@@ -359,6 +362,7 @@ mod tests {
                 .map(blank_token)
                 .collect::<Vec<_>>()
                 .join(" / "),
+            targets: vec![String::new(); blank_count],
             blank_count,
         }
     }
