@@ -1,5 +1,6 @@
 mod local;
 mod response;
+mod segments;
 mod structured;
 
 use crate::compose::{
@@ -13,6 +14,7 @@ use serde_json::json;
 
 pub use local::{local_openai_url_candidates, try_local_openai_candidates};
 use response::{extract_text, ChatResponse};
+use segments::{build_segment_compose_request_prompt, parse_segment_compose_output};
 use structured::{
     response_format, unsupported_response_format, StructuredCapabilityProbe, StructuredStrategy,
 };
@@ -58,6 +60,7 @@ pub struct OpenAiCompatibleAdapter {
     mode: StructuredOutputMode,
     capability: StructuredCapabilityProbe,
     transport: HttpTransport,
+    legacy_compose: bool,
 }
 
 impl Clone for OpenAiCompatibleAdapter {
@@ -67,6 +70,7 @@ impl Clone for OpenAiCompatibleAdapter {
             mode: self.mode,
             capability: self.capability.clone(),
             transport: self.transport.clone(),
+            legacy_compose: self.legacy_compose,
         }
     }
 }
@@ -91,6 +95,7 @@ impl OpenAiCompatibleAdapter {
             mode: StructuredOutputMode::Auto,
             capability: StructuredCapabilityProbe::default(),
             transport: HttpTransport::default(),
+            legacy_compose: false,
         }
     }
 
@@ -109,6 +114,21 @@ impl OpenAiCompatibleAdapter {
         self
     }
 
+    /// 旧id/question + <BLANK_n> wire protocolへ戻す。
+    /// 既定はsegments protocolで、LLMにはplaceholder文字列を見せない。
+    pub fn with_legacy_compose(mut self, legacy: bool) -> Self {
+        self.legacy_compose = legacy;
+        self
+    }
+
+    fn build_prompt(&self, request: &ComposeBatchRequest) -> Result<String, ComposeError> {
+        if self.legacy_compose {
+            build_compose_request_prompt(request).map_err(|_| ComposeError::Configuration)
+        } else {
+            build_segment_compose_request_prompt(request).map_err(|_| ComposeError::Configuration)
+        }
+    }
+
     fn request(
         &self,
         prompt: &str,
@@ -122,7 +142,7 @@ impl OpenAiCompatibleAdapter {
         if should_send_temperature(&self.endpoint) {
             body["temperature"] = json!(0.0);
         }
-        if let Some(format) = response_format(strategy, request) {
+        if let Some(format) = response_format(strategy, request, self.legacy_compose) {
             body["response_format"] = format;
         }
 
@@ -161,17 +181,24 @@ impl OpenAiCompatibleAdapter {
         request: &ComposeBatchRequest,
         strategy: StructuredStrategy,
     ) -> Result<ComposeBatchOutput, ComposeError> {
-        let prompt =
-            build_compose_request_prompt(request).map_err(|_| ComposeError::Configuration)?;
+        let prompt = self.build_prompt(request)?;
         let raw = self.request(&prompt, strategy, request).map_err(map_http)?;
-        self.parse_response(&raw)
+        self.parse_response(&raw, request)
     }
 
-    fn parse_response(&self, body: &str) -> Result<ComposeBatchOutput, ComposeError> {
+    fn parse_response(
+        &self,
+        body: &str,
+        request: &ComposeBatchRequest,
+    ) -> Result<ComposeBatchOutput, ComposeError> {
         let envelope: ChatResponse =
             serde_json::from_str(body).map_err(|_| ComposeError::InvalidResponse)?;
         let content = extract_text(envelope)?;
-        let mut output = crate::compose::parse_compose_output(&content)?;
+        let mut output = if self.legacy_compose {
+            crate::compose::parse_compose_output(&content)?
+        } else {
+            parse_segment_compose_output(&content, request)?
+        };
         output.metadata = ComposeMetadata {
             adapter: "openai-compatible".into(),
             provider: self.endpoint.provider_label.clone(),
@@ -186,13 +213,12 @@ impl QuestionComposer for OpenAiCompatibleAdapter {
         match self.mode {
             StructuredOutputMode::Off => self.compose_once(request, StructuredStrategy::PromptOnly),
             StructuredOutputMode::On => {
-                let prompt = build_compose_request_prompt(request)
-                    .map_err(|_| ComposeError::Configuration)?;
+                let prompt = self.build_prompt(request)?;
                 match self.request(&prompt, StructuredStrategy::JsonSchema, request) {
-                    Ok(raw) => self.parse_response(&raw),
+                    Ok(raw) => self.parse_response(&raw, request),
                     Err(error) if unsupported_response_format(&error) => {
                         match self.request(&prompt, StructuredStrategy::JsonObject, request) {
-                            Ok(raw) => self.parse_response(&raw),
+                            Ok(raw) => self.parse_response(&raw, request),
                             Err(error) => Err(map_http(error)),
                         }
                     }
@@ -200,11 +226,10 @@ impl QuestionComposer for OpenAiCompatibleAdapter {
                 }
             }
             StructuredOutputMode::Auto => {
-                let prompt = build_compose_request_prompt(request)
-                    .map_err(|_| ComposeError::Configuration)?;
+                let prompt = self.build_prompt(request)?;
                 if let Some(strategy) = self.capability.strategy() {
                     return match self.request(&prompt, strategy, request) {
-                        Ok(raw) => self.parse_response(&raw),
+                        Ok(raw) => self.parse_response(&raw, request),
                         Err(error) => Err(map_http(error)),
                     };
                 }
@@ -215,7 +240,7 @@ impl QuestionComposer for OpenAiCompatibleAdapter {
                     .map_err(|_| ComposeError::Transport)?;
                 if let Some(strategy) = self.capability.strategy() {
                     return match self.request(&prompt, strategy, request) {
-                        Ok(raw) => self.parse_response(&raw),
+                        Ok(raw) => self.parse_response(&raw, request),
                         Err(error) => Err(map_http(error)),
                     };
                 }
@@ -227,7 +252,7 @@ impl QuestionComposer for OpenAiCompatibleAdapter {
                 ] {
                     match self.request(&prompt, strategy, request) {
                         Ok(raw) => {
-                            let output = self.parse_response(&raw)?;
+                            let output = self.parse_response(&raw, request)?;
                             self.capability.mark(strategy);
                             return Ok(output);
                         }
@@ -272,6 +297,15 @@ impl OpenAiCompatiblePool {
             .adapters
             .into_iter()
             .map(|adapter| adapter.with_structured_output(mode))
+            .collect();
+        self
+    }
+
+    pub fn with_legacy_compose(mut self, legacy: bool) -> Self {
+        self.adapters = self
+            .adapters
+            .into_iter()
+            .map(|adapter| adapter.with_legacy_compose(legacy))
             .collect();
         self
     }
@@ -324,6 +358,13 @@ fn map_http(error: HttpError) -> ComposeError {
 #[cfg(test)]
 mod request_tests {
     use super::*;
+
+    #[test]
+    fn segment_compose_is_default_and_legacy_is_opt_in() {
+        let adapter = OpenAiCompatibleAdapter::new("https://example.invalid/v1", "model", None);
+        assert!(!adapter.legacy_compose);
+        assert!(adapter.with_legacy_compose(true).legacy_compose);
+    }
 
     #[test]
     fn gemini_3_omits_deprecated_sampling_parameters() {
