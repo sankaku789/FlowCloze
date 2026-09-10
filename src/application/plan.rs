@@ -53,7 +53,7 @@ pub fn plan_markdown(
     options: PlanMarkdownOptions,
 ) -> Result<PlanMarkdownOutcome, GenerateMarkdownError> {
     let parsed = parse_markdown_located(markdown).map_err(GenerateMarkdownError::Markdown)?;
-    let (scaffold, _) =
+    let scaffold =
         build_blank_scaffold(markdown, &parsed).map_err(GenerateMarkdownError::Markdown)?;
     let all_indexes = (0..scaffold.tasks.len()).collect::<Vec<_>>();
     let (provider_indexes, identity_indexes) = if options.offline {

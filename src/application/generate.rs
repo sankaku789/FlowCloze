@@ -1,8 +1,5 @@
 //! 位置情報付き解析からcomposeまでを束ねる公開生成入口。
 
-use std::collections::HashMap;
-use std::ops::Range;
-
 use crate::compose::{IdentityComposer, QuestionComposer};
 use crate::config::FallbackPolicy;
 use crate::executor::{ComposeExecutionError, TerminalCause};
@@ -13,9 +10,7 @@ use crate::planner::{ComposeExecutionPolicy, ComposePlanError, FailureReason};
 use crate::progress::{FailureClass, NoopProgressSink, ProgressEvent, ProgressSink};
 use crate::quota::QuotaProfile;
 use crate::scaffold::{ScaffoldDocument, ScaffoldTask};
-use crate::validation::{
-    validate_generated_documents_with_leakage_baselines, GeneratedDocument,
-};
+use crate::validation::{validate_runtime_generated_documents, GeneratedDocument};
 
 /// Markdown生成入口の設定。出力JSONにはこの情報を混ぜない。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,7 +141,7 @@ pub fn generate_markdown_with_composer_observed_with_progress(
         .map(|qblock| qblock.qblock.clone())
         .collect::<Vec<_>>();
     let intermediate = IntermediateDocument::from_qblocks(options.source, &qblocks);
-    let (scaffold, leakage_baselines) = match build_blank_scaffold(markdown, &parsed) {
+    let scaffold = match build_blank_scaffold(markdown, &parsed) {
         Ok(value) => value,
         Err(error) => {
             progress.emit(ProgressEvent::Failed {
@@ -198,7 +193,6 @@ pub fn generate_markdown_with_composer_observed_with_progress(
             &batch_progress,
             Some(&rewrite_plan),
             &options.extra_constraints,
-            &leakage_baselines,
         ) {
             Ok(document) => questions.extend(document.questions),
             Err(error)
@@ -236,7 +230,6 @@ pub fn generate_markdown_with_composer_observed_with_progress(
                         &NoopProgressSink,
                         None,
                         &[],
-                        &leakage_baselines,
                     )
                     .map_err(|error| GenerateMarkdownError::Compose(error.into_public()))?;
                     fallback_summary.push(FallbackSummary {
@@ -288,11 +281,7 @@ pub fn generate_markdown_with_composer_observed_with_progress(
             .unwrap_or(usize::MAX)
     });
     let document = GeneratedDocument { questions };
-    let report = validate_generated_documents_with_leakage_baselines(
-        &intermediate,
-        &document,
-        &leakage_baselines,
-    );
+    let report = validate_runtime_generated_documents(&intermediate, &document);
     if let Some(error) = report.errors.first() {
         progress.emit(ProgressEvent::Failed {
             stage: crate::progress::ProgressStage::Validate,
@@ -397,66 +386,32 @@ fn failure_class_for_terminal_cause(cause: TerminalCause) -> FailureClass {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct BuildScaffoldError {
-    message: String,
-}
-
-impl BuildScaffoldError {
-    fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for BuildScaffoldError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for BuildScaffoldError {}
-
 pub(crate) fn build_blank_scaffold(
-    markdown: &str,
+    _markdown: &str,
     parsed: &ParsedDocument,
-) -> Result<(ScaffoldDocument, HashMap<String, Vec<usize>>), MarkdownParseError> {
+) -> Result<ScaffoldDocument, MarkdownParseError> {
     let mut tasks = Vec::new();
-    let mut baselines = HashMap::new();
 
     for qblock in &parsed.qblocks {
-        let source = markdown
-            .get(qblock.source_range.clone())
-            .ok_or_else(|| MarkdownParseError::InvalidSyntax {
-                line: 0,
-                message: "qblock source range is not on UTF-8 boundaries".to_string(),
-            })?;
+        let source = qblock.qblock.source_text.clone();
         let mut replacements = qblock
-            .target_spans
+            .target_locations
             .iter()
             .enumerate()
-            .map(|(index, span)| {
-                let relative = relative_range(&qblock.source_range, &span.range)?;
-                Ok((relative, format!("<BLANK_{index}>")))
+            .map(|(index, location)| {
+                (location.source_text.clone(), format!("<BLANK_{index}>"))
             })
-            .collect::<Result<Vec<_>, MarkdownParseError>>()?;
-        replacements.sort_by(|left, right| right.0.start.cmp(&left.0.start));
-        let mut scaffold = source.to_string();
+            .collect::<Vec<_>>();
+        replacements.sort_by_key(|item| std::cmp::Reverse(item.0.start));
+
+        let mut scaffold = source.clone();
         for (range, placeholder) in replacements {
             scaffold.replace_range(range, &placeholder);
         }
 
-        let leakage_baseline = qblock
-            .qblock
-            .targets
-            .iter()
-            .map(|target| count_occurrences(&scaffold, &target.answer))
-            .collect::<Vec<_>>();
-        baselines.insert(qblock.qblock.id.clone(), leakage_baseline);
         tasks.push(ScaffoldTask {
             id: qblock.qblock.id.clone(),
-            source_text: source.to_string(),
+            source_text: source,
             cloze_template: scaffold.clone(),
             scaffold_question: scaffold,
             blank_count: qblock.qblock.targets.len(),
@@ -469,30 +424,10 @@ pub(crate) fn build_blank_scaffold(
         });
     }
 
-    Ok((ScaffoldDocument { tasks }, baselines))
+    Ok(ScaffoldDocument { tasks })
 }
 
-fn count_occurrences(text: &str, needle: &str) -> usize {
-    if needle.is_empty() {
-        0
-    } else {
-        text.match_indices(needle).count()
-    }
-}
-
-fn relative_range(
-    block: &Range<usize>,
-    target: &Range<usize>,
-) -> Result<Range<usize>, MarkdownParseError> {
-    if target.start < block.start || target.end > block.end || target.start > target.end {
-        return Err(MarkdownParseError::InvalidSyntax {
-            line: 0,
-            message: "target span is outside qblock range".to_string(),
-        });
-    }
-    Ok(target.start - block.start..target.end - block.start)
-}
-
+#[allow(clippy::too_many_arguments)]
 fn compose_indexes(
     intermediate: &IntermediateDocument,
     scaffold: &ScaffoldDocument,
@@ -504,7 +439,6 @@ fn compose_indexes(
     progress: &dyn ProgressSink,
     prepared: Option<&crate::planner::PreparedComposePlan>,
     extra_constraints: &[String],
-    leakage_baselines: &HashMap<String, Vec<usize>>,
 ) -> Result<GeneratedDocument, ComposeExecutionError> {
     let selected_intermediate = IntermediateDocument {
         meta: intermediate.meta.clone(),
@@ -519,16 +453,6 @@ fn compose_indexes(
             .map(|index| scaffold.tasks[*index].clone())
             .collect(),
     };
-    let selected_baselines = indexes
-        .iter()
-        .filter_map(|index| {
-            let id = &scaffold.tasks[*index].id;
-            leakage_baselines
-                .get(id)
-                .cloned()
-                .map(|baseline| (id.clone(), baseline))
-        })
-        .collect::<HashMap<_, _>>();
     crate::executor::execute_prepared_with_terminal_cause(
         &selected_intermediate,
         &selected_scaffold,
@@ -538,7 +462,6 @@ fn compose_indexes(
         context,
         sink,
         progress,
-        Some(&selected_baselines),
         prepared,
     )
 }
@@ -550,9 +473,9 @@ mod tests {
 
     #[test]
     fn blank_placeholders_are_numbered_per_qblock() {
-        let markdown = "<!-- qblock -->\nA[one]B[two]\n<!-- /qblock -->\n\n<!-- qblock -->\nC[three]D\n<!-- /qblock -->";
+        let markdown = "#qblock{\nA[one]B[two]\n}\n\n#qblock{\nC[three]D\n}";
         let parsed = parse_markdown_located(markdown).unwrap();
-        let (scaffold, _) = build_blank_scaffold(markdown, &parsed).unwrap();
+        let scaffold = build_blank_scaffold(markdown, &parsed).unwrap();
         assert_eq!(scaffold.tasks.len(), 2);
         assert!(scaffold.tasks[0].scaffold_question.contains("<BLANK_0>"));
         assert!(scaffold.tasks[0].scaffold_question.contains("<BLANK_1>"));

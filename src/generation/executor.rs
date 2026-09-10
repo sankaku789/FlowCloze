@@ -19,8 +19,7 @@ use crate::rate_limit::RateLimitKind;
 use crate::scaffold::{ScaffoldDocument, ScaffoldTask};
 use crate::task::GenerationTask;
 use crate::validation::{
-    validate_generated_documents, validate_generated_documents_with_leakage_baselines,
-    GeneratedDocument, ValidationError,
+    validate_runtime_generated_documents, GeneratedDocument, ValidationError,
 };
 
 pub type ExecutionError = ComposeExecutionError;
@@ -84,10 +83,6 @@ impl Executor {
                 })
                 .collect(),
         };
-        let leakage = tasks
-            .iter()
-            .map(|task| (task.id.clone(), task.leakage_baseline.clone()))
-            .collect::<HashMap<_, _>>();
         execute_prepared_with_terminal_cause(
             &intermediate,
             &scaffold,
@@ -97,7 +92,6 @@ impl Executor {
             context.run,
             context.events,
             context.progress,
-            Some(&leakage),
             Some(plan),
         )
     }
@@ -222,7 +216,6 @@ pub(crate) fn execute_prepared_with_terminal_cause(
     context: &RunContext,
     sink: &dyn EventSink,
     progress: &dyn ProgressSink,
-    leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
     prepared: Option<&PreparedComposePlan>,
 ) -> Result<GeneratedDocument, ComposeExecutionError> {
     let effective_batch_policy = prepared
@@ -254,7 +247,6 @@ pub(crate) fn execute_prepared_with_terminal_cause(
             sink,
             effective_batch_policy.max_concurrent_batches,
             extra_constraints,
-            leakage_baselines,
         )?;
         let failure_count = failures.len();
         let batch_terminal_failures =
@@ -332,7 +324,6 @@ pub(crate) fn execute_prepared_with_terminal_cause(
                 sink,
                 effective_batch_policy.max_concurrent_batches,
                 extra_constraints,
-                leakage_baselines,
             )?;
             retry_batch_number += 1;
             let terminal =
@@ -386,28 +377,7 @@ pub(crate) fn execute_prepared_with_terminal_cause(
                 .collect(),
         })
         .map_err(ComposeExecutionError::from_error)?;
-    let owned_baselines;
-    let baselines = match leakage_baselines {
-        Some(baselines) => baselines,
-        None => {
-            owned_baselines = scaffold
-                .tasks
-                .iter()
-                .map(|task| {
-                    (
-                        task.id.clone(),
-                        task.answers
-                            .iter()
-                            .map(|answer| count_occurrences(&task.scaffold_question, answer))
-                            .collect(),
-                    )
-                })
-                .collect();
-            &owned_baselines
-        }
-    };
-    let report =
-        validate_generated_documents_with_leakage_baselines(intermediate, &generated, baselines);
+    let report = validate_runtime_generated_documents(intermediate, &generated);
     if let Some(error) = report.errors.first() {
         return Err(ComposeExecutionError::from_error(
             ComposePlanError::Validation {
@@ -422,14 +392,6 @@ pub(crate) fn execute_prepared_with_terminal_cause(
         ));
     }
     Ok(generated)
-}
-
-fn count_occurrences(text: &str, needle: &str) -> usize {
-    if needle.is_empty() {
-        0
-    } else {
-        text.match_indices(needle).count()
-    }
 }
 
 fn partial_plan_error(
@@ -488,7 +450,6 @@ fn run_port_batch(
     sink: &dyn EventSink,
     max_concurrent_batches: usize,
     extra_constraints: &[String],
-    leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
 ) -> Result<Vec<TaskFailure>, ComposeExecutionError> {
     let request = ComposeBatchRequest {
         batch_id: format!(
@@ -707,12 +668,7 @@ fn run_port_batch(
                 errors: vec!["id-mismatch".to_string()],
             })
         })?;
-        let report = match leakage_baselines {
-            Some(baselines) => {
-                validate_generated_documents_with_leakage_baselines(&one, &generated, baselines)
-            }
-            None => validate_generated_documents(&one, &generated),
-        };
+        let report = validate_runtime_generated_documents(&one, &generated);
         if report.is_valid() {
             completed.insert(qblock.id.clone(), question);
             emit_validation_event(

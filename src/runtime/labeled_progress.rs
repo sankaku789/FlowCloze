@@ -1,6 +1,6 @@
 //! PlainProgressSinkの互換ラッパー。
 //!
-//! severity、JST timestamp、heartbeatはPlainProgressSink側で一元管理する。
+//! severity/JST timestamp/heartbeatはPlainProgressSink側で一元管理する。
 
 use std::io::{self, Write};
 

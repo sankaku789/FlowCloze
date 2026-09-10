@@ -1,7 +1,5 @@
 //! Adaptive Compose Planner.
 
-use std::collections::HashMap;
-
 use crate::compose::QuestionComposer;
 use crate::executor::{ComposeExecutionError, ComposeMode, TaskAttempt};
 use crate::json::IntermediateDocument;
@@ -351,11 +349,10 @@ pub fn compose_with_question_composer_observed_with_constraints_with_progress(
         context,
         sink,
         progress,
-        None,
     )
 }
 
-/// located経路で確定したtarget外本文の漏洩基準を使う内部入口。
+/// runtime生成契約を使う内部入口。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leakage_baselines(
     intermediate: &IntermediateDocument,
@@ -366,7 +363,6 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
     context: &RunContext,
     sink: &dyn EventSink,
     progress: &dyn ProgressSink,
-    leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
 ) -> Result<GeneratedDocument, ComposePlanError> {
     crate::executor::execute_prepared_with_terminal_cause(
         intermediate,
@@ -377,37 +373,7 @@ pub(crate) fn compose_with_question_composer_observed_with_constraints_and_leaka
         context,
         sink,
         progress,
-        leakage_baselines,
         None,
-    )
-    .map_err(ComposeExecutionError::into_public)
-}
-
-/// 初回計画を作成済みの呼び出し側用。retry は計画外の task 単位で実行する。
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn compose_with_question_composer_prepared(
-    intermediate: &IntermediateDocument,
-    scaffold: &ScaffoldDocument,
-    policy: ComposeExecutionPolicy,
-    composer: &dyn QuestionComposer,
-    extra_constraints: &[String],
-    context: &RunContext,
-    sink: &dyn EventSink,
-    progress: &dyn ProgressSink,
-    leakage_baselines: Option<&HashMap<String, Vec<usize>>>,
-    prepared: Option<&PreparedComposePlan>,
-) -> Result<GeneratedDocument, ComposePlanError> {
-    crate::executor::execute_prepared_with_terminal_cause(
-        intermediate,
-        scaffold,
-        policy,
-        composer,
-        extra_constraints,
-        context,
-        sink,
-        progress,
-        leakage_baselines,
-        prepared,
     )
     .map_err(ComposeExecutionError::into_public)
 }
