@@ -1,0 +1,130 @@
+name: Compile Repair
+
+on:
+  push:
+    branches:
+      - refactor/relax-retry-validation
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/relax-retry-validation
+      - name: Apply incomplete refactor fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          app = Path('src/application/generate.rs')
+          text = app.read_text()
+          text = text.replace('use std::collections::HashMap;\nuse std::ops::Range;\n\n', '')
+          text = text.replace(
+              'use crate::validation::{\n    validate_generated_documents_with_leakage_baselines, GeneratedDocument,\n};',
+              'use crate::validation::{validate_runtime_generated_documents, GeneratedDocument};'
+          )
+          text = text.replace(
+              'let (scaffold, leakage_baselines) = match build_blank_scaffold(markdown, &parsed) {',
+              'let scaffold = match build_blank_scaffold(markdown, &parsed) {'
+          )
+          text = text.replace(
+              '    let report = validate_generated_documents_with_leakage_baselines(\n        &intermediate,\n        &document,\n        &leakage_baselines,\n    );',
+              '    let report = validate_runtime_generated_documents(&intermediate, &document);'
+          )
+          text = re.sub(
+              r'pub\(crate\) fn build_blank_scaffold\(.*?\nfn compose_indexes\(',
+              '''pub(crate) fn build_blank_scaffold(\n    _markdown: &str,\n    parsed: &ParsedDocument,\n) -> Result<ScaffoldDocument, MarkdownParseError> {\n    let mut tasks = Vec::new();\n\n    for qblock in &parsed.qblocks {\n        let source = qblock.qblock.source_text.clone();\n        let mut replacements = qblock\n            .target_locations\n            .iter()\n            .enumerate()\n            .map(|(index, location)| {\n                (location.source_text.clone(), format!("<BLANK_{index}>"))\n            })\n            .collect::<Vec<_>>();\n        replacements.sort_by(|left, right| right.0.start.cmp(&left.0.start));\n\n        let mut scaffold = source.clone();\n        for (range, placeholder) in replacements {\n            scaffold.replace_range(range, &placeholder);\n        }\n\n        tasks.push(ScaffoldTask {\n            id: qblock.qblock.id.clone(),\n            source_text: source,\n            cloze_template: scaffold.clone(),\n            scaffold_question: scaffold,\n            blank_count: qblock.qblock.targets.len(),\n            answers: qblock\n                .qblock\n                .targets\n                .iter()\n                .map(|target| target.answer.clone())\n                .collect(),\n        });\n    }\n\n    Ok(ScaffoldDocument { tasks })\n}\n\nfn compose_indexes(''',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          text = text.replace('    leakage_baselines: &HashMap<String, Vec<usize>>,\n', '')
+          text = re.sub(
+              r'    let selected_baselines = indexes\n.*?        \.collect::<HashMap<_, _>>\(\);\n',
+              '',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          text = text.replace('        Some(&selected_baselines),\n', '')
+          text = re.sub(r'^\s*&leakage_baselines,\n', '', text, flags=re.M)
+          text = text.replace(
+              '        let (scaffold, _) = build_blank_scaffold(markdown, &parsed).unwrap();',
+              '        let scaffold = build_blank_scaffold(markdown, &parsed).unwrap();'
+          )
+          app.write_text(text)
+
+          executor = Path('src/generation/executor.rs')
+          text = executor.read_text()
+          text = text.replace(
+              'use crate::validation::{\n    validate_generated_documents, validate_generated_documents_with_leakage_baselines,\n    GeneratedDocument, ValidationError,\n};',
+              'use crate::validation::{\n    validate_runtime_generated_documents, GeneratedDocument, ValidationError,\n};'
+          )
+          text = re.sub(
+              r'        let leakage = tasks\n.*?            \.collect::<HashMap<_, _>>\(\);\n',
+              '',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          text = text.replace('            Some(&leakage),\n', '')
+          text = text.replace(
+              '    leakage_baselines: Option<&HashMap<String, Vec<usize>>>,\n',
+              ''
+          )
+          text = re.sub(r'^\s*leakage_baselines,\n', '', text, flags=re.M)
+          text = re.sub(
+              r'    let owned_baselines;\n.*?    let report =\n        validate_generated_documents_with_leakage_baselines\(intermediate, &generated, baselines\);',
+              '    let report = validate_runtime_generated_documents(intermediate, &generated);',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          text = re.sub(
+              r'\nfn count_occurrences\(text: &str, needle: &str\) -> usize \{.*?\n\}\n\nfn partial_plan_error',
+              '\nfn partial_plan_error',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          text = re.sub(
+              r'        let report = match leakage_baselines \{.*?        \};\n',
+              '        let report = validate_runtime_generated_documents(&one, &generated);\n',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          executor.write_text(text)
+
+          labeled = Path('src/runtime/labeled_progress.rs')
+          text = labeled.read_text()
+          text = text.replace('RetryCause::MissingSentinel', 'RetryCause::MissingPlaceholder')
+          text = text.replace('cause=missing_sentinel', 'cause=missing_placeholder')
+          labeled.write_text(text)
+          PY
+
+      - name: Show remaining obsolete references
+        run: |
+          rg -n 'leakage_baseline|leakage_baselines|validate_generated_documents_with_leakage_baselines|source_range|target_spans|MissingSentinel' src || true
+
+      - name: Check build
+        run: cargo check --all-targets
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Commit repaired build
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src
+          if ! git diff --cached --quiet; then
+            git commit -m 'Finish retry validation refactor and restore build'
+            git push origin HEAD:refactor/relax-retry-validation
+          fi
