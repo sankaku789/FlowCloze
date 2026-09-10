@@ -1,0 +1,67 @@
+name: Finalize Compile Repair
+
+on:
+  push:
+    branches:
+      - refactor/relax-retry-validation
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/relax-retry-validation
+
+      - name: Apply repair and clippy fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import textwrap
+
+          workflow = Path('.github/workflows/compile-repair.yml').read_text()
+          match = re.search(r"python3 - <<'PY'\n(.*?)\n          PY", workflow, re.S)
+          if not match:
+              raise SystemExit('repair script not found')
+          script = textwrap.dedent(match.group(1))
+          exec(compile(script, 'compile-repair', 'exec'), {'__name__': '__main__'})
+
+          app = Path('src/application/generate.rs')
+          text = app.read_text()
+          text = text.replace(
+              'replacements.sort_by(|left, right| right.0.start.cmp(&left.0.start));',
+              'replacements.sort_by_key(|item| std::cmp::Reverse(item.0.start));',
+          )
+          marker = '\nfn compose_indexes('
+          if '#[allow(clippy::too_many_arguments)]\nfn compose_indexes(' not in text:
+              text = text.replace(
+                  marker,
+                  '\n#[allow(clippy::too_many_arguments)]\nfn compose_indexes(',
+                  1,
+              )
+          app.write_text(text)
+          PY
+
+      - name: Check build
+        run: cargo check --all-targets
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Commit repaired source
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src
+          if ! git diff --cached --quiet; then
+            git commit -m 'Finish retry validation refactor and restore build'
+            git push origin HEAD:refactor/relax-retry-validation
+          fi
