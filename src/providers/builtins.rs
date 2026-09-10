@@ -20,6 +20,13 @@ pub fn builtin_providers() -> ProviderCatalog {
         })
         .expect("valid built-in ollama provider");
     catalog
+        .register(ProviderDefinition {
+            id: "llama_cpp".into(),
+            base_url: "http://localhost:8080/v1".into(),
+            auth: AuthRequirement::None,
+        })
+        .expect("valid built-in llama.cpp provider");
+    catalog
 }
 
 pub fn builtin_models() -> ModelRegistry {
@@ -46,6 +53,11 @@ mod tests {
     #[test]
     fn builtin_provider_ollama_is_resolvable() {
         assert!(builtin_providers().get("ollama").is_some());
+    }
+
+    #[test]
+    fn builtin_provider_llama_cpp_is_resolvable() {
+        assert!(builtin_providers().get("llama_cpp").is_some());
     }
 
     #[test]

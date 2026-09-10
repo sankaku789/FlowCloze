@@ -3,8 +3,11 @@ use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
+use serde_yaml::Value;
 
 use crate::providers::builtins::DEFAULT_MODEL;
+
+const BUNDLED_APP_CONFIG: &str = include_str!("../../config.yaml.example");
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,11 +32,27 @@ pub struct GenerationSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct BatchProfileSettings {
+    pub max_tasks_per_batch: usize,
+    pub max_input_tokens: usize,
+    pub max_output_tokens: usize,
+    pub max_blanks_per_batch: usize,
+    pub max_concurrent_batches: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BatchSettings {
     #[serde(default = "default_batch_mode")]
     pub mode: String,
     #[serde(default = "default_retries")]
     pub max_retries: u32,
+    #[serde(default = "default_batch_profile")]
+    pub default_profile: String,
+    #[serde(default)]
+    pub provider_profiles: BTreeMap<String, String>,
+    #[serde(default)]
+    pub profiles: BTreeMap<String, BatchProfileSettings>,
     pub max_tasks_per_batch: Option<usize>,
     pub max_input_tokens: Option<usize>,
     pub max_output_tokens: Option<usize>,
@@ -57,13 +76,7 @@ pub struct QuotaSettings {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        Self {
-            default_model: default_model(),
-            quotas: BTreeMap::new(),
-            generation: GenerationSettings::default(),
-            batch: BatchSettings::default(),
-            typst_template: None,
-        }
+        serde_yaml::from_str(BUNDLED_APP_CONFIG).expect("bundled config.yaml.example must be valid")
     }
 }
 
@@ -80,11 +93,14 @@ impl Default for BatchSettings {
         Self {
             mode: default_batch_mode(),
             max_retries: default_retries(),
-            max_tasks_per_batch: Some(5),
-            max_input_tokens: Some(18_000),
-            max_output_tokens: Some(6_000),
-            max_blanks_per_batch: Some(52),
-            max_concurrent_batches: Some(1),
+            default_profile: default_batch_profile(),
+            provider_profiles: BTreeMap::new(),
+            profiles: BTreeMap::new(),
+            max_tasks_per_batch: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+            max_blanks_per_batch: None,
+            max_concurrent_batches: None,
         }
     }
 }
@@ -121,11 +137,31 @@ impl QuotaSettings {
 }
 
 pub fn load_app_config(path: &Path) -> Result<AppConfig, String> {
-    if !path.exists() {
-        return Ok(AppConfig::default());
+    let mut merged = serde_yaml::from_str::<Value>(BUNDLED_APP_CONFIG)
+        .map_err(|error| format!("invalid bundled config.yaml.example: {error}"))?;
+    if path.exists() {
+        let user = serde_yaml::from_str::<Value>(
+            &fs::read_to_string(path).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("invalid config.yaml: {error}"))?;
+        merge_yaml(&mut merged, user);
     }
-    serde_yaml::from_str(&fs::read_to_string(path).map_err(|error| error.to_string())?)
-        .map_err(|error| format!("invalid config.yaml: {error}"))
+    serde_yaml::from_value(merged).map_err(|error| format!("invalid config.yaml: {error}"))
+}
+
+fn merge_yaml(base: &mut Value, overlay: Value) {
+    match (base, overlay) {
+        (Value::Mapping(base), Value::Mapping(overlay)) => {
+            for (key, value) in overlay {
+                if let Some(existing) = base.get_mut(&key) {
+                    merge_yaml(existing, value);
+                } else {
+                    base.insert(key, value);
+                }
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
 }
 
 fn default_model() -> String {
@@ -140,6 +176,9 @@ fn default_batch_mode() -> String {
 fn default_retries() -> u32 {
     2
 }
+fn default_batch_profile() -> String {
+    "remote".into()
+}
 
 #[cfg(test)]
 mod tests {
@@ -153,7 +192,11 @@ mod tests {
         let path = directory.join("config.yaml");
         fs::write(&path, "unknown: true\n").unwrap();
         assert!(load_app_config(&path).is_err());
-        fs::write(&path, "default_model: gemini-flash\nquotas:\n  gemini-flash:\n    rpm: 5\n    tpm: 250000\nbatch:\n  max_retries: 4\n").unwrap();
+        fs::write(
+            &path,
+            "default_model: gemini-flash\nquotas:\n  gemini-flash:\n    rpm: 5\n    tpm: 250000\nbatch:\n  max_retries: 4\n",
+        )
+        .unwrap();
         let config = load_app_config(&path).unwrap();
         let quota = config.quotas["gemini-flash"]
             .resolve("gemini-flash")
@@ -161,6 +204,28 @@ mod tests {
         assert_eq!(quota.rpm, Some(5));
         assert_eq!(quota.tpm, Some(250_000));
         assert_eq!(config.batch.max_retries, 4);
+        assert_eq!(config.batch.provider_profiles["ollama"], "local");
+        assert_eq!(config.batch.profiles["local"].max_tasks_per_batch, 2);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn user_batch_profile_overrides_bundled_profile_fields() {
+        let directory = std::env::temp_dir().join(format!(
+            "flowcloze-config-profile-yaml-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.yaml");
+        fs::write(
+            &path,
+            "batch:\n  profiles:\n    local:\n      max_tasks_per_batch: 1\n",
+        )
+        .unwrap();
+        let config = load_app_config(&path).unwrap();
+        let local = &config.batch.profiles["local"];
+        assert_eq!(local.max_tasks_per_batch, 1);
+        assert_eq!(local.max_input_tokens, 4_000);
         fs::remove_dir_all(directory).unwrap();
     }
 }

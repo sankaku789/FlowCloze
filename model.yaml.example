@@ -5,6 +5,9 @@ providers:
   ollama:
     base_url: http://localhost:11434/v1
     auth: none
+  llama_cpp:
+    base_url: http://localhost:8080/v1
+    auth: none
 
 models:
   gemini-flash:

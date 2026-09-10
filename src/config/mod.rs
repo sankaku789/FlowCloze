@@ -5,7 +5,9 @@ pub mod auth_store;
 pub mod model_file;
 pub mod quota;
 
-pub use app_config::{AppConfig, BatchSettings, GenerationSettings, QuotaSettings};
+pub use app_config::{
+    AppConfig, BatchProfileSettings, BatchSettings, GenerationSettings, QuotaSettings,
+};
 pub use model_file::{load_catalogs, upsert_model_yaml, ModelFile};
 
 use std::env;
@@ -22,6 +24,7 @@ const BUNDLED_TYPST_TEMPLATE: &str = include_str!("../../templates/cloze.typ");
 const BUNDLED_APP_CONFIG: &str = include_str!("../../config.yaml.example");
 const BUNDLED_MODEL_FILE: &str = include_str!("../../model.yaml.example");
 const LEGACY_APP_CONFIG: &str = "default_model: gemini-flash\ngeneration:\n  fallback: draft\nbatch:\n  mode: auto\n  max_retries: 2\nquotas:\n  gemini-flash:\n    rpm: 5\n    tpm: 250000\n# typst_template: /path/to/custom.typ\n";
+const LEGACY_APP_CONFIG_V2: &str = "default_model: gemini-flash\ngeneration:\n  fallback: draft\nbatch:\n  mode: auto\n  max_retries: 2\n  max_tasks_per_batch: 5\n  max_input_tokens: 18000\n  max_output_tokens: 6000\n  max_blanks_per_batch: 52\n  max_concurrent_batches: 1\nquotas:\n  gemini-flash:\n    rpm: 4\n    tpm: 250000\n    rpd: 20\n    reserve_requests: 10\n    adaptive_max_tasks_per_batch: 6\n    adaptive_max_input_tokens: 18000\n    adaptive_max_output_tokens: 6000\n    adaptive_max_blanks_per_batch: 60\n# typst_template: /path/to/custom.typ\n";
 const LEGACY_EMPTY_MODEL_FILE: &str = "# Built-in providers (google and ollama) and gemini-flash are always available.\n# Add or override provider and model profiles below.\nproviders: {}\nmodels: {}\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +57,7 @@ pub struct GenerationConfig {
     pub batch_settings: BatchSettings,
     pub fallback: FallbackPolicy,
     pub offline: bool,
+    resolved_batch_policy: BatchPolicy,
 }
 
 #[doc(hidden)]
@@ -97,7 +101,11 @@ pub fn ensure_default_files() -> Result<(), String> {
             .map_err(|error| format!("{}: {error}", directory.display()))?;
     }
     let config_path = directory.join("config.yaml");
-    if fs::read_to_string(&config_path).ok().as_deref() == Some(LEGACY_APP_CONFIG) {
+    let existing_config = fs::read_to_string(&config_path).ok();
+    if matches!(
+        existing_config.as_deref(),
+        Some(LEGACY_APP_CONFIG | LEGACY_APP_CONFIG_V2)
+    ) {
         replace_managed_file(&config_path, BUNDLED_APP_CONFIG)?;
     } else {
         create_config_file(&config_path, BUNDLED_APP_CONFIG)?;
@@ -144,49 +152,90 @@ fn create_config_file(path: &Path, body: &str) -> Result<(), String> {
 
 impl GenerationConfig {
     pub fn batch_policy(&self) -> BatchPolicy {
-        let local = self
-            .model
-            .as_ref()
-            .is_some_and(|model| model.provider == "ollama");
-        let mut policy = match self.batch {
-            BatchPolicyName::Small => BatchPolicy::local_default(),
-            BatchPolicyName::OneTask => BatchPolicy {
-                max_tasks_per_batch: 1,
-                max_estimated_input_tokens: 12_000,
-                max_estimated_output_tokens: 6_000,
-                max_blanks_per_batch: 24,
-                max_concurrent_batches: 1,
-            },
-            BatchPolicyName::Auto if local => BatchPolicy::local_default(),
-            BatchPolicyName::Auto => BatchPolicy::gemini_default(),
-        };
-        if let Some(value) = self.batch_settings.max_tasks_per_batch {
-            policy.max_tasks_per_batch = value;
-        }
-        if let Some(value) = self.batch_settings.max_input_tokens {
-            policy.max_estimated_input_tokens = value;
-        }
-        if let Some(value) = self.batch_settings.max_output_tokens {
-            policy.max_estimated_output_tokens = value;
-        }
-        if let Some(value) = self.batch_settings.max_blanks_per_batch {
-            policy.max_blanks_per_batch = value;
-        }
-        if let Some(value) = self.batch_settings.max_concurrent_batches {
-            policy.max_concurrent_batches = value;
-        }
-        policy
+        self.resolved_batch_policy
     }
 
     pub fn execution_policy(&self) -> ComposeExecutionPolicy {
         ComposeExecutionPolicy {
-            batch_policy: self.batch_policy(),
+            batch_policy: self.resolved_batch_policy,
             max_content_retries: self.max_retries,
         }
     }
 }
 
-/// CLI > config.yaml > built-in defaults の順に生成設定を解決する。
+fn resolve_batch_policy(
+    batch: BatchPolicyName,
+    settings: &BatchSettings,
+    model: Option<&ResolvedModel>,
+) -> Result<BatchPolicy, String> {
+    let profile_name = match batch {
+        BatchPolicyName::Small => "local",
+        BatchPolicyName::Auto | BatchPolicyName::OneTask => model
+            .and_then(|model| settings.provider_profiles.get(&model.provider))
+            .map(String::as_str)
+            .unwrap_or(&settings.default_profile),
+    };
+    let profile = settings.profiles.get(profile_name).ok_or_else(|| {
+        format!("batch profile '{profile_name}' is not defined in batch.profiles")
+    })?;
+    let values = [
+        profile.max_tasks_per_batch,
+        profile.max_input_tokens,
+        profile.max_output_tokens,
+        profile.max_blanks_per_batch,
+        profile.max_concurrent_batches,
+    ];
+    if values.contains(&0) {
+        return Err(format!(
+            "batch profile '{profile_name}' limits must be greater than zero"
+        ));
+    }
+
+    let mut policy = BatchPolicy {
+        max_tasks_per_batch: profile.max_tasks_per_batch,
+        max_estimated_input_tokens: profile.max_input_tokens,
+        max_estimated_output_tokens: profile.max_output_tokens,
+        max_blanks_per_batch: profile.max_blanks_per_batch,
+        max_concurrent_batches: profile.max_concurrent_batches,
+    };
+    apply_batch_overrides(&mut policy, settings)?;
+    if batch == BatchPolicyName::OneTask {
+        policy.max_tasks_per_batch = 1;
+        policy.max_concurrent_batches = 1;
+    }
+    Ok(policy)
+}
+
+fn apply_batch_overrides(policy: &mut BatchPolicy, settings: &BatchSettings) -> Result<(), String> {
+    let overrides = [
+        ("max_tasks_per_batch", settings.max_tasks_per_batch),
+        ("max_input_tokens", settings.max_input_tokens),
+        ("max_output_tokens", settings.max_output_tokens),
+        ("max_blanks_per_batch", settings.max_blanks_per_batch),
+        ("max_concurrent_batches", settings.max_concurrent_batches),
+    ];
+    if let Some((name, _)) = overrides.iter().find(|(_, value)| *value == Some(0)) {
+        return Err(format!("batch.{name} must be greater than zero"));
+    }
+    if let Some(value) = settings.max_tasks_per_batch {
+        policy.max_tasks_per_batch = value;
+    }
+    if let Some(value) = settings.max_input_tokens {
+        policy.max_estimated_input_tokens = value;
+    }
+    if let Some(value) = settings.max_output_tokens {
+        policy.max_estimated_output_tokens = value;
+    }
+    if let Some(value) = settings.max_blanks_per_batch {
+        policy.max_blanks_per_batch = value;
+    }
+    if let Some(value) = settings.max_concurrent_batches {
+        policy.max_concurrent_batches = value;
+    }
+    Ok(())
+}
+
+/// CLI > config.yaml > bundled defaults の順に生成設定を解決する。
 pub fn load(cli: CliOverrides) -> Result<GenerationConfig, String> {
     ensure_default_files()?;
     let app = app_config::load_app_config(&config_path()?)?;
@@ -217,6 +266,7 @@ pub fn load(cli: CliOverrides) -> Result<GenerationConfig, String> {
             .map(|settings| settings.resolve(profile))
             .transpose()?
     };
+    let resolved_batch_policy = resolve_batch_policy(batch, &app.batch, model.as_ref())?;
     Ok(GenerationConfig {
         model,
         quota,
@@ -225,6 +275,7 @@ pub fn load(cli: CliOverrides) -> Result<GenerationConfig, String> {
         batch_settings: app.batch,
         fallback,
         offline: cli.offline,
+        resolved_batch_policy,
     })
 }
 
@@ -340,6 +391,7 @@ mod tests {
         assert_eq!(config.fallback, FallbackPolicy::Draft);
         assert_eq!(config.quota.as_ref().unwrap().rpm, Some(7));
         assert_eq!(config.execution_policy().max_content_retries, 5);
+        assert_eq!(config.batch_policy().max_tasks_per_batch, 1);
         fs::remove_dir_all(root).unwrap();
         match old {
             Some(value) => env::set_var("XDG_CONFIG_HOME", value),
@@ -430,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn bundled_config_applies_batch_and_quota_limits() {
+    fn bundled_config_applies_remote_batch_and_quota_limits() {
         let _lock = environment_test_lock();
         let old = env::var_os("XDG_CONFIG_HOME");
         let root = env::temp_dir().join(format!("flowcloze-bundled-limits-{}", std::process::id()));
@@ -453,6 +505,40 @@ mod tests {
         assert_eq!(quota.adaptive_max_input_tokens, Some(18_000));
         assert_eq!(quota.adaptive_max_output_tokens, Some(6_000));
         assert_eq!(quota.adaptive_max_blanks_per_batch, Some(60));
+
+        fs::remove_dir_all(root).unwrap();
+        match old {
+            Some(value) => env::set_var("XDG_CONFIG_HOME", value),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn ollama_auto_uses_local_profile_from_config() {
+        let _lock = environment_test_lock();
+        let old = env::var_os("XDG_CONFIG_HOME");
+        let root = env::temp_dir().join(format!("flowcloze-local-profile-{}", std::process::id()));
+        let directory = root.join("flowcloze");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&directory).unwrap();
+        env::set_var("XDG_CONFIG_HOME", &root);
+        fs::write(
+            directory.join("model.yaml"),
+            "models:\n  local-test:\n    provider: ollama\n    model: local-model\n",
+        )
+        .unwrap();
+
+        let config = load(CliOverrides {
+            model: Some("local-test".into()),
+            ..CliOverrides::default()
+        })
+        .unwrap();
+        let policy = config.batch_policy();
+        assert_eq!(policy.max_tasks_per_batch, 2);
+        assert_eq!(policy.max_estimated_input_tokens, 4_000);
+        assert_eq!(policy.max_estimated_output_tokens, 1_500);
+        assert_eq!(policy.max_blanks_per_batch, 8);
+        assert_eq!(policy.max_concurrent_batches, 1);
 
         fs::remove_dir_all(root).unwrap();
         match old {
