@@ -25,7 +25,7 @@ struct SegmentComposedItem {
 fn load_segment_compose_prompt() -> Result<String, String> {
     let directory = crate::config::config_dir()?;
     fs::create_dir_all(&directory).map_err(|error| format!("{}: {error}", directory.display()))?;
-    let path = directory.join("prompt.segments-v2.txt");
+    let path = directory.join("prompt.segments.txt");
 
     if !path.exists() {
         let mut options = fs::OpenOptions::new();
