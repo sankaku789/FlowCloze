@@ -70,6 +70,7 @@ pub fn run() {
                 &config,
                 args.skip_constraints,
                 args.verbose,
+                args.legacy,
                 &progress,
             );
         }
@@ -143,7 +144,7 @@ fn parse(input_path: &str, output_path: Option<&str>, json: bool) {
 fn print_usage() {
     eprintln!("使い方 / Usage:");
     eprintln!("  flowcloze [--json] [-o output.json] <markdown-file>");
-    eprintln!("  flowcloze generate [-o output.json] [--verbose] [--model profile] [--fallback error|draft] [--batch auto|small|one-task] [--offline] <markdown-file>");
+    eprintln!("  flowcloze generate [-o output.json] [--verbose] [--model profile] [--fallback error|draft] [--batch auto|small|one-task] [--offline] [--legacy] <markdown-file>");
     eprintln!("  flowcloze plan [--model profile] [--batch auto|small|one-task] [--offline] <markdown-file>");
     eprintln!("  flowcloze auth add <provider>");
     eprintln!("  flowcloze model list");
@@ -186,6 +187,7 @@ fn print_help() {
     eprintln!("  -s                     追加制約の入力をスキップします / Skip extra constraints");
     eprintln!("  -o, --output <path>     出力先を指定します / Set output path");
     eprintln!("  --batch <policy>        generateのbatch policyを指定します(auto/small/one-task) / Batch policy");
+    eprintln!("  --legacy               generateで旧placeholder compose protocolを使います / Use legacy placeholder compose protocol");
     eprintln!("  --verbose               通常の進捗表示に観測JSON Linesをstderrへ追加します (FLOWCLOZE_LOG=debugでも有効)");
     eprintln!("  --offline               generate/planをIdentityのみで実行します / Disable provider calls");
     eprintln!("                           max_concurrent_batchesは検証・観測のみで、現在は並列実行しません");
