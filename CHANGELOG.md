@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.2.3-beta - 2026-10-22
+
+### Security
+
+- Remove trust in the compromised eMudhra/emSign CA hierarchy by updating webpki-roots to 1.0.10 and rustls-webpki to 0.103.16.
+- This hotfix is based on 2.2.2-beta and does not include unreleased 2.3.0-beta changes. Rebuild or reinstall to apply the updated certificate verification.
+
 ## 2.2.2-beta - 2026-09-09
 
 ### Added
